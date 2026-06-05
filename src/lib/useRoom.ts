@@ -52,6 +52,7 @@ export interface RoomController {
   deleted: boolean
   sendText: (text: string, opts?: SendOpts) => Promise<void>
   sendMedia: (files: File[], caption: string, opts?: SendOpts) => Promise<void>
+  retrySend: (id: string) => Promise<void>
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
   pruneAll: () => Promise<void>
@@ -310,6 +311,40 @@ export function useRoom(session: RoomSession): RoomController {
     [session, ingest, recompute],
   )
 
+  // Retry a previously-failed optimistic text message in place (same id, so it
+  // keeps its position and won't duplicate if the original eventually lands).
+  const retrySend = useCallback(
+    async (id: string) => {
+      const p = pendingById.current.get(id)
+      if (!p || p.kind !== "text" || !p.text) return
+      pendingById.current.set(id, { ...p, failed: false, pending: true })
+      void recompute()
+      try {
+        const ttlMs = p.expiresAt ? Math.max(1000, p.expiresAt - Date.now()) : undefined
+        const envelope = await encodeText(session, p.text, p.replyTo)
+        const res = await api.postMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "text",
+            ttlMs,
+            burn: p.burn,
+          },
+        })
+        ingest(res.message)
+      } catch (e) {
+        const cur = pendingById.current.get(id)
+        if (cur) pendingById.current.set(id, { ...cur, pending: false, failed: true })
+        void recompute()
+        setError(e instanceof ApiError ? e.message : "Failed to send")
+      }
+    },
+    [session, ingest, recompute],
+  )
+
   const sendMedia = useCallback(
     async (files: File[], caption: string, opts?: SendOpts) => {
       if (files.length === 0) return
@@ -457,6 +492,7 @@ export function useRoom(session: RoomSession): RoomController {
       deleted,
       sendText,
       sendMedia,
+      retrySend,
       toggleReaction,
       prune,
       pruneAll,
@@ -475,6 +511,7 @@ export function useRoom(session: RoomSession): RoomController {
       deleted,
       sendText,
       sendMedia,
+      retrySend,
       toggleReaction,
       prune,
       pruneAll,
