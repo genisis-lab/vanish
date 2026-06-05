@@ -4,6 +4,7 @@ import { ToastProvider } from "./components/ui"
 import { Home } from "./components/Home"
 import { InviteJoin } from "./components/InviteJoin"
 import { ChatRoom } from "./components/ChatRoom"
+import { VaultLock } from "./components/VaultLock"
 import { usePrefs } from "./lib/usePrefs"
 import { buildSession, type RoomSession } from "./lib/session"
 import { vault } from "./lib/vault"
@@ -16,26 +17,38 @@ type Route =
 export default function App() {
   const prefs = usePrefs()
   const [route, setRoute] = useState<Route>({ name: "home" })
+  const [locked, setLocked] = useState(() => vault.isLocked())
 
-  // On first load, honor an ?invite= link.
+  // Remove the invite secret from the address bar (both fragment and any legacy
+  // query param) so it can't leak via history, Referer headers, or screen shares.
+  const scrubInviteFromUrl = useCallback(() => {
+    const url = new URL(window.location.href)
+    let changed = false
+    if (url.searchParams.has("invite")) {
+      url.searchParams.delete("invite")
+      changed = true
+    }
+    if (url.hash) {
+      url.hash = ""
+      changed = true
+    }
+    if (changed) window.history.replaceState({}, "", url.pathname + url.search)
+  }, [])
+
+  // On first load, honor an invite link, then immediately scrub the secret.
   useEffect(() => {
     const invite = parseInviteFromUrl(window.location.href)
-    if (invite) setRoute({ name: "join", invite })
+    if (invite) {
+      setRoute({ name: "join", invite })
+      scrubInviteFromUrl()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const clearInviteParam = useCallback(() => {
-    const url = new URL(window.location.href)
-    if (url.searchParams.has("invite")) {
-      url.searchParams.delete("invite")
-      window.history.replaceState({}, "", url.pathname + url.search)
-    }
-  }, [])
-
   const goHome = useCallback(() => {
-    clearInviteParam()
+    scrubInviteFromUrl()
     setRoute({ name: "home" })
-  }, [clearInviteParam])
+  }, [scrubInviteFromUrl])
 
   const enterChat = useCallback((session: RoomSession) => {
     setRoute({ name: "chat", session })
@@ -61,10 +74,10 @@ export default function App() {
   )
 
   let screen = null
-  if (route.name === "home") {
-    screen = (
-      <Home prefs={prefs} onCreated={enterChat} onJoinKey={goJoinByKey} onResume={resume} />
-    )
+  if (locked) {
+    screen = <VaultLock onDone={() => setLocked(false)} />
+  } else if (route.name === "home") {
+    screen = <Home prefs={prefs} onCreated={enterChat} onJoinKey={goJoinByKey} onResume={resume} />
   } else if (route.name === "join") {
     screen = (
       <InviteJoin invite={route.invite} prefs={prefs} onJoined={enterChat} onCancel={goHome} />
