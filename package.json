@@ -1,0 +1,43 @@
+{
+  "name": "vanish",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Vanish \u2014 anonymous, end-to-end encrypted, ephemeral chat rooms on Cloudflare.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.build.json && vite build",
+    "build:app": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p tsconfig.build.json && tsc -p functions/tsconfig.json && tsc -p room-worker/tsconfig.json",
+    "pages:dev": "wrangler pages dev dist --compatibility-date=2024-11-06",
+    "pages:deploy": "wrangler pages deploy dist",
+    "worker:deploy": "wrangler deploy -c room-worker/wrangler.toml",
+    "worker:dev": "wrangler dev -c room-worker/wrangler.toml",
+    "verify": "tsx tests/manual/verify.ts"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.9.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "happy-dom": "^15.11.6",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5",
+    "wrangler": "^3.87.0"
+  }
+}
