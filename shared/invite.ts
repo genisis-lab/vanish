@@ -5,7 +5,12 @@
 //   secret  = base64url(32 random bytes)  (never sent to the server)
 //
 // The full secret only ever lives client-side. Losing the invite key means the
-// room and its history are unrecoverable \u2014 by design.
+// room and its history are unrecoverable — by design.
+//
+// IMPORTANT: invite links carry the secret in the URL *fragment* (after `#`).
+// Browsers never transmit the fragment to the server, so the secret stays out
+// of access logs, Referer headers, and proxies. Older links used a `?invite=`
+// query parameter — we still parse those for backward compatibility.
 
 import { fromBase64Url, randomBytes, toBase64Url } from "./crypto"
 
@@ -47,12 +52,33 @@ export function parseInviteKey(raw: string): ParsedInvite | null {
 
 export function buildInviteUrl(origin: string, inviteKey: string): string {
   const base = origin.replace(/\/$/, "")
-  return `${base}/?invite=${encodeURIComponent(inviteKey)}`
+  // Secret lives in the fragment so it is never sent to the server.
+  return `${base}/#invite=${encodeURIComponent(inviteKey)}`
+}
+
+function safeDecode(s: string): string {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
+
+function parseInviteFromHash(hash: string): ParsedInvite | null {
+  if (!hash) return null
+  let raw = hash.startsWith("#") ? hash.slice(1) : hash
+  if (raw.startsWith("invite=")) raw = raw.slice("invite=".length)
+  if (!raw) return null
+  return parseInviteKey(safeDecode(raw))
 }
 
 export function parseInviteFromUrl(url: string): ParsedInvite | null {
   try {
     const u = new URL(url)
+    // Prefer the fragment (never transmitted to the server)…
+    const fromHash = parseInviteFromHash(u.hash)
+    if (fromHash) return fromHash
+    // …then fall back to the legacy ?invite= query parameter.
     const invite = u.searchParams.get("invite")
     return invite ? parseInviteKey(invite) : null
   } catch {

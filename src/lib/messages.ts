@@ -1,7 +1,8 @@
 // Encoding/decoding of encrypted message envelopes. The server only ever sees
 // the opaque `envelope` string; everything meaningful (username, text, caption,
 // filenames, media manifest) is encrypted here with the room message key.
-import { decryptJson, encryptJson } from "@shared/crypto"
+import { decryptJson, encryptString, opaqueReactionId } from "@shared/crypto"
+import { padText } from "@shared/padding"
 import type { EncryptedMediaRef, MessageKind, StoredMessage } from "@shared/types"
 import type { MediaManifestItem } from "./media"
 import { aad, type RoomSession } from "./session"
@@ -63,13 +64,19 @@ export interface DecryptedMessage {
   failed?: boolean
 }
 
+// Encrypt a payload, padding the plaintext to a size bucket first so the
+// ciphertext length leaks less about the content (see shared/padding).
+async function encryptPadded(key: CryptoKey, value: unknown, context: string): Promise<string> {
+  return encryptString(key, padText(JSON.stringify(value)), context)
+}
+
 export async function encodeText(
   session: RoomSession,
   text: string,
   replyTo?: ReplyRef,
 ): Promise<string> {
   const payload: TextPayload = { username: session.username, text, replyTo }
-  return encryptJson(session.keys.msgKey, payload, aad(session, "msg"))
+  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
 export async function encodeMedia(
@@ -79,16 +86,16 @@ export async function encodeMedia(
   replyTo?: ReplyRef,
 ): Promise<string> {
   const payload: MediaPayload = { username: session.username, caption, items, replyTo }
-  return encryptJson(session.keys.msgKey, payload, aad(session, "msg"))
+  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
 export async function encodeSystem(session: RoomSession, payload: SystemPayload): Promise<string> {
-  return encryptJson(session.keys.msgKey, payload, aad(session, "msg"))
+  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
 export async function encodeReaction(session: RoomSession, emoji: string): Promise<string> {
   const payload: ReactionPayload = { emoji, username: session.username }
-  return encryptJson(session.keys.msgKey, payload, aad(session, "react"))
+  return encryptPadded(session.keys.msgKey, payload, aad(session, "react"))
 }
 
 export async function decodeMessage(
@@ -139,15 +146,16 @@ async function decodeReactions(
   session: RoomSession,
   stored: StoredMessage,
 ): Promise<DecryptedReaction[]> {
-  const entries = Object.entries(stored.reactions || {})
   const byEmoji = new Map<string, DecryptedReaction>()
-  for (const [reactionId, r] of entries) {
+  for (const r of Object.values(stored.reactions || {})) {
     try {
       const p = await decryptJson<ReactionPayload>(session.keys.msgKey, r.envelope, aad(session, "react"))
       const existing = byEmoji.get(p.emoji) || { emoji: p.emoji, count: 0, mine: false, users: [] }
       existing.count++
       existing.users.push(p.username)
-      if (reactionId.startsWith(session.participantId + ":")) existing.mine = true
+      // "mine" comes from the stored participant id, not the reaction id (the id
+      // is now an opaque hash that intentionally hides the emoji).
+      if (r.participantId === session.participantId) existing.mine = true
       byEmoji.set(p.emoji, existing)
     } catch {
       /* skip unreadable reaction */
@@ -156,7 +164,13 @@ async function decodeReactions(
   return Array.from(byEmoji.values())
 }
 
-/** Stable reaction id so a participant toggling the same emoji overwrites itself. */
-export function reactionId(session: RoomSession, emoji: string): string {
-  return `${session.participantId}:${emoji}`
+/** Opaque, stable reaction id so a participant toggling the same emoji
+ * overwrites itself — without leaking the emoji to the server. */
+export function reactionId(session: RoomSession, emoji: string): Promise<string> {
+  return opaqueReactionId(
+    session.invite.roomId,
+    session.participantId,
+    emoji,
+    session.keys.safetyNumber,
+  )
 }
