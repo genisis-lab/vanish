@@ -27,6 +27,8 @@ it.
 - Every payload is sealed as `[version][iv(12)][ciphertext]` (base64url) with AES-GCM and a
   purpose-bound AAD (`<roomId>:msg`, `:media`, `:react`, `:channel`). The `msgKey`/`mediaKey`
   are non-extractable `CryptoKey`s.
+- Plaintext is padded to coarse size buckets before encryption (messages to 256-byte buckets,
+  media to power-of-four byte buckets) so ciphertext length leaks far less about content.
 - The server stores only: room id, an access-verifier hash, invite expiry, created/deleted
   timestamps, encrypted message envelopes, encrypted media object paths + sizes, and
   per-message expiry. **It has no key material and cannot decrypt anything.** Cloudflare may
@@ -131,10 +133,17 @@ What the suites cover:
    npm run worker:deploy   # publishes the "vanish-room" worker that exports RoomDurableObject
    ```
 4. **Set the shared upload secret** (used to sign R2 upload/download tokens) on **both** the
-   worker and the Pages project:
+   worker and the Pages project. This is a value you generate yourself (e.g.
+   `openssl rand -base64 32`) — it is not issued by Cloudflare; just use the same string in
+   both commands:
    ```bash
    npx wrangler secret put UPLOAD_SECRET                       # for the worker
    npx wrangler pages secret put UPLOAD_SECRET --project-name vanish   # for Pages
+   ```
+   To confirm it is already set (names only, never values):
+   ```bash
+   npx wrangler secret list
+   npx wrangler pages secret list --project-name vanish
    ```
 5. **Build and deploy Pages**
    ```bash
@@ -162,6 +171,11 @@ What the suites cover:
 
 - Messages, usernames, captions, filenames, and media are encrypted in your browser before
   upload. The server cannot read them.
+- Plaintext is size-padded before encryption, so ciphertext and stored object sizes reveal
+  little about message or file length.
+- Static front-end assets are protected with **Subresource Integrity** (SHA-384 hashes injected
+  at build time), so your browser refuses to run any script or stylesheet whose bytes have been
+  altered in transit or at the edge.
 - Vanish is **anonymous**: no account, email, phone, or profile is ever collected.
 - Keys live only in the invite link and your browser. **If you lose the link, the room is
   unrecoverable** — there is no reset, by design.
