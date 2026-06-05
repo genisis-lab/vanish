@@ -1,0 +1,95 @@
+/* ============================================================
+   Enhancements layer \u2014 loaded last so it can override earlier
+   rules. Adjustable text size, in-chat save prompt, clickable
+   brand-home, media screenshot deterrent, light-mode contrast.
+   ============================================================ */
+
+/* ---- Clickable brand -> home ---- */
+.topbar .room-id .t.brand-home {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 680;
+  padding: 2px 6px 2px 0;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: color 0.15s var(--ease);
+}
+.topbar .room-id .t.brand-home:hover,
+.topbar .room-id .t.brand-home:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+
+/* ---- In-chat save-room prompt ---- */
+.save-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.save-banner > svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.save-banner > span {
+  flex: 1;
+  min-width: 0;
+}
+.save-banner-actions {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.save-banner-actions .btn {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+@media (max-width: 460px) {
+  .save-banner {
+    flex-wrap: wrap;
+  }
+  .save-banner > span {
+    flex: 1 1 100%;
+  }
+}
+
+/* ---- Adjustable text size (independent of compact density) ---- */
+.chat.fs-sm .bubble {
+  font-size: 13px;
+}
+.chat.fs-md .bubble {
+  font-size: 14.5px;
+}
+.chat.fs-lg .bubble {
+  font-size: 16.5px;
+  line-height: 1.5;
+}
+.chat.fs-lg .bubble .quote span {
+  max-width: 280px;
+}
+
+/* ---- Media screenshot / long-press deterrent ---- */
+.media-tile img,
+.media-tile video,
+.viewer-stage img,
+.viewer-stage video {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* ---- Light-mode contrast pass ---- */
+[data-theme="light"] {
+  --text-dim: #5b4f42;
+  --text-faint: #7d6f60;
+  --line: #ddd1c0;
+}

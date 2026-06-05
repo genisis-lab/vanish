@@ -3,6 +3,7 @@ import {
   ArrowDown,
   Bell,
   BellOff,
+  BookmarkPlus,
   CheckSquare,
   DoorOpen,
   Eye,
@@ -17,6 +18,7 @@ import {
   ShieldCheck,
   Sun,
   Trash2,
+  Type,
   Users,
   X,
   Zap,
@@ -58,6 +60,7 @@ export function ChatRoom({
   const [privacy, setPrivacy] = useState(true)
   const [hidden, setHidden] = useState(false)
   const [unread, setUnread] = useState(0)
+  const [savePrompt, setSavePrompt] = useState(() => !vault.get(session.invite.roomId))
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
@@ -197,6 +200,24 @@ export function ChatRoom({
     setReplyTo({ id: m.id, username: m.username, preview })
   }
 
+  function saveRoom() {
+    if (vault.isLocked()) {
+      toast("Unlock your device vault first to save this room")
+      setSavePrompt(false)
+      return
+    }
+    vault.setRememberEnabled(true)
+    vault.save({
+      roomId: session.invite.roomId,
+      inviteKey: session.invite.inviteKey,
+      username: session.username,
+      participantId: session.participantId,
+      lastUsed: Date.now(),
+    })
+    setSavePrompt(false)
+    toast("Saved \u2014 you can rejoin this room after a refresh")
+  }
+
   async function pruneSelected() {
     await room.prune(Array.from(selected))
     cancelSelect()
@@ -243,7 +264,7 @@ export function ChatRoom({
   const veiled = privacy && hidden
 
   return (
-    <div className={`chat ${prefs.compact ? "compact" : ""}`}>
+    <div className={`chat ${prefs.compact ? "compact" : ""} fs-${prefs.fontScale}`}>
       <div className="topbar">
         {selecting ? (
           <div className="select-bar" style={GROW}>
@@ -256,10 +277,10 @@ export function ChatRoom({
         ) : (
           <>
             <div className="room-id">
-              <span className="t">
+              <button type="button" className="t brand-home" onClick={onLeave} title="Back to home">
                 <Flame size={16} color="var(--accent)" />
                 <span className="hide-sm">Vanish room</span>
-              </span>
+              </button>
               <span className="s">
                 <span className={`dot ${room.connState}`} />
                 {labelFor(room.connState)}
@@ -301,6 +322,11 @@ export function ChatRoom({
                 className="hide-sm"
               />
               <IconButton
+                icon={<Type size={18} />}
+                label={`Text size: ${prefs.fontScale.toUpperCase()}`}
+                onClick={prefs.cycleFontScale}
+              />
+              <IconButton
                 icon={prefs.theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
                 label="Toggle theme"
                 onClick={prefs.toggleTheme}
@@ -315,6 +341,21 @@ export function ChatRoom({
           </>
         )}
       </div>
+
+      {savePrompt && !selecting && (
+        <div className="save-banner">
+          <BookmarkPlus size={16} />
+          <span>Remember this room on this device so you can rejoin after a refresh?</span>
+          <div className="save-banner-actions">
+            <button className="btn btn-primary" onClick={saveRoom}>
+              Save
+            </button>
+            <button className="btn btn-ghost" onClick={() => setSavePrompt(false)}>
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className={`chat-body ${veiled ? "veiled" : ""}`}>
         <div className="messages" ref={scrollRef} onScroll={onScroll}>
