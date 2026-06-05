@@ -366,7 +366,7 @@ export function useRoom(session: RoomSession): RoomController {
   const toggleReaction = useCallback(
     async (messageId: string, emoji: string) => {
       const stored = storedById.current.get(messageId)
-      const rid = makeReactionId(session, emoji)
+      const rid = await makeReactionId(session, emoji)
       const already = stored?.reactions?.[rid]
       try {
         const envelope = already ? null : await encodeReaction(session, emoji)

@@ -5,6 +5,7 @@
 //   - verify the access proof (proof-of-possession of the invite secret)
 //   - coordinate realtime delivery over WebSockets
 //   - sweep expired messages via storage alarms and delete orphaned R2 objects
+//   - enforce basic abuse controls (rate limit, envelope size cap, room cap)
 //
 // All chat content is opaque to this object. It only ever sees ciphertext and
 // operational metadata (ids, timestamps, sizes, verifier hashes).
@@ -23,7 +24,13 @@ import type {
   UpdateInviteRequest,
   ValidateInviteRequest,
 } from "../../shared/types"
-import { inviteExpiryToMs } from "../../shared/constants"
+import {
+  inviteExpiryToMs,
+  MAX_ENVELOPE_CHARS,
+  MAX_MESSAGES_PER_ROOM,
+  MESSAGE_RATE_LIMIT,
+  MESSAGE_RATE_WINDOW_MS,
+} from "../../shared/constants"
 
 export interface RoomEnv {
   MEDIA: R2Bucket
@@ -44,6 +51,8 @@ export class RoomDurableObject {
   // Short-lived signalling frames (typing/seen) buffered so clients on the
   // polling fallback can receive them via the list response. In-memory only.
   private recentSignals: Array<{ at: number; frame: RealtimeFrame }> = []
+  // Per-participant send timestamps for rate limiting. In-memory only.
+  private rate = new Map<string, number[]>()
   private loaded = false
 
   constructor(state: DurableObjectState, env: RoomEnv) {
@@ -121,6 +130,18 @@ export class RoomDurableObject {
     return this.core.verifyHash(hash)
   }
 
+  // Sliding-window per-participant rate limiter. Best-effort; in-memory only.
+  private allowRate(id: string, now: number): boolean {
+    const arr = (this.rate.get(id) ?? []).filter((t) => now - t < MESSAGE_RATE_WINDOW_MS)
+    if (arr.length >= MESSAGE_RATE_LIMIT) {
+      this.rate.set(id, arr)
+      return false
+    }
+    arr.push(now)
+    this.rate.set(id, arr)
+    return true
+  }
+
   // ---------- operations ----------
 
   private async opCreate(req: CreateRoomRequest): Promise<Response> {
@@ -175,6 +196,13 @@ export class RoomDurableObject {
       // Expired invites block new joins/sends but existing data is preserved.
       return json({ error: "expired" }, 410)
     }
+    // Abuse controls: cap envelope size and rate-limit per participant.
+    if ((req.message.envelope?.length ?? 0) > MAX_ENVELOPE_CHARS) {
+      return json({ error: "message too large" }, 413)
+    }
+    if (!this.allowRate(req.message.participantId, now)) {
+      return json({ error: "rate limited" }, 429)
+    }
     const message = this.core.addMessage(
       {
         id: req.message.id,
@@ -188,6 +216,14 @@ export class RoomDurableObject {
       },
       now,
     )
+    // Rolling per-room cap: prune the oldest messages beyond the ceiling.
+    const all = this.core.list(now)
+    if (all.length > MAX_MESSAGES_PER_ROOM) {
+      const overflow = all.slice(0, all.length - MAX_MESSAGES_PER_ROOM).map((m) => m.id)
+      const pr = this.core.prune(overflow)
+      if (pr.orphanObjectKeys.length) await this.deleteObjects(pr.orphanObjectKeys)
+      if (pr.removedIds.length) this.broadcast({ t: "prune", messageIds: pr.removedIds })
+    }
     await this.persist()
     await this.scheduleSweep()
     this.broadcast({ t: "message", message })

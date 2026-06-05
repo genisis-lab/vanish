@@ -209,7 +209,7 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
                   id="jk"
                   className="textarea"
                   rows={3}
-                  placeholder="anonchat:v1:…  or  https://…/?invite=…"
+                  placeholder="anonchat:v1:…  or  https://…/#invite=…"
                   value={joinKey}
                   onChange={(e) => setJoinKey(e.target.value)}
                 />
@@ -286,8 +286,60 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
               </li>
             </ul>
           </div>
+
+          <LockCard />
         </div>
       </div>
+    </div>
+  )
+}
+
+// Optional device passphrase. When enabled, remembered rooms are encrypted at
+// rest with a PBKDF2-derived key so device access alone can't reveal them.
+function LockCard() {
+  const toast = useToast()
+  const [enabled, setEnabled] = useState(vault.hasPassphrase())
+
+  async function enable() {
+    const p1 = window.prompt("Set a passphrase to encrypt your saved rooms on this device:")
+    if (!p1) return
+    if (p1.length < 6) {
+      toast("Use at least 6 characters.")
+      return
+    }
+    const p2 = window.prompt("Confirm passphrase:")
+    if (p2 !== p1) {
+      toast("Passphrases did not match.")
+      return
+    }
+    await vault.setPassphrase(p1)
+    setEnabled(true)
+    toast("Saved rooms are now encrypted on this device.")
+  }
+
+  async function disable() {
+    const p = window.prompt("Enter your passphrase to remove device encryption:")
+    if (!p) return
+    const okRemoved = await vault.removePassphrase(p)
+    if (okRemoved) {
+      setEnabled(false)
+      toast("Device passphrase removed.")
+    } else {
+      toast("Incorrect passphrase.")
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Device lock</h2>
+      <p className="sub">
+        {enabled
+          ? "Saved rooms on this device are encrypted with your passphrase."
+          : "Encrypt saved rooms on this device behind a passphrase."}
+      </p>
+      <button className="btn btn-block" onClick={() => void (enabled ? disable() : enable())}>
+        <Lock size={16} /> {enabled ? "Remove passphrase" : "Protect with passphrase"}
+      </button>
     </div>
   )
 }
