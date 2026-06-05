@@ -11,8 +11,10 @@ import {
   encryptBytes,
   encryptString,
   hashAccessProof,
+  opaqueReactionId,
 } from "../../shared/crypto"
 import { createInvite, parseInviteKey, buildInviteUrl, parseInviteFromUrl } from "../../shared/invite"
+import { padText, packAndPadMedia, unpackMedia, mediaBucket } from "../../shared/padding"
 import { RoomCore } from "../../shared/roomCore"
 
 let passed = 0
@@ -77,6 +79,32 @@ async function main() {
   const url = buildInviteUrl("https://example.com", invite.inviteKey)
   const fromUrl = parseInviteFromUrl(url)
   ok("invite url roundtrips", !!fromUrl && fromUrl.inviteKey === invite.inviteKey)
+  ok("invite secret lives in fragment, not query", url.includes("#invite=") && !url.includes("?invite="))
+  const legacy = "https://example.com/?invite=" + encodeURIComponent(invite.inviteKey)
+  const fromLegacy = parseInviteFromUrl(legacy)
+  ok("legacy ?invite= still parses", !!fromLegacy && fromLegacy.inviteKey === invite.inviteKey)
+  ok("url with no invite returns null", parseInviteFromUrl("https://example.com/") === null)
+
+  console.log("padding")
+  const j = JSON.stringify({ username: "anon", text: "hi" })
+  const padded = padText(j)
+  ok("padText rounds to 256", padded.length % 256 === 0)
+  ok("padded json still parses", (JSON.parse(padded) as { text: string }).text === "hi")
+  const blob = new Uint8Array([1, 2, 3, 4, 5])
+  const pk = packAndPadMedia(blob)
+  ok("media padded to bucket", pk.byteLength === mediaBucket(blob.byteLength + 4))
+  const un = unpackMedia(pk)
+  ok("media unpack roundtrips", un.byteLength === 5 && un[0] === 1 && un[4] === 5)
+
+  console.log("reactions")
+  const rid = await opaqueReactionId("room", "p1", "\u{1F525}", "12345")
+  const rid2 = await opaqueReactionId("room", "p1", "\u{1F525}", "12345")
+  ok("reaction id deterministic", rid === rid2)
+  ok("reaction id hides emoji", !rid.includes("\u{1F525}") && /^[A-Za-z0-9_-]+$/.test(rid))
+  const ridB = await opaqueReactionId("room", "p1", "\u2764\uFE0F", "12345")
+  ok("different emoji -> different id", rid !== ridB)
+  const ridSalt = await opaqueReactionId("room", "p1", "\u{1F525}", "99999")
+  ok("salt changes id", rid !== ridSalt)
 
   console.log("roomCore")
   const now = Date.now()
