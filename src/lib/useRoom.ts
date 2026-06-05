@@ -15,6 +15,7 @@ import {
   reactionId as makeReactionId,
   encodeReaction,
   type DecryptedMessage,
+  type ReplyRef,
 } from "./messages"
 import { encryptAndUpload, type MediaManifestItem, type UploadStatus } from "./media"
 import { vault } from "./vault"
@@ -32,6 +33,13 @@ export interface UploadState {
   progress: number
 }
 
+/** Per-message send options: disappearing timer, read-once, and reply ref. */
+export interface SendOpts {
+  ttlMs?: number
+  burn?: boolean
+  replyTo?: ReplyRef
+}
+
 export interface RoomController {
   messages: DecryptedMessage[]
   connState: ConnState
@@ -42,8 +50,8 @@ export interface RoomController {
   uploads: UploadState[]
   error: string | null
   deleted: boolean
-  sendText: (text: string) => Promise<void>
-  sendMedia: (files: File[], caption: string) => Promise<void>
+  sendText: (text: string, opts?: SendOpts) => Promise<void>
+  sendMedia: (files: File[], caption: string, opts?: SendOpts) => Promise<void>
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
   pruneAll: () => Promise<void>
@@ -171,6 +179,7 @@ export function useRoom(session: RoomSession): RoomController {
         const res = await api.listMessages({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          markReadFor: session.participantId,
         })
         if (cancelled) return
         for (const m of res.messages) storedById.current.set(m.id, m)
@@ -254,19 +263,22 @@ export function useRoom(session: RoomSession): RoomController {
   }, [session])
 
   const sendText = useCallback(
-    async (text: string) => {
+    async (text: string, opts?: SendOpts) => {
       const trimmed = text.trim()
       if (!trimmed) return
       const id = randomId()
+      const now = Date.now()
       const optimistic: DecryptedMessage = {
         id,
         participantId: session.participantId,
         kind: "text",
-        createdAt: Date.now(),
-        expiresAt: null,
+        createdAt: now,
+        expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
         mine: true,
         username: session.username,
         text: trimmed,
+        replyTo: opts?.replyTo,
+        burn: opts?.burn,
         reactions: [],
         pending: true,
       }
@@ -274,11 +286,18 @@ export function useRoom(session: RoomSession): RoomController {
       pendingById.current.set(id, optimistic)
       void recompute()
       try {
-        const envelope = await encodeText(session, trimmed)
+        const envelope = await encodeText(session, trimmed, opts?.replyTo)
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
-          message: { id, participantId: session.participantId, envelope, kind: "text" },
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "text",
+            ttlMs: opts?.ttlMs,
+            burn: opts?.burn,
+          },
         })
         ingest(res.message)
       } catch (e) {
@@ -292,7 +311,7 @@ export function useRoom(session: RoomSession): RoomController {
   )
 
   const sendMedia = useCallback(
-    async (files: File[], caption: string) => {
+    async (files: File[], caption: string, opts?: SendOpts) => {
       if (files.length === 0) return
       const items: MediaManifestItem[] = []
       const refs = []
@@ -322,11 +341,19 @@ export function useRoom(session: RoomSession): RoomController {
       }
       try {
         const id = randomId()
-        const envelope = await encodeMedia(session, caption.trim(), items)
+        const envelope = await encodeMedia(session, caption.trim(), items, opts?.replyTo)
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
-          message: { id, participantId: session.participantId, envelope, kind: "media", media: refs },
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "media",
+            media: refs,
+            ttlMs: opts?.ttlMs,
+            burn: opts?.burn,
+          },
         })
         ingest(res.message)
       } catch (e) {
