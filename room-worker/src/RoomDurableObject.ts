@@ -41,6 +41,9 @@ export class RoomDurableObject {
   private env: RoomEnv
   private core: RoomCore
   private sessions = new Set<Session>()
+  // Short-lived signalling frames (typing/seen) buffered so clients on the
+  // polling fallback can receive them via the list response. In-memory only.
+  private recentSignals: Array<{ at: number; frame: RealtimeFrame }> = []
   private loaded = false
 
   constructor(state: DurableObjectState, env: RoomEnv) {
@@ -208,7 +211,9 @@ export class RoomDurableObject {
         this.broadcast({ t: "prune", messageIds: burnedIds })
       }
     }
-    return json({ messages, room: this.core.publicState(now), serverTime: now })
+    const signalsSince = typeof req.signalsSince === "number" ? req.signalsSince : now
+    const signals = this.recentSignals.filter((s) => s.at > signalsSince).map((s) => s.frame)
+    return json({ messages, room: this.core.publicState(now), serverTime: now, signals })
   }
 
   private async opPrune(req: PruneRequest): Promise<Response> {
@@ -242,7 +247,9 @@ export class RoomDurableObject {
 
   private async opBroadcast(req: BroadcastRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
-    this.broadcast({ t: "signal", event: req.event })
+    const frame: RealtimeFrame = { t: "signal", event: req.event }
+    this.broadcast(frame)
+    this.recordSignal(frame)
     return json({ ok: true })
   }
 
@@ -317,7 +324,17 @@ export class RoomDurableObject {
     this.core.touchParticipant(session.participantId, now)
     if (frame.t === "signal" || frame.t === "seen") {
       this.broadcast(frame, session)
+      this.recordSignal(frame)
     }
+  }
+
+  // Buffer a signalling frame for polling clients; ephemeral, capped, and
+  // pruned to the last 15s so stale typing never replays.
+  private recordSignal(frame: RealtimeFrame): void {
+    const at = Date.now()
+    this.recentSignals.push({ at, frame })
+    const cutoff = at - 15000
+    this.recentSignals = this.recentSignals.filter((s) => s.at > cutoff).slice(-100)
   }
 
   private send(session: Session, frame: RealtimeFrame): void {
