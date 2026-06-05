@@ -15,8 +15,15 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
 // layout shrinks when the mobile keyboard opens, instead of the composer
 // being pushed below the keyboard (which forced users to scroll up).
 function syncViewportHeight() {
-  const h = window.visualViewport?.height ?? window.innerHeight
-  document.documentElement.style.setProperty("--app-height", h + "px")
+  const vv = window.visualViewport
+  const h = vv?.height ?? window.innerHeight
+  // offsetTop is how far the keyboard has pushed the *visible* window down from
+  // the document top. We shift the app by it so the composer stays pinned to
+  // the visible area instead of leaving a gap below it.
+  const top = vv?.offsetTop ?? 0
+  const root = document.documentElement.style
+  root.setProperty("--app-height", h + "px")
+  root.setProperty("--app-top", top + "px")
 }
 syncViewportHeight()
 window.visualViewport?.addEventListener("resize", syncViewportHeight)

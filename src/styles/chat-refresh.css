@@ -157,11 +157,20 @@
    ============================================================ */
 :root {
   --app-height: 100dvh;
+  --app-top: 0px;
 }
 body:has(.chat) {
   overflow: hidden;
 }
+/* Pin the chat to the *visible* viewport. height comes from visualViewport so
+   the keyboard shrinks the layout; top follows visualViewport.offsetTop so the
+   composer never floats above an empty gap when iOS scrolls the visual
+   viewport to reveal the focused field. */
 .app:has(> .chat) {
+  position: fixed;
+  top: var(--app-top);
+  left: 0;
+  right: 0;
   height: var(--app-height);
   min-height: 0;
   overflow: hidden;
