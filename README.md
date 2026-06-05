@@ -166,8 +166,9 @@ What the suites cover:
 - Keys live only in the invite link and your browser. **If you lose the link, the room is
   unrecoverable** — there is no reset, by design.
 - Anyone holding the invite key can join and decrypt, so share it only with people you trust.
-- Messages auto-delete on a per-room schedule (default 60 minutes), with optional
-  burn-after-read; you can also manually prune or delete the entire room.
+- Messages auto-delete on a per-room schedule (default 24 hours), with optional
+  burn-after-read; the whole room can also be set to self-destruct, and you can manually prune
+  or delete the entire room at any time.
 - Cloudflare may process transport metadata (IP addresses, timestamps, room IDs, object sizes)
   to operate the service.
 - Vanish uses strong, modern, secure-by-default cryptography, but it is **not** intended for
