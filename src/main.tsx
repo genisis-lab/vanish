@@ -11,6 +11,19 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
   })
 }
 
+// Keep a CSS var in sync with the *visible* viewport height so the chat
+// layout shrinks when the mobile keyboard opens, instead of the composer
+// being pushed below the keyboard (which forced users to scroll up).
+function syncViewportHeight() {
+  const h = window.visualViewport?.height ?? window.innerHeight
+  document.documentElement.style.setProperty("--app-height", h + "px")
+}
+syncViewportHeight()
+window.visualViewport?.addEventListener("resize", syncViewportHeight)
+window.visualViewport?.addEventListener("scroll", syncViewportHeight)
+window.addEventListener("resize", syncViewportHeight)
+window.addEventListener("orientationchange", syncViewportHeight)
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

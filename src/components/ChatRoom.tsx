@@ -54,6 +54,22 @@ export function ChatRoom({
 
   useEffect(() => () => revokeAllObjectUrls(), [])
 
+  // When the visible viewport shrinks (mobile keyboard opening), keep the
+  // latest messages in view if the user was already at the bottom.
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    const onResize = () => {
+      if (nearBottom.current) {
+        requestAnimationFrame(() =>
+          scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }),
+        )
+      }
+    }
+    vv.addEventListener("resize", onResize)
+    return () => vv.removeEventListener("resize", onResize)
+  }, [])
+
   useEffect(() => {
     if (room.error) toast(room.error)
   }, [room.error, toast])
