@@ -15,7 +15,10 @@ class_name = "RoomDurableObject"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RoomDurableObject"]
+# SQLite-backed Durable Objects are required on the Cloudflare free plan (and
+# are the recommended default). The storage KV + alarms API used by
+# RoomDurableObject works unchanged on SQLite-backed namespaces.
+new_sqlite_classes = ["RoomDurableObject"]
 
 # Encrypted media blobs. Only ciphertext is ever written here.
 [[r2_buckets]]
