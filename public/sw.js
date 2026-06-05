@@ -1,11 +1,18 @@
-// Minimal offline app-shell service worker. It only caches static build assets
-// (never API responses, never decrypted content). Room data is fetched live and
-// kept in memory; nothing sensitive is persisted by the worker.
+// Vanish service worker — offline app shell only.
+//
+// SECURITY: never caches API responses, media, or anything containing secrets.
+// Only static, non-sensitive build assets and the navigation shell are cached.
 const CACHE = "vanish-shell-v1"
-const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon.svg"]
+const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()))
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((c) => c.addAll(SHELL))
+      .then(() => self.skipWaiting())
+      .catch(() => {}),
+  )
 })
 
 self.addEventListener("activate", (event) => {
@@ -19,33 +26,33 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const req = event.request
+  if (req.method !== "GET") return
   const url = new URL(req.url)
+  if (url.origin !== self.location.origin) return
+  // Never touch API or upload traffic.
+  if (url.pathname.startsWith("/api/")) return
 
-  // Never cache the API or websocket traffic.
-  if (req.method !== "GET" || url.pathname.startsWith("/api/")) return
-
-  // Network-first for navigations so users always get the latest shell.
+  // Navigations: network-first, fall back to the cached shell when offline.
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req)
-        .then((res) => {
-          const copy = res.clone()
-          caches.open(CACHE).then((c) => c.put("/index.html", copy))
-          return res
-        })
-        .catch(() => caches.match("/index.html").then((r) => r || Response.error())),
+      fetch(req).catch(() => caches.match("/").then((r) => r || caches.match("/index.html"))),
     )
     return
   }
 
-  // Cache-first for hashed static assets.
-  if (url.pathname.startsWith("/assets/") || SHELL.includes(url.pathname)) {
+  // Static assets: stale-while-revalidate.
+  if (/\.(?:js|css|svg|png|ico|woff2?|webmanifest)$/.test(url.pathname)) {
     event.respondWith(
-      caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-        const copy = res.clone()
-        caches.open(CACHE).then((c) => c.put(req, copy))
-        return res
-      })),
+      caches.open(CACHE).then(async (cache) => {
+        const cached = await cache.match(req)
+        const network = fetch(req)
+          .then((res) => {
+            if (res && res.ok) cache.put(req, res.clone())
+            return res
+          })
+          .catch(() => cached)
+        return cached || network
+      }),
     )
   }
 })

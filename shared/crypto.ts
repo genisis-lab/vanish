@@ -174,6 +174,21 @@ export function formatSafetyNumber(bits: Uint8Array): string {
   return (digits.match(/.{1,5}/g) || []).join(" ")
 }
 
+// ---------- opaque reaction ids ----------
+//
+// The reaction *envelope* is encrypted, but its storage id must be stable per
+// (participant, emoji) so toggling overwrites. To avoid leaking the emoji to the
+// server via the id, we hash it together with a secret-derived salt (the safety
+// number, which never leaves the client). The server only ever stores the hash.
+export async function opaqueReactionId(
+  roomId: string,
+  participantId: string,
+  emoji: string,
+  salt: string,
+): Promise<string> {
+  return sha256Base64Url(utf8(`${roomId}:${participantId}:${emoji}:${salt}`))
+}
+
 // ---------- AES-GCM envelopes ----------
 //
 // Envelope binary layout: [version(1)] [iv(12)] [ciphertext(...)] -> base64url.
