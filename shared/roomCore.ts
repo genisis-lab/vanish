@@ -2,7 +2,7 @@
 // can be unit-tested directly and reused by the Durable Object as its source of
 // truth. The Durable Object is a thin persistence + realtime wrapper around it.
 
-import { clampTtl, DEFAULT_MESSAGE_TTL_MS } from "./constants"
+import { clampRoomLifetime, clampTtl, DEFAULT_MESSAGE_TTL_MS } from "./constants"
 import type {
   EncryptedMediaRef,
   MessageKind,
@@ -12,13 +12,15 @@ import type {
 
 export interface RoomRecord {
   roomId: string
-  /** SHA-256(accessProof) \u2014 the verifier. The raw proof is never stored. */
+  /** SHA-256(accessProof) — the verifier. The raw proof is never stored. */
   accessProofHash: string
   inviteExpiresAt: number | null
   defaultTtlMs: number
   burnAfterRead: boolean
   createdAt: number
   deletedAt: number | null
+  /** When set, the whole room self-destructs at this timestamp. */
+  destroyAt: number | null
 }
 
 export interface RoomSnapshot {
@@ -51,6 +53,8 @@ export class RoomCore {
 
   constructor(snapshot?: Partial<RoomSnapshot>) {
     this.room = snapshot?.room ?? null
+    // Backfill destroyAt for rooms persisted before auto-destruct existed.
+    if (this.room && this.room.destroyAt === undefined) this.room.destroyAt = null
     this.messages = new Map((snapshot?.messages ?? []).map((m) => [m.id, m]))
     this.participants = new Map(Object.entries(snapshot?.participants ?? {}))
   }
@@ -71,12 +75,14 @@ export class RoomCore {
     inviteExpiresAt: number | null
     ttlMs?: number
     burnAfterRead?: boolean
+    roomLifetimeMs?: number
     now: number
   }): RoomRecord {
     if (this.room && this.room.deletedAt === null) {
       // Idempotent create: a room with this id already exists. Keep it.
       return this.room
     }
+    const lifetime = clampRoomLifetime(input.roomLifetimeMs)
     this.room = {
       roomId: input.roomId,
       accessProofHash: input.accessProofHash,
@@ -85,6 +91,7 @@ export class RoomCore {
       burnAfterRead: input.burnAfterRead ?? false,
       createdAt: input.now,
       deletedAt: null,
+      destroyAt: lifetime > 0 ? input.now + lifetime : null,
     }
     this.messages.clear()
     this.participants.clear()
@@ -99,6 +106,16 @@ export class RoomCore {
 
   isInviteExpired(now: number): boolean {
     return !!this.room?.inviteExpiresAt && this.room.inviteExpiresAt <= now
+  }
+
+  /** True once a room with a lifetime has passed its self-destruct time. */
+  isRoomDestroyed(now: number): boolean {
+    return (
+      !!this.room &&
+      this.room.deletedAt === null &&
+      this.room.destroyAt !== null &&
+      this.room.destroyAt <= now
+    )
   }
 
   /** Existence/validity check for the invite-validation endpoint. */
@@ -117,11 +134,13 @@ export class RoomCore {
     inviteExpiresAt?: number | null
     ttlMs?: number
     burnAfterRead?: boolean
+    destroyAt?: number | null
   }): RoomRecord | null {
     if (!this.room || this.room.deletedAt !== null) return null
     if (input.inviteExpiresAt !== undefined) this.room.inviteExpiresAt = input.inviteExpiresAt
     if (input.ttlMs !== undefined) this.room.defaultTtlMs = clampTtl(input.ttlMs, this.room.defaultTtlMs)
     if (input.burnAfterRead !== undefined) this.room.burnAfterRead = input.burnAfterRead
+    if (input.destroyAt !== undefined) this.room.destroyAt = input.destroyAt
     return this.room
   }
 
@@ -241,11 +260,14 @@ export class RoomCore {
     return { removedIds, orphanObjectKeys }
   }
 
-  /** Next timestamp the room should wake up to sweep, or null if nothing pending. */
+  /** Next timestamp the room should wake up to act, or null if nothing pending. */
   nextExpiry(): number | null {
     let next: number | null = null
     for (const m of this.messages.values()) {
       if (m.expiresAt !== null && (next === null || m.expiresAt < next)) next = m.expiresAt
+    }
+    if (this.room && this.room.deletedAt === null && this.room.destroyAt !== null) {
+      if (next === null || this.room.destroyAt < next) next = this.room.destroyAt
     }
     return next
   }
@@ -278,6 +300,7 @@ export class RoomCore {
       defaultTtlMs: this.room.defaultTtlMs,
       burnAfterRead: this.room.burnAfterRead,
       participantCount: this.participantCount(now),
+      destroyAt: this.room.destroyAt,
     }
   }
 }

@@ -40,6 +40,8 @@ export interface PublicRoomState {
   defaultTtlMs: number
   burnAfterRead: boolean
   participantCount: number
+  /** When set, the entire room self-destructs at this timestamp. */
+  destroyAt: number | null
 }
 
 // ---------- request/response payloads ----------
@@ -50,6 +52,8 @@ export interface CreateRoomRequest {
   inviteExpiry: InviteExpiryOption
   ttlMs?: number
   burnAfterRead?: boolean
+  /** Whole-room auto-destruct lifetime in ms from creation. 0/undefined = off. */
+  roomLifetimeMs?: number
 }
 
 export interface SessionRequest {
@@ -74,6 +78,8 @@ export interface UpdateInviteRequest {
   inviteExpiry?: InviteExpiryOption
   ttlMs?: number
   burnAfterRead?: boolean
+  /** Reset the room auto-destruct lifetime (ms from now). 0 disables it. */
+  roomLifetimeMs?: number
 }
 
 export interface PostMessageRequest {

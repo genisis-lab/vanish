@@ -12,6 +12,8 @@ export interface CreateRoomOptions {
   inviteExpiry: InviteExpiryOption
   ttlMs: number
   burnAfterRead: boolean
+  /** Whole-room auto-destruct lifetime in ms from creation. 0/undefined = off. */
+  roomLifetimeMs?: number
 }
 
 export async function createRoom(opts: CreateRoomOptions): Promise<RoomSession> {
@@ -25,6 +27,7 @@ export async function createRoom(opts: CreateRoomOptions): Promise<RoomSession> 
     inviteExpiry: opts.inviteExpiry,
     ttlMs: opts.ttlMs,
     burnAfterRead: opts.burnAfterRead,
+    roomLifetimeMs: opts.roomLifetimeMs,
   })
   void inviteExpiresAt
   return session

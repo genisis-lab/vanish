@@ -5,6 +5,7 @@
 //   - verify the access proof (proof-of-possession of the invite secret)
 //   - coordinate realtime delivery over WebSockets
 //   - sweep expired messages via storage alarms and delete orphaned R2 objects
+//   - self-destruct the whole room when its lifetime elapses
 //   - enforce basic abuse controls (rate limit, envelope size cap, room cap)
 //
 // All chat content is opaque to this object. It only ever sees ciphertext and
@@ -25,6 +26,7 @@ import type {
   ValidateInviteRequest,
 } from "../../shared/types"
 import {
+  clampRoomLifetime,
   inviteExpiryToMs,
   MAX_ENVELOPE_CHARS,
   MAX_MESSAGES_PER_ROOM,
@@ -78,6 +80,14 @@ export class RoomDurableObject {
 
   async fetch(request: Request): Promise<Response> {
     await this.ensureLoaded()
+    // Enforce room self-destruct before handling any op, so an expired room
+    // behaves as deleted even if the alarm has not fired yet.
+    if (await this.enforceLifetime(Date.now())) {
+      const url = new URL(request.url)
+      if (url.pathname.replace(/^\//, "") === "ws") {
+        return new Response("gone", { status: 410 })
+      }
+    }
     const url = new URL(request.url)
     const op = url.pathname.replace(/^\//, "")
 
@@ -153,9 +163,12 @@ export class RoomDurableObject {
       inviteExpiresAt: inviteExpiryToMs(req.inviteExpiry ?? "never", now),
       ttlMs: req.ttlMs,
       burnAfterRead: req.burnAfterRead,
+      roomLifetimeMs: req.roomLifetimeMs,
       now,
     })
     await this.persist()
+    // A room with a lifetime needs an alarm even if no message is ever sent.
+    await this.scheduleSweep()
     return json({ room: this.core.publicState(now) })
   }
 
@@ -178,14 +191,21 @@ export class RoomDurableObject {
   private async opUpdate(req: UpdateInviteRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     const now = Date.now()
+    let destroyAt: number | null | undefined
+    if (req.roomLifetimeMs !== undefined) {
+      const lifetime = clampRoomLifetime(req.roomLifetimeMs)
+      destroyAt = lifetime > 0 ? now + lifetime : null
+    }
     const room = this.core.updateRoom({
       inviteExpiresAt:
         req.inviteExpiry !== undefined ? inviteExpiryToMs(req.inviteExpiry, now) : undefined,
       ttlMs: req.ttlMs,
       burnAfterRead: req.burnAfterRead,
+      destroyAt,
     })
     if (!room) return json({ error: "not found" }, 404)
     await this.persist()
+    await this.scheduleSweep()
     return json({ room: this.core.publicState(now) })
   }
 
@@ -292,19 +312,7 @@ export class RoomDurableObject {
   private async opDelete(req: { accessProof: string }): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     const now = Date.now()
-    const keys = this.core.deleteRoom(now)
-    await this.persist()
-    await this.deleteAllRoomObjects()
-    if (keys.length) await this.deleteObjects(keys)
-    this.broadcast({ t: "room-deleted" })
-    for (const s of this.sessions) {
-      try {
-        s.ws.close(1000, "room deleted")
-      } catch {
-        /* ignore */
-      }
-    }
-    this.sessions.clear()
+    await this.destroyRoom(now)
     return json({ ok: true })
   }
 
@@ -407,6 +415,8 @@ export class RoomDurableObject {
   async alarm(): Promise<void> {
     await this.ensureLoaded()
     const now = Date.now()
+    // Whole-room self-destruct takes priority over per-message sweeps.
+    if (await this.enforceLifetime(now)) return
     const swept = this.core.sweep(now)
     if (swept.removedIds.length) {
       await this.persist()
@@ -414,6 +424,30 @@ export class RoomDurableObject {
       this.broadcast({ t: "prune", messageIds: swept.removedIds })
     }
     await this.scheduleSweep()
+  }
+
+  /** If the room has passed its self-destruct time, wipe it. Returns true if so. */
+  private async enforceLifetime(now: number): Promise<boolean> {
+    if (!this.core.isRoomDestroyed(now)) return false
+    await this.destroyRoom(now)
+    return true
+  }
+
+  /** Tear down the room: clear data, delete R2 objects, notify and drop clients. */
+  private async destroyRoom(now: number): Promise<void> {
+    const keys = this.core.deleteRoom(now)
+    await this.persist()
+    await this.deleteAllRoomObjects()
+    if (keys.length) await this.deleteObjects(keys)
+    this.broadcast({ t: "room-deleted" })
+    for (const s of this.sessions) {
+      try {
+        s.ws.close(1000, "room closed")
+      } catch {
+        /* ignore */
+      }
+    }
+    this.sessions.clear()
   }
 
   // ---------- R2 cleanup ----------
