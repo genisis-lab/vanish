@@ -14,6 +14,7 @@ import {
   Minimize2,
   Moon,
   MoreVertical,
+  Pencil,
   QrCode,
   Share2,
   ShieldCheck,
@@ -30,6 +31,7 @@ import { useRoom } from "../lib/useRoom"
 import type { DecryptedMessage, ReplyRef } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
 import { revokeAllObjectUrls } from "../lib/media"
+import { formatCountdown } from "../lib/format"
 import { vault } from "../lib/vault"
 import { IconButton, Sheet, useToast } from "./ui"
 import { MessageItem } from "./MessageItem"
@@ -177,6 +179,20 @@ export function ChatRoom({
     setShowJump(false)
   }
 
+  // Scroll to a quoted message and briefly highlight it (inline style only, so
+  // no global CSS is required).
+  function jumpToMessage(id: string) {
+    const el = scrollRef.current?.querySelector(`[data-mid="${id}"]`) as HTMLElement | null
+    if (!el) return
+    el.scrollIntoView({ behavior: "smooth", block: "center" })
+    const prev = el.style.backgroundColor
+    el.style.transition = "background-color .25s ease"
+    el.style.backgroundColor = "var(--accent-weak, rgba(124, 131, 253, 0.16))"
+    window.setTimeout(() => {
+      el.style.backgroundColor = prev
+    }, 1100)
+  }
+
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -267,6 +283,15 @@ export function ChatRoom({
     onLeave()
   }
 
+  function changeNickname() {
+    const name = window.prompt("Choose a new display name for this room:", session.username)
+    if (name && name.trim()) {
+      room.rename(name.trim())
+      setPanel(null)
+      toast("Nickname updated")
+    }
+  }
+
   const typingText = useMemo(() => {
     const names = room.typing.map((t) => t.username)
     if (names.length === 0) return ""
@@ -316,6 +341,7 @@ export function ChatRoom({
                 <span className={`dot ${room.connState}`} />
                 {labelFor(room.connState)}
                 <MemberDots count={room.participantCount} onClick={() => setPanel("members")} />
+                <RoomTimer destroyAt={room.room?.destroyAt ?? null} />
               </span>
             </div>
             <div className="topbar-actions">
@@ -417,6 +443,7 @@ export function ChatRoom({
                 onReply={startReply}
                 onOpenMedia={setViewer}
                 onRetry={room.retrySend}
+                onJumpTo={jumpToMessage}
               />
             )
           })}
@@ -490,6 +517,9 @@ export function ChatRoom({
       {panel === "actions" && (
         <Sheet title="Room actions" icon={<MoreVertical size={18} />} onClose={() => setPanel(null)}>
           <div className="stack">
+            <button className="btn btn-block" onClick={changeNickname}>
+              <Pencil size={16} /> Change your nickname
+            </button>
             <button className="btn btn-block" onClick={exportTranscript}>
               <Download size={16} /> Export transcript (this device)
             </button>
@@ -553,6 +583,24 @@ function MemberDots({ count, onClick }: { count: number; onClick?: () => void })
       </span>
       <Users size={11} /> {count}
     </button>
+  )
+}
+
+// Ticks once a second to show how long until the whole room self-destructs.
+function RoomTimer({ destroyAt }: { destroyAt: number | null }) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!destroyAt) return
+    const t = setInterval(() => setTick((n) => (n + 1) % 3600), 1000)
+    return () => clearInterval(t)
+  }, [destroyAt])
+  if (!destroyAt) return null
+  const left = formatCountdown(destroyAt)
+  if (!left) return null
+  return (
+    <span className="room-timer" title="This room self-destructs automatically">
+      <Flame size={11} /> {left}
+    </span>
   )
 }
 

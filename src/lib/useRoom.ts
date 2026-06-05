@@ -58,6 +58,7 @@ export interface RoomController {
   pruneAll: () => Promise<void>
   deleteRoom: () => Promise<void>
   notifyTyping: () => void
+  rename: (name: string) => void
 }
 
 export function useRoom(session: RoomSession): RoomController {
@@ -82,6 +83,9 @@ export function useRoom(session: RoomSession): RoomController {
   const pendingById = useRef(new Map<string, DecryptedMessage>())
   // Client-only system notices (join/leave). Never sent to or stored on server.
   const noticesRef = useRef<DecryptedMessage[]>([])
+  // Live display-name overrides keyed by participantId, applied on top of the
+  // names baked into past envelopes so a mid-session rename shows consistently.
+  const nameOverrides = useRef(new Map<string, string>())
   const prevCountRef = useRef<number | null>(null)
   const rt = useRef<Realtime | null>(null)
   const sinceRef = useRef(0)
@@ -111,7 +115,15 @@ export function useRoom(session: RoomSession): RoomController {
     const merged = [...decoded, ...pending, ...noticesRef.current].sort(
       (a, b) => a.createdAt - b.createdAt,
     )
-    setMessages(merged)
+    // Apply live nickname overrides without mutating cached decode results.
+    let final = merged
+    if (nameOverrides.current.size) {
+      final = merged.map((m) => {
+        const o = nameOverrides.current.get(m.participantId)
+        return o && m.kind !== "system" && m.username !== o ? { ...m, username: o } : m
+      })
+    }
+    setMessages(final)
     sinceRef.current = all.reduce((mx, m) => Math.max(mx, m.createdAt), sinceRef.current)
   }, [session])
 
@@ -226,6 +238,16 @@ export function useRoom(session: RoomSession): RoomController {
                 next.push({ participantId: ev.participantId, username, at: Date.now() })
                 return next
               })
+            })
+            .catch(() => {})
+        } else if (ev.type === "rename" && ev.envelope) {
+          void decryptString(session.channelKey, ev.envelope, aad(session, "channel"))
+            .then((raw) => {
+              const name = raw.trim().slice(0, 32) || "anon"
+              const prev = nameOverrides.current.get(ev.participantId)
+              nameOverrides.current.set(ev.participantId, name)
+              if (prev && prev !== name) pushNotice(`${prev} is now ${name}`)
+              void recompute()
             })
             .catch(() => {})
         }
@@ -479,6 +501,29 @@ export function useRoom(session: RoomSession): RoomController {
       .catch(() => {})
   }, [session])
 
+  // Change my display name mid-session. Future messages carry the new name; a
+  // live override updates my existing bubbles, and peers are notified so they
+  // update my name on their side too.
+  const rename = useCallback(
+    (rawName: string) => {
+      const name = rawName.trim().slice(0, 32) || "anon"
+      session.username = name
+      nameOverrides.current.set(session.participantId, name)
+      const saved = vault.get(session.invite.roomId)
+      if (saved) vault.save({ ...saved, username: name, lastUsed: Date.now() })
+      void recompute()
+      void encryptString(session.channelKey, name, aad(session, "channel"))
+        .then((envelope) => {
+          rt.current?.sendSignal({
+            t: "signal",
+            event: { type: "rename", participantId: session.participantId, envelope },
+          })
+        })
+        .catch(() => {})
+    },
+    [session, recompute],
+  )
+
   return useMemo(
     () => ({
       messages,
@@ -498,6 +543,7 @@ export function useRoom(session: RoomSession): RoomController {
       pruneAll,
       deleteRoom,
       notifyTyping,
+      rename,
     }),
     [
       messages,
@@ -517,6 +563,7 @@ export function useRoom(session: RoomSession): RoomController {
       pruneAll,
       deleteRoom,
       notifyTyping,
+      rename,
     ],
   )
 }

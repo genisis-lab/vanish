@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react"
+import { memo, useEffect, useRef, useState } from "react"
 import { Check, CheckCheck, Clock, Flame, Reply, RotateCw, SmilePlus } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
@@ -20,6 +20,7 @@ interface Props {
   onReply: (msg: DecryptedMessage) => void
   onOpenMedia: (item: MediaManifestItem) => void
   onRetry?: (id: string) => void
+  onJumpTo?: (id: string) => void
 }
 
 // Re-render once per second while a message carries a live disappearing-timer,
@@ -46,8 +47,11 @@ function MessageItemInner({
   onReply,
   onOpenMedia,
   onRetry,
+  onJumpTo,
 }: Props) {
   const [picker, setPicker] = useState(false)
+  const [dragX, setDragX] = useState(0)
+  const dragStartX = useRef<number | null>(null)
   useSecondTick(msg.kind !== "system" && msg.expiresAt != null)
 
   if (msg.kind === "system") {
@@ -60,6 +64,25 @@ function MessageItemInner({
 
   function click() {
     if (selecting) onToggleSelect(msg.id)
+  }
+
+  // Touch swipe-to-reply: drag a bubble toward its owner's side past a small
+  // threshold to start a reply. Disabled while multi-selecting.
+  function onTouchStart(e: React.TouchEvent) {
+    if (selecting) return
+    dragStartX.current = e.touches[0].clientX
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    if (dragStartX.current === null) return
+    const dx = e.touches[0].clientX - dragStartX.current
+    const dir = msg.mine ? Math.min(0, dx) : Math.max(0, dx)
+    setDragX(Math.max(-90, Math.min(90, dir)))
+  }
+  function onTouchEnd() {
+    if (dragStartX.current === null) return
+    dragStartX.current = null
+    if (Math.abs(dragX) > 55) onReply(msg)
+    setDragX(0)
   }
 
   const tools = !selecting && (
@@ -82,19 +105,39 @@ function MessageItemInner({
   )
 
   return (
-    <div className={`msg ${msg.mine ? "mine" : ""} ${selected ? "selected" : ""}`}>
+    <div
+      className={`msg ${msg.mine ? "mine" : ""} ${selected ? "selected" : ""}`}
+      data-mid={msg.id}
+    >
       {showWho && !msg.mine && (
         <div className="who" style={whoStyle}>
           {msg.username}
         </div>
       )}
 
-      <div style={ROW}>
+      <div
+        style={{
+          ...ROW,
+          transform: dragX ? `translateX(${dragX}px)` : undefined,
+          transition: dragStartX.current === null ? "transform .18s ease" : "none",
+        }}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
         {!msg.mine && tools}
 
         <div className="bubble" onClick={click} role={selecting ? "button" : undefined}>
           {msg.replyTo && (
-            <div className="quote">
+            <div
+              className="quote"
+              role="button"
+              style={onJumpTo ? QUOTE_CLICK : undefined}
+              onClick={(e) => {
+                e.stopPropagation()
+                if (msg.replyTo) onJumpTo?.(msg.replyTo.id)
+              }}
+            >
               <b>{msg.replyTo.username}</b>
               <span>{msg.replyTo.preview}</span>
             </div>
@@ -191,5 +234,6 @@ function SendState({
 }
 
 const ROW = { display: "flex", alignItems: "center", gap: "4px" }
+const QUOTE_CLICK = { cursor: "pointer" }
 
 export const MessageItem = memo(MessageItemInner)
