@@ -15,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react"
 import type { InviteExpiryOption } from "@shared/types"
-import { TTL_PRESETS, DEFAULT_MESSAGE_TTL_MS } from "@shared/constants"
+import { TTL_PRESETS, ROOM_LIFETIME_PRESETS, DEFAULT_MESSAGE_TTL_MS } from "@shared/constants"
 import type { Prefs } from "../lib/usePrefs"
 import type { RoomSession } from "../lib/session"
 import { createRoom } from "../lib/createRoom"
@@ -42,6 +42,7 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
   const [username, setUsername] = useState("")
   const [expiry, setExpiry] = useState<InviteExpiryOption>("never")
   const [ttlMs, setTtlMs] = useState<number>(DEFAULT_MESSAGE_TTL_MS)
+  const [roomLifetimeMs, setRoomLifetimeMs] = useState<number>(0)
   const [burn, setBurn] = useState(false)
   const [joinKey, setJoinKey] = useState("")
   const [busy, setBusy] = useState(false)
@@ -54,7 +55,13 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
     setBusy(true)
     try {
       vault.setRememberEnabled(remember)
-      const session = await createRoom({ username, inviteExpiry: expiry, ttlMs, burnAfterRead: burn })
+      const session = await createRoom({
+        username,
+        inviteExpiry: expiry,
+        ttlMs,
+        burnAfterRead: burn,
+        roomLifetimeMs,
+      })
       vault.save({
         roomId: session.invite.roomId,
         inviteKey: session.invite.inviteKey,
@@ -170,6 +177,24 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
                   onChange={(e) => setTtlMs(Number(e.target.value))}
                 >
                   {TTL_PRESETS.map((p) => (
+                    <option key={p.ms} value={p.ms}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="field">
+                <label className="label" htmlFor="rlife">
+                  Room self-destructs
+                </label>
+                <select
+                  id="rlife"
+                  className="input"
+                  value={roomLifetimeMs}
+                  onChange={(e) => setRoomLifetimeMs(Number(e.target.value))}
+                >
+                  {ROOM_LIFETIME_PRESETS.map((p) => (
                     <option key={p.ms} value={p.ms}>
                       {p.label}
                     </option>
