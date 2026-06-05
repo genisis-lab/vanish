@@ -1,7 +1,8 @@
 /* ============================================================
    Enhancements layer \u2014 loaded last so it can override earlier
    rules. Adjustable text size, in-chat save prompt, clickable
-   brand-home, media screenshot deterrent, light-mode contrast.
+   brand-home, media screenshot deterrent, light-mode contrast,
+   failed-send retry.
    ============================================================ */
 
 /* ---- Clickable brand -> home ---- */
@@ -85,6 +86,23 @@
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
   user-select: none;
+}
+
+/* ---- Failed-send retry ---- */
+.foot .retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.foot .retry-btn:hover {
+  text-decoration: underline;
 }
 
 /* ---- Light-mode contrast pass ---- */

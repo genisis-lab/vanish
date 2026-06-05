@@ -1,5 +1,5 @@
-import { memo, useState } from "react"
-import { Check, CheckCheck, Clock, Flame, Reply, SmilePlus } from "lucide-react"
+import { memo, useEffect, useState } from "react"
+import { Check, CheckCheck, Clock, Flame, Reply, RotateCw, SmilePlus } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
@@ -19,6 +19,19 @@ interface Props {
   onReact: (id: string, emoji: string) => void
   onReply: (msg: DecryptedMessage) => void
   onOpenMedia: (item: MediaManifestItem) => void
+  onRetry?: (id: string) => void
+}
+
+// Re-render once per second while a message carries a live disappearing-timer,
+// so the countdown in the footer ticks down visibly instead of only updating
+// when the surrounding list happens to re-render.
+function useSecondTick(active: boolean) {
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!active) return
+    const t = setInterval(() => setTick((n) => (n + 1) % 3600), 1000)
+    return () => clearInterval(t)
+  }, [active])
 }
 
 function MessageItemInner({
@@ -32,8 +45,10 @@ function MessageItemInner({
   onReact,
   onReply,
   onOpenMedia,
+  onRetry,
 }: Props) {
   const [picker, setPicker] = useState(false)
+  useSecondTick(msg.kind !== "system" && msg.expiresAt != null)
 
   if (msg.kind === "system") {
     return <div className="sys-line">{msg.text}</div>
@@ -141,6 +156,11 @@ function MessageItemInner({
           </span>
         )}
         {msg.mine && <SendState failed={msg.failed} pending={msg.pending} seen={seen} />}
+        {msg.mine && msg.failed && onRetry && (
+          <button className="retry-btn" onClick={() => onRetry(msg.id)} aria-label="Retry sending">
+            <RotateCw size={11} /> Retry
+          </button>
+        )}
       </div>
     </div>
   )
@@ -156,7 +176,7 @@ function SendState({
   seen: boolean
 }) {
   if (failed) return <span className="state-failed">Failed</span>
-  if (pending) return <span className="state-pending">Sending…</span>
+  if (pending) return <span className="state-pending">Sending\u2026</span>
   if (seen)
     return (
       <span className="state-seen" title="Seen">

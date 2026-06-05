@@ -6,6 +6,7 @@ import {
   BookmarkPlus,
   CheckSquare,
   DoorOpen,
+  Download,
   Eye,
   EyeOff,
   Flame,
@@ -218,6 +219,36 @@ export function ChatRoom({
     toast("Saved \u2014 you can rejoin this room after a refresh")
   }
 
+  function exportTranscript() {
+    const lines = room.messages
+      .filter((m) => m.kind !== "system")
+      .map((m) => {
+        const when = new Date(m.createdAt).toISOString()
+        const who = m.mine ? `${m.username || "anon"} (you)` : m.username || "anon"
+        const body =
+          m.text && !m.text.startsWith("\u26a0")
+            ? m.text
+            : m.items && m.items.length > 0
+              ? `[${m.items.length} attachment(s)]`
+              : ""
+        return `[${when}] ${who}: ${body}`
+      })
+    const header =
+      `Vanish transcript\nRoom: ${session.invite.roomId}\nExported: ${new Date().toISOString()}\n` +
+      `${"=".repeat(48)}\n\n`
+    const blob = new Blob([header + lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `vanish-${session.invite.roomId.slice(0, 8)}.txt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 2000)
+    setPanel(null)
+    toast("Transcript exported to this device")
+  }
+
   async function pruneSelected() {
     await room.prune(Array.from(selected))
     cancelSelect()
@@ -385,6 +416,7 @@ export function ChatRoom({
                 onReact={room.toggleReaction}
                 onReply={startReply}
                 onOpenMedia={setViewer}
+                onRetry={room.retrySend}
               />
             )
           })}
@@ -458,6 +490,9 @@ export function ChatRoom({
       {panel === "actions" && (
         <Sheet title="Room actions" icon={<MoreVertical size={18} />} onClose={() => setPanel(null)}>
           <div className="stack">
+            <button className="btn btn-block" onClick={exportTranscript}>
+              <Download size={16} /> Export transcript (this device)
+            </button>
             <button
               className="btn btn-block"
               onClick={() => {
