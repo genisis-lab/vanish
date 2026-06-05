@@ -63,16 +63,85 @@ export function useRoom(session: RoomSession): RoomController {
   const [deleted, setDeleted] = useState(false)
 
   const storedById = useRef(new Map<string, StoredMessage>())
+  // Cache of already-decrypted messages keyed by id. Avoids re-running AES-GCM
+  // over the entire history on every send/receive (the old hot path that made
+  // sending feel slow as the room grew). A cache entry is reused only while the
+  // underlying stored object is unchanged (reactions create a new object).
+  const decodeCache = useRef(new Map<string, { src: StoredMessage; out: DecryptedMessage }>())
+  // Optimistic, not-yet-acknowledged outgoing messages. Removed once the server
+  // echoes the same id back into storedById.
+  const pendingById = useRef(new Map<string, DecryptedMessage>())
+  // Client-only system notices (join/leave). Never sent to or stored on server.
+  const noticesRef = useRef<DecryptedMessage[]>([])
+  const prevCountRef = useRef<number | null>(null)
   const rt = useRef<Realtime | null>(null)
   const sinceRef = useRef(0)
   const lastTypingSent = useRef(0)
 
   const recompute = useCallback(async () => {
     const all = Array.from(storedById.current.values()).sort((a, b) => a.createdAt - b.createdAt)
-    const decoded = await Promise.all(all.map((m) => decodeMessage(session, m)))
-    setMessages(decoded)
+    const liveIds = new Set<string>()
+    const decoded = await Promise.all(
+      all.map(async (m) => {
+        liveIds.add(m.id)
+        const cached = decodeCache.current.get(m.id)
+        if (cached && cached.src === m) return cached.out
+        const out = await decodeMessage(session, m)
+        decodeCache.current.set(m.id, { src: m, out })
+        return out
+      }),
+    )
+    // Evict cache + optimistic entries that no longer apply.
+    for (const key of Array.from(decodeCache.current.keys())) {
+      if (!liveIds.has(key)) decodeCache.current.delete(key)
+    }
+    for (const id of Array.from(pendingById.current.keys())) {
+      if (storedById.current.has(id)) pendingById.current.delete(id)
+    }
+    const pending = Array.from(pendingById.current.values())
+    const merged = [...decoded, ...pending, ...noticesRef.current].sort(
+      (a, b) => a.createdAt - b.createdAt,
+    )
+    setMessages(merged)
     sinceRef.current = all.reduce((mx, m) => Math.max(mx, m.createdAt), sinceRef.current)
   }, [session])
+
+  const pushNotice = useCallback(
+    (text: string) => {
+      const notice: DecryptedMessage = {
+        id: "notice-" + randomId(8),
+        participantId: "system",
+        kind: "system",
+        createdAt: Date.now(),
+        expiresAt: null,
+        mine: false,
+        username: "",
+        text,
+        reactions: [],
+      }
+      noticesRef.current = [...noticesRef.current, notice].slice(-40)
+      void recompute()
+    },
+    [recompute],
+  )
+
+  // Apply a fresh participant count and surface join/leave notices on change.
+  const applyPresence = useCallback(
+    (count: number) => {
+      setParticipantCount(count)
+      const prev = prevCountRef.current
+      prevCountRef.current = count
+      if (prev === null || count === prev) return
+      if (count > prev) {
+        const n = count - prev
+        pushNotice(n === 1 ? "Someone joined the room" : n + " people joined")
+      } else {
+        const n = prev - count
+        pushNotice(n === 1 ? "Someone left the room" : n + " people left")
+      }
+    },
+    [pushNotice],
+  )
 
   const ingest = useCallback(
     (stored: StoredMessage, recomputeNow = true) => {
@@ -106,7 +175,7 @@ export function useRoom(session: RoomSession): RoomController {
         if (cancelled) return
         for (const m of res.messages) storedById.current.set(m.id, m)
         setRoom(res.room)
-        setParticipantCount(res.room.participantCount)
+        applyPresence(res.room.participantCount)
         await recompute()
       } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? e.message : "Failed to load room")
@@ -134,7 +203,7 @@ export function useRoom(session: RoomSession): RoomController {
         markPeerActive(f.participantId)
         void recompute()
       },
-      onPresence: (count) => setParticipantCount(count),
+      onPresence: (count) => applyPresence(count),
       onSignal: (f) => {
         const ev = f.event
         markPeerActive(ev.participantId)
@@ -158,12 +227,26 @@ export function useRoom(session: RoomSession): RoomController {
     rt.current = realtime
     realtime.start()
 
+    // Keep our presence fresh so the participant count (and join/leave notices)
+    // stay accurate even when we are on the polling fallback. The server only
+    // refreshes presence on /session, not /list.
+    const heartbeat = setInterval(() => {
+      void api
+        .session({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          participantId: session.participantId,
+        })
+        .catch(() => {})
+    }, 20000)
+
     const typingGc = setInterval(() => {
       setTyping((prev) => prev.filter((t) => Date.now() - t.at < 4000))
     }, 1500)
 
     return () => {
       cancelled = true
+      clearInterval(heartbeat)
       clearInterval(typingGc)
       realtime.stop()
     }
@@ -187,7 +270,9 @@ export function useRoom(session: RoomSession): RoomController {
         reactions: [],
         pending: true,
       }
-      setMessages((prev) => [...prev, optimistic])
+      // Show instantly; recompute is cheap now thanks to the decode cache.
+      pendingById.current.set(id, optimistic)
+      void recompute()
       try {
         const envelope = await encodeText(session, trimmed)
         const res = await api.postMessage({
@@ -197,11 +282,13 @@ export function useRoom(session: RoomSession): RoomController {
         })
         ingest(res.message)
       } catch (e) {
-        setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, pending: false, failed: true } : m)))
+        const p = pendingById.current.get(id)
+        if (p) pendingById.current.set(id, { ...p, pending: false, failed: true })
+        void recompute()
         setError(e instanceof ApiError ? e.message : "Failed to send")
       }
     },
-    [session, ingest],
+    [session, ingest, recompute],
   )
 
   const sendMedia = useCallback(

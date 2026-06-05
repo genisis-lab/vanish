@@ -1,0 +1,146 @@
+/* Chat surface refresh — loaded after index.css to layer a coherent
+   visual pass over the conversation view (status, bubbles, notices,
+   typing indicator). */
+
+/* ============================================================
+   Chat surface refresh (v2)
+   A coherent visual pass over the conversation view: healthier
+   connection states, animated message entry, pill-style system
+   notices, a live typing indicator, and softer message bubbles.
+   ============================================================ */
+
+/* Connection status — polling is a working state, shown as healthy. */
+.dot.live,
+.dot.polling {
+  background: var(--ok);
+}
+.dot.live {
+  animation: pulseDot 2.1s var(--ease) infinite;
+}
+.dot.polling {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent);
+}
+.dot.connecting {
+  background: #fbbf24;
+  animation: pulseAmber 1.2s ease-in-out infinite;
+}
+.dot.closed {
+  background: var(--danger);
+}
+@keyframes pulseDot {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent);
+  }
+}
+@keyframes pulseAmber {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* Status line rendered as a soft pill that hugs its content. */
+.topbar .room-id .s {
+  align-self: flex-start;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  padding: 2px 10px;
+  margin-top: 3px;
+}
+
+/* Message entry animation + softer, tailed bubbles. */
+.msg {
+  animation: msgIn 0.22s var(--ease) both;
+}
+@keyframes msgIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.bubble {
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16);
+  border-bottom-left-radius: 6px;
+}
+.msg.mine .bubble {
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 6px;
+  box-shadow: 0 6px 16px -8px var(--accent);
+}
+
+/* System / join-leave notices as centered chips. */
+.sys-line {
+  align-self: center;
+  width: fit-content;
+  max-width: 80%;
+  margin: 8px auto;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  animation: msgIn 0.22s var(--ease) both;
+}
+
+/* Live typing indicator with bouncing dots. */
+.typing {
+  display: flex;
+  align-items: center;
+}
+.typing-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.typing-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: typingBounce 1.1s ease-in-out infinite;
+}
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typingBounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Composer polish. */
+.send-btn {
+  box-shadow: 0 6px 16px -7px var(--accent);
+}
+.send-btn:hover:not(:disabled) {
+  background: #fb8a3c;
+}
