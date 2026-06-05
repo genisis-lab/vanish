@@ -239,7 +239,18 @@ export function ChatRoom({
         )}
       </div>
 
-      <div className="typing">{typingText}</div>
+      <div className="typing">
+        {typingText && (
+          <span className="typing-live">
+            <span className="typing-dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            {typingText}
+          </span>
+        )}
+      </div>
 
       <Composer
         uploads={room.uploads}
@@ -306,9 +317,9 @@ function labelFor(state: string): string {
     case "live":
       return "Live"
     case "polling":
-      return "Reconnecting"
+      return "Connected"
     case "connecting":
-      return "Connecting"
+      return "Connecting…"
     default:
       return "Offline"
   }

@@ -181,7 +181,7 @@ export class Realtime {
         /* keep trying */
       }
     }
-    this.pollTimer = setInterval(poll, 3000) as unknown as number
+    this.pollTimer = setInterval(poll, 2000) as unknown as number
     void poll()
   }
 
