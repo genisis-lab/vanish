@@ -1,6 +1,6 @@
 import type { InviteExpiryOption } from "./types"
 
-export const DEFAULT_MESSAGE_TTL_MS = 60 * 60 * 1000 // 60 minutes
+export const DEFAULT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 export const MIN_MESSAGE_TTL_MS = 5 * 1000 // 5 seconds (burn-style)
 export const MAX_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 export const MAX_MEDIA_BYTES = 50 * 1024 * 1024 // 50 MB encrypted blob ceiling
