@@ -1,0 +1,28 @@
+# Cloudflare Pages project configuration for Vanish.
+#
+# Deploy order:
+#   1) npm run worker:deploy   (deploys the Durable Object Worker `vanish-room`)
+#   2) npm run build && npm run pages:deploy
+#
+# The Durable Object class lives in the companion Worker (see room-worker/), and
+# Pages binds to it by `script_name`.
+
+name = "vanish"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "dist"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "RoomDurableObject"
+script_name = "vanish-room"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "vanish-media"
+
+# Set the upload-signing secret with:
+#   wrangler pages secret put UPLOAD_SECRET
+# (do not commit real secrets to [vars])
+[vars]
+APP_NAME = "Vanish"
