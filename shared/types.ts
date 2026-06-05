@@ -1,5 +1,5 @@
 // Shared wire types between the client, Pages Functions, and the Durable Object.
-// Nothing here contains plaintext chat content \u2014 envelopes are opaque base64url.
+// Nothing here contains plaintext chat content — envelopes are opaque base64url.
 
 export type InviteExpiryOption = "never" | "24h" | "7d"
 export type MessageKind = "text" | "media" | "system"
@@ -96,12 +96,16 @@ export interface ListMessagesRequest {
   accessProof: string
   since?: number
   markReadFor?: string
+  /** Return buffered signalling frames (typing/seen) newer than this server time. */
+  signalsSince?: number
 }
 
 export interface ListMessagesResponse {
   messages: StoredMessage[]
   room: PublicRoomState
   serverTime: number
+  /** Recent signalling frames (typing/seen) for clients on the polling fallback. */
+  signals?: RealtimeFrame[]
 }
 
 export interface SignUploadRequest {

@@ -29,6 +29,7 @@ export class Realtime {
   private attempts = 0
   private stopped = false
   private state: ConnState = "connecting"
+  private signalsSince = 0
 
   constructor(session: RoomSession, handlers: RealtimeHandlers) {
     this.session = session
@@ -167,6 +168,8 @@ export class Realtime {
 
   private startPolling(): void {
     if (this.pollTimer !== null) return
+    // Don't replay typing/signals that predate the moment we started polling.
+    if (this.signalsSince === 0) this.signalsSince = Date.now()
     const poll = async () => {
       if (this.stopped) return
       try {
@@ -174,8 +177,13 @@ export class Realtime {
           roomId: this.session.invite.roomId,
           accessProof: this.session.keys.accessProof,
           since: this.handlers.getSince(),
+          signalsSince: this.signalsSince,
         })
         for (const m of res.messages) this.handlers.onMessage(m)
+        // Deliver buffered signalling frames (typing/seen) that arrived while we
+        // were polling instead of holding a live socket.
+        if (res.signals) for (const f of res.signals) this.dispatch(f)
+        this.signalsSince = res.serverTime
         this.handlers.onPresence(res.room.participantCount)
       } catch {
         /* keep trying */
