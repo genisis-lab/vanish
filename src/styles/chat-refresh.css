@@ -144,3 +144,33 @@
 .send-btn:hover:not(:disabled) {
   background: #fb8a3c;
 }
+
+/* ============================================================
+   Mobile viewport / keyboard handling
+   Size the chat to the *visible* viewport (set from JS via
+   visualViewport) so the composer stays pinned above the on-screen
+   keyboard instead of being pushed below it. Also prevent iOS
+   auto-zoom when focusing the message field.
+   ============================================================ */
+:root {
+  --app-height: 100dvh;
+}
+.chat {
+  height: var(--app-height);
+}
+.app:has(> .chat) {
+  height: var(--app-height);
+  min-height: 0;
+  overflow: hidden;
+}
+.messages {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+@media (max-width: 460px) {
+  .composer .textarea,
+  input,
+  textarea {
+    font-size: 16px;
+  }
+}
