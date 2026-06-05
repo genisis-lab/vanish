@@ -1,6 +1,7 @@
 // Client-side media encryption + transfer. Files are encrypted with the room's
 // media key before they ever leave the browser; only ciphertext lands in R2.
 import { decryptBytes, encryptBytes } from "@shared/crypto"
+import { packAndPadMedia, unpackMedia } from "@shared/padding"
 import type { EncryptedMediaRef } from "@shared/types"
 import { api } from "./api"
 import { aad, type RoomSession } from "./session"
@@ -19,6 +20,58 @@ function previewKindFor(mime: string): "image" | "video" {
   return mime.startsWith("video/") ? "video" : "image"
 }
 
+interface NormalizedFile {
+  data: Uint8Array
+  mime: string
+  size: number
+  filename: string
+}
+
+// Re-encode images through a canvas to strip embedded metadata (EXIF, GPS,
+// camera/timestamp tags) before encryption. Animated GIFs pass through untouched
+// (canvas would flatten them); non-images and videos pass through too.
+async function normalizeFile(file: File): Promise<NormalizedFile> {
+  const passthrough = async (): Promise<NormalizedFile> => {
+    const data = new Uint8Array(await file.arrayBuffer())
+    return {
+      data,
+      mime: file.type || "application/octet-stream",
+      size: data.byteLength,
+      filename: file.name,
+    }
+  }
+  if (
+    !file.type.startsWith("image/") ||
+    file.type === "image/gif" ||
+    typeof createImageBitmap !== "function" ||
+    typeof document === "undefined"
+  ) {
+    return passthrough()
+  }
+  try {
+    const bitmap = await createImageBitmap(file)
+    const canvas = document.createElement("canvas")
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return passthrough()
+    ctx.drawImage(bitmap, 0, 0)
+    bitmap.close?.()
+    // Preserve PNG (lossless, possible alpha); everything else -> high-quality JPEG.
+    const outMime = file.type === "image/png" ? "image/png" : "image/jpeg"
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, outMime, outMime === "image/jpeg" ? 0.92 : undefined),
+    )
+    if (!blob) return passthrough()
+    const data = new Uint8Array(await blob.arrayBuffer())
+    const ext = outMime === "image/png" ? "png" : "jpg"
+    const filename = file.name.replace(/\.[^./\\]+$/, "") + "." + ext
+    return { data, mime: outMime, size: data.byteLength, filename }
+  } catch {
+    return passthrough()
+  }
+}
+
 export interface EncryptUploadResult {
   ref: EncryptedMediaRef
   manifest: MediaManifestItem
@@ -32,9 +85,11 @@ export async function encryptAndUpload(
   onStatus: (status: UploadStatus, progress?: number) => void,
 ): Promise<EncryptUploadResult> {
   onStatus("encrypting")
-  const plain = new Uint8Array(await file.arrayBuffer())
-  const previewKind = previewKindFor(file.type)
-  const cipher = await encryptBytes(session.keys.mediaKey, plain, aad(session, "media"))
+  const norm = await normalizeFile(file)
+  const previewKind = previewKindFor(norm.mime)
+  // Pad the plaintext to a size bucket before encryption (length-hiding).
+  const padded = packAndPadMedia(norm.data)
+  const cipher = await encryptBytes(session.keys.mediaKey, padded, aad(session, "media"))
 
   onStatus("uploading", 0)
   try {
@@ -52,9 +107,9 @@ export async function encryptAndUpload(
       ref: { objectKey: sign.objectKey, size: cipher.byteLength, previewKind },
       manifest: {
         objectKey: sign.objectKey,
-        filename: file.name,
-        mime: file.type || "application/octet-stream",
-        size: plain.byteLength,
+        filename: norm.filename,
+        mime: norm.mime,
+        size: norm.size,
         previewKind,
       },
     }
@@ -76,7 +131,8 @@ export async function decryptToObjectUrl(
   const cached = blobUrlCache.get(objectKey)
   if (cached) return cached
   const cipher = await api.downloadBlob(session.invite.roomId, session.keys.accessProof, objectKey)
-  const plain = await decryptBytes(session.keys.mediaKey, cipher, aad(session, "media"))
+  const padded = await decryptBytes(session.keys.mediaKey, cipher, aad(session, "media"))
+  const plain = unpackMedia(padded)
   const blob = new Blob([plain as unknown as BlobPart], { type: mime || "application/octet-stream" })
   const url = URL.createObjectURL(blob)
   blobUrlCache.set(objectKey, url)
@@ -89,7 +145,8 @@ export async function decryptToBlob(
   mime: string,
 ): Promise<Blob> {
   const cipher = await api.downloadBlob(session.invite.roomId, session.keys.accessProof, objectKey)
-  const plain = await decryptBytes(session.keys.mediaKey, cipher, aad(session, "media"))
+  const padded = await decryptBytes(session.keys.mediaKey, cipher, aad(session, "media"))
+  const plain = unpackMedia(padded)
   return new Blob([plain as unknown as BlobPart], { type: mime || "application/octet-stream" })
 }
 
