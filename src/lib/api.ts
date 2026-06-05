@@ -100,7 +100,7 @@ export const api = {
           ? resolve()
           : reject(new ApiError(xhr.status, "upload failed"))
       xhr.onerror = () => reject(new ApiError(0, "network error"))
-      xhr.send(bytes as unknown as BodyInit)
+      xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
     })
   },
   async downloadBlob(roomId: string, accessProof: string, objectKey: string): Promise<Uint8Array> {
