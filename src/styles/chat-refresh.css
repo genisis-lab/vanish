@@ -1,4 +1,4 @@
-/* Chat surface refresh — loaded after index.css to layer a coherent
+/* Chat surface refresh \u2014 loaded after index.css to layer a coherent
    visual pass over the conversation view (status, bubbles, notices,
    typing indicator). */
 
@@ -9,7 +9,7 @@
    notices, a live typing indicator, and softer message bubbles.
    ============================================================ */
 
-/* Connection status — polling is a working state, shown as healthy. */
+/* Connection status \u2014 polling is a working state, shown as healthy. */
 .dot.live,
 .dot.polling {
   background: var(--ok);
@@ -399,6 +399,38 @@ body:has(.chat) {
   margin-left: 0;
 }
 
+/* Clickable member count opens the \u201cwho\u2019s here\u201d panel. */
+.members-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.15s var(--ease);
+}
+.members-btn:hover,
+.members-btn:focus-visible {
+  color: var(--accent);
+  outline: none;
+}
+.members-count {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 2px 4px;
+}
+.members-count .big {
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+.members-count > span:last-child {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
 /* ---- Privacy veil (blur when tab unfocused) ---- */
 .chat-body {
   position: relative;
@@ -424,6 +456,55 @@ body:has(.chat) {
 }
 .privacy-veil svg {
   color: var(--accent);
+}
+
+/* ============================================================
+   Compact density mode
+   Toggled via the topbar icon (adds .compact to .chat). Tightens
+   spacing and shrinks type so more conversation fits on screen.
+   Previously this class had no styles, so the toggle did nothing.
+   ============================================================ */
+.chat.compact .messages {
+  gap: 1px;
+  padding: 12px 12px 4px;
+}
+.chat.compact .msg {
+  margin-top: 4px;
+}
+.chat.compact .msg .who {
+  font-size: 11px;
+  margin-bottom: 1px;
+}
+.chat.compact .bubble {
+  padding: 6px 11px;
+  font-size: 13px;
+  line-height: 1.38;
+  border-radius: 13px;
+}
+.chat.compact .msg.mine .bubble {
+  border-bottom-right-radius: 5px;
+}
+.chat.compact .bubble {
+  border-bottom-left-radius: 5px;
+}
+.chat.compact .msg .foot {
+  font-size: 10px;
+  margin-top: 1px;
+}
+.chat.compact .react-row {
+  margin-top: 3px;
+}
+.chat.compact .chip {
+  font-size: 11.5px;
+  padding: 1px 7px;
+}
+.chat.compact .sys-line {
+  margin: 5px auto;
+  padding: 3px 10px;
+  font-size: 11px;
+}
+.chat.compact .media-grid {
+  margin-top: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
