@@ -6,14 +6,23 @@ import type { EncryptedMediaRef, MessageKind, StoredMessage } from "@shared/type
 import type { MediaManifestItem } from "./media"
 import { aad, type RoomSession } from "./session"
 
+/** A lightweight quoted reference to another message, stored inside the
+ * encrypted envelope (never visible to the server). */
+export interface ReplyRef {
+  id: string
+  username: string
+  preview: string
+}
 export interface TextPayload {
   username: string
   text: string
+  replyTo?: ReplyRef
 }
 export interface MediaPayload {
   username: string
   caption: string
   items: MediaManifestItem[]
+  replyTo?: ReplyRef
 }
 export interface SystemPayload {
   event: "join" | "leave" | "notice"
@@ -45,13 +54,21 @@ export interface DecryptedMessage {
   media?: EncryptedMediaRef[]
   system?: SystemPayload
   reactions: DecryptedReaction[]
+  /** quoted message this one replies to */
+  replyTo?: ReplyRef
+  /** read-once: server burns this after another participant reads it */
+  burn?: boolean
   /** transient client-only send state */
   pending?: boolean
   failed?: boolean
 }
 
-export async function encodeText(session: RoomSession, text: string): Promise<string> {
-  const payload: TextPayload = { username: session.username, text }
+export async function encodeText(
+  session: RoomSession,
+  text: string,
+  replyTo?: ReplyRef,
+): Promise<string> {
+  const payload: TextPayload = { username: session.username, text, replyTo }
   return encryptJson(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
@@ -59,8 +76,9 @@ export async function encodeMedia(
   session: RoomSession,
   caption: string,
   items: MediaManifestItem[],
+  replyTo?: ReplyRef,
 ): Promise<string> {
-  const payload: MediaPayload = { username: session.username, caption, items }
+  const payload: MediaPayload = { username: session.username, caption, items, replyTo }
   return encryptJson(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
@@ -87,6 +105,7 @@ export async function decodeMessage(
     mine,
     username: "anon",
     media: stored.media,
+    burn: stored.burn,
     reactions: [],
   }
 
@@ -101,10 +120,12 @@ export async function decodeMessage(
       base.username = p.username
       base.text = p.caption
       base.items = p.items
+      base.replyTo = p.replyTo
     } else {
       const p = await decryptJson<TextPayload>(session.keys.msgKey, stored.envelope, aad(session, "msg"))
       base.username = p.username
       base.text = p.text
+      base.replyTo = p.replyTo
     }
   } catch {
     base.text = "\u26a0 Unable to decrypt (different key)"

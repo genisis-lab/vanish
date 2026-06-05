@@ -178,6 +178,7 @@ export class Realtime {
           accessProof: this.session.keys.accessProof,
           since: this.handlers.getSince(),
           signalsSince: this.signalsSince,
+          markReadFor: this.session.participantId,
         })
         for (const m of res.messages) this.handlers.onMessage(m)
         // Deliver buffered signalling frames (typing/seen) that arrived while we
