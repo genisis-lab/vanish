@@ -1,5 +1,5 @@
 import { memo, useState } from "react"
-import { Clock, Flame, SmilePlus } from "lucide-react"
+import { Check, CheckCheck, Clock, Flame, Reply, SmilePlus } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
@@ -17,6 +17,7 @@ interface Props {
   seen: boolean
   onToggleSelect: (id: string) => void
   onReact: (id: string, emoji: string) => void
+  onReply: (msg: DecryptedMessage) => void
   onOpenMedia: (item: MediaManifestItem) => void
 }
 
@@ -29,6 +30,7 @@ function MessageItemInner({
   seen,
   onToggleSelect,
   onReact,
+  onReply,
   onOpenMedia,
 }: Props) {
   const [picker, setPicker] = useState(false)
@@ -45,6 +47,25 @@ function MessageItemInner({
     if (selecting) onToggleSelect(msg.id)
   }
 
+  const tools = !selecting && (
+    <div className="msg-tools">
+      <button
+        className="icon-btn mini"
+        aria-label="Reply"
+        onClick={() => onReply(msg)}
+      >
+        <Reply size={15} />
+      </button>
+      <button
+        className="icon-btn mini"
+        aria-label="Add reaction"
+        onClick={() => setPicker((v) => !v)}
+      >
+        <SmilePlus size={15} />
+      </button>
+    </div>
+  )
+
   return (
     <div className={`msg ${msg.mine ? "mine" : ""} ${selected ? "selected" : ""}`}>
       {showWho && !msg.mine && (
@@ -54,19 +75,15 @@ function MessageItemInner({
       )}
 
       <div style={ROW}>
-        {!msg.mine && !selecting && (
-          <div className="msg-tools">
-            <button
-              className="icon-btn mini"
-              aria-label="Add reaction"
-              onClick={() => setPicker((v) => !v)}
-            >
-              <SmilePlus size={15} />
-            </button>
-          </div>
-        )}
+        {!msg.mine && tools}
 
         <div className="bubble" onClick={click} role={selecting ? "button" : undefined}>
+          {msg.replyTo && (
+            <div className="quote">
+              <b>{msg.replyTo.username}</b>
+              <span>{msg.replyTo.preview}</span>
+            </div>
+          )}
           {msg.text && <span>{msg.text}</span>}
           {msg.items && msg.items.length > 0 && (
             <div className="media-grid">
@@ -77,17 +94,7 @@ function MessageItemInner({
           )}
         </div>
 
-        {msg.mine && !selecting && (
-          <div className="msg-tools">
-            <button
-              className="icon-btn mini"
-              aria-label="Add reaction"
-              onClick={() => setPicker((v) => !v)}
-            >
-              <SmilePlus size={15} />
-            </button>
-          </div>
-        )}
+        {msg.mine && tools}
       </div>
 
       {picker && (
@@ -123,17 +130,43 @@ function MessageItemInner({
 
       <div className="foot">
         <span>{formatTime(msg.createdAt)}</span>
+        {msg.burn && (
+          <span className="burn-tag">
+            <Flame size={10} /> Read once
+          </span>
+        )}
         {ttl && (
           <span className="ttl">
             <Clock size={10} /> {ttl}
           </span>
         )}
-        {msg.mine && (
-          <span>{msg.failed ? "Failed" : msg.pending ? "Sending…" : seen ? "Seen" : "Sent"}</span>
-        )}
-        {msg.kind === "text" && msg.text?.startsWith("\u26a0") && <Flame size={10} />}
+        {msg.mine && <SendState failed={msg.failed} pending={msg.pending} seen={seen} />}
       </div>
     </div>
+  )
+}
+
+function SendState({
+  failed,
+  pending,
+  seen,
+}: {
+  failed?: boolean
+  pending?: boolean
+  seen: boolean
+}) {
+  if (failed) return <span className="state-failed">Failed</span>
+  if (pending) return <span className="state-pending">Sending…</span>
+  if (seen)
+    return (
+      <span className="state-seen" title="Seen">
+        <CheckCheck size={13} />
+      </span>
+    )
+  return (
+    <span className="state-sent" title="Sent">
+      <Check size={13} />
+    </span>
   )
 }
 

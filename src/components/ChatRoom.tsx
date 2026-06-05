@@ -1,24 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowDown,
+  Bell,
+  BellOff,
   CheckSquare,
-  Fingerprint,
+  DoorOpen,
+  Eye,
+  EyeOff,
   Flame,
-  Link2,
-  LogOut,
   Maximize2,
   Minimize2,
   Moon,
   MoreVertical,
   QrCode,
+  Share2,
+  ShieldCheck,
   Sun,
   Trash2,
   Users,
   X,
+  Zap,
 } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
 import { useRoom } from "../lib/useRoom"
+import type { DecryptedMessage, ReplyRef } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
 import { revokeAllObjectUrls } from "../lib/media"
 import { IconButton, Sheet, useToast } from "./ui"
@@ -47,12 +53,59 @@ export function ChatRoom({
   const [viewer, setViewer] = useState<MediaManifestItem | null>(null)
   const [showJump, setShowJump] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [replyTo, setReplyTo] = useState<ReplyRef | null>(null)
+  const [privacy, setPrivacy] = useState(true)
+  const [hidden, setHidden] = useState(false)
+  const [unread, setUnread] = useState(0)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
   const lastCount = useRef(0)
+  const unreadLen = useRef(0)
 
   useEffect(() => () => revokeAllObjectUrls(), [])
+
+  // Privacy veil: blur the conversation whenever the tab loses focus, so a
+  // glance over your shoulder (or an app switcher preview) reveals nothing.
+  useEffect(() => {
+    const onVis = () => {
+      const away = document.visibilityState === "hidden"
+      setHidden(away)
+      if (!away) setUnread(0)
+    }
+    const onBlur = () => setHidden(true)
+    const onFocus = () => {
+      setHidden(false)
+      setUnread(0)
+    }
+    document.addEventListener("visibilitychange", onVis)
+    window.addEventListener("blur", onBlur)
+    window.addEventListener("focus", onFocus)
+    return () => {
+      document.removeEventListener("visibilitychange", onVis)
+      window.removeEventListener("blur", onBlur)
+      window.removeEventListener("focus", onFocus)
+    }
+  }, [])
+
+  // Unread title badge + notification sound for messages that arrive while the
+  // tab is in the background.
+  useEffect(() => {
+    const msgs = room.messages
+    const added = msgs.length - unreadLen.current
+    unreadLen.current = msgs.length
+    if (added <= 0) return
+    const incoming = msgs.slice(-added).filter((m) => m.kind !== "system" && !m.mine)
+    if (incoming.length === 0) return
+    if (document.visibilityState === "hidden") {
+      setUnread((u) => u + incoming.length)
+      if (prefs.sound) playChime()
+    }
+  }, [room.messages, prefs.sound])
+
+  useEffect(() => {
+    document.title = unread > 0 ? `(${unread}) Vanish` : "Vanish"
+  }, [unread])
 
   // When the visible viewport shrinks (mobile keyboard opening), keep the
   // latest messages in view if the user was already at the bottom.
@@ -121,6 +174,16 @@ export function ChatRoom({
     setSelected(new Set())
   }
 
+  function startReply(m: DecryptedMessage) {
+    const preview =
+      m.text && !m.text.startsWith("\u26a0")
+        ? m.text.slice(0, 90)
+        : m.items && m.items.length > 0
+          ? "\u{1F4CE} Attachment"
+          : "Message"
+    setReplyTo({ id: m.id, username: m.username, preview })
+  }
+
   async function pruneSelected() {
     await room.prune(Array.from(selected))
     cancelSelect()
@@ -129,6 +192,12 @@ export function ChatRoom({
   async function doDelete() {
     await room.deleteRoom()
     setConfirmDelete(false)
+    setPanel(null)
+    onLeave()
+  }
+
+  function panic() {
+    void room.pruneAll()
     setPanel(null)
     onLeave()
   }
@@ -158,6 +227,8 @@ export function ChatRoom({
     )
   }
 
+  const veiled = privacy && hidden
+
   return (
     <div className={`chat ${prefs.compact ? "compact" : ""}`}>
       <div className="topbar">
@@ -178,13 +249,14 @@ export function ChatRoom({
               </span>
               <span className="s">
                 <span className={`dot ${room.connState}`} />
-                {labelFor(room.connState)} · <Users size={11} /> {room.participantCount}
+                {labelFor(room.connState)}
+                <MemberDots count={room.participantCount} />
               </span>
             </div>
             <div className="topbar-actions">
-              <IconButton icon={<Link2 size={19} />} label="Invite" onClick={() => setPanel("invite")} />
+              <IconButton icon={<Share2 size={19} />} label="Invite" onClick={() => setPanel("invite")} />
               <IconButton
-                icon={<Fingerprint size={19} />}
+                icon={<ShieldCheck size={19} />}
                 label="Verify encryption"
                 onClick={() => setPanel("safety")}
               />
@@ -195,10 +267,25 @@ export function ChatRoom({
                 className="hide-sm"
               />
               <IconButton
+                icon={privacy ? <Eye size={18} /> : <EyeOff size={18} />}
+                label={privacy ? "Privacy blur on" : "Privacy blur off"}
+                onClick={() => setPrivacy((v) => !v)}
+                active={privacy}
+                className="hide-sm"
+              />
+              <IconButton
+                icon={prefs.sound ? <Bell size={18} /> : <BellOff size={18} />}
+                label={prefs.sound ? "Mute notifications" : "Enable notifications"}
+                onClick={prefs.toggleSound}
+                active={prefs.sound}
+                className="hide-sm"
+              />
+              <IconButton
                 icon={prefs.compact ? <Maximize2 size={18} /> : <Minimize2 size={18} />}
                 label={prefs.compact ? "Exit compact mode" : "Compact mode"}
                 onClick={prefs.toggleCompact}
                 active={prefs.compact}
+                className="hide-sm"
               />
               <IconButton
                 icon={prefs.theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
@@ -210,13 +297,13 @@ export function ChatRoom({
                 label="Room actions"
                 onClick={() => setPanel("actions")}
               />
-              <IconButton icon={<LogOut size={18} />} label="Leave room" onClick={onLeave} />
+              <IconButton icon={<DoorOpen size={18} />} label="Leave room" onClick={onLeave} />
             </div>
           </>
         )}
       </div>
 
-      <div className="chat-body">
+      <div className={`chat-body ${veiled ? "veiled" : ""}`}>
         <div className="messages" ref={scrollRef} onScroll={onScroll}>
           {room.messages.length === 0 && (
             <div className="center-spinner" style={EMPTY}>
@@ -242,15 +329,23 @@ export function ChatRoom({
                 seen={seen}
                 onToggleSelect={toggleSelect}
                 onReact={room.toggleReaction}
+                onReply={startReply}
                 onOpenMedia={setViewer}
               />
             )
           })}
         </div>
 
+        {veiled && (
+          <div className="privacy-veil" aria-hidden="true">
+            <EyeOff size={30} />
+            <span>Conversation hidden</span>
+          </div>
+        )}
+
         {showJump && (
           <button className="jump-pill" onClick={jumpToBottom}>
-            <ArrowDown size={15} /> New messages
+            <ArrowDown size={15} /> {unread > 0 ? `${unread} new` : "New messages"}
           </button>
         )}
       </div>
@@ -270,6 +365,9 @@ export function ChatRoom({
 
       <Composer
         uploads={room.uploads}
+        roomId={session.invite.roomId}
+        replyTo={replyTo}
+        onCancelReply={() => setReplyTo(null)}
         onSend={room.sendText}
         onSendMedia={room.sendMedia}
         onTyping={room.notifyTyping}
@@ -306,6 +404,9 @@ export function ChatRoom({
             >
               <Trash2 size={16} /> Clear all visible messages
             </button>
+            <button className="btn btn-danger btn-block" onClick={panic}>
+              <Zap size={16} /> Panic — wipe view & leave
+            </button>
             {confirmDelete ? (
               <button className="btn btn-danger btn-block" onClick={doDelete}>
                 <Trash2 size={16} /> Confirm — delete room & all data
@@ -326,6 +427,42 @@ export function ChatRoom({
       {viewer && <MediaViewer session={session} item={viewer} onClose={() => setViewer(null)} />}
     </div>
   )
+}
+
+function MemberDots({ count }: { count: number }) {
+  const shown = Math.min(count, 4)
+  return (
+    <span className="members" title={`${count} here`}>
+      <span className="member-dots" aria-hidden="true">
+        {Array.from({ length: shown }).map((_, i) => (
+          <i key={i} />
+        ))}
+      </span>
+      <Users size={11} /> {count}
+    </span>
+  )
+}
+
+function playChime() {
+  try {
+    const Ctx =
+      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const ctx = new Ctx()
+    const o = ctx.createOscillator()
+    const g = ctx.createGain()
+    o.connect(g)
+    g.connect(ctx.destination)
+    o.type = "sine"
+    o.frequency.value = 660
+    g.gain.setValueAtTime(0.0001, ctx.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.14, ctx.currentTime + 0.01)
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25)
+    o.start()
+    o.stop(ctx.currentTime + 0.26)
+    setTimeout(() => void ctx.close(), 400)
+  } catch {
+    /* audio not available */
+  }
 }
 
 function labelFor(state: string): string {
