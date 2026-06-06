@@ -26,6 +26,25 @@ export class ApiError extends Error {
   }
 }
 
+// Turn raw HTTP failures into something a human wants to read. The server's
+// own message wins when it sent one; these are sensible fallbacks per status.
+export function friendlyError(status: number, message: string): string {
+  switch (status) {
+    case 429:
+      return "You're going a little fast \u2014 wait a moment and try again."
+    case 413:
+      return "That file is too large to send."
+    case 410:
+      return "This room no longer exists."
+    case 403:
+      return "Access denied \u2014 the invite key may be wrong."
+    case 0:
+      return "Network error \u2014 check your connection and try again."
+    default:
+      return message
+  }
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
@@ -33,7 +52,10 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   })
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
-  if (!res.ok) throw new ApiError(res.status, (data.error as string) || res.statusText)
+  if (!res.ok) {
+    const raw = (data.error as string) || res.statusText
+    throw new ApiError(res.status, friendlyError(res.status, raw))
+  }
   return data as T
 }
 
@@ -76,7 +98,7 @@ export const api = {
     })
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string }
-      throw new ApiError(res.status, data.error || res.statusText)
+      throw new ApiError(res.status, friendlyError(res.status, data.error || res.statusText))
     }
     return res.json() as Promise<{ ok: boolean }>
   },
@@ -98,8 +120,8 @@ export const api = {
       xhr.onload = () =>
         xhr.status >= 200 && xhr.status < 300
           ? resolve()
-          : reject(new ApiError(xhr.status, "upload failed"))
-      xhr.onerror = () => reject(new ApiError(0, "network error"))
+          : reject(new ApiError(xhr.status, friendlyError(xhr.status, "upload failed")))
+      xhr.onerror = () => reject(new ApiError(0, friendlyError(0, "network error")))
       xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
     })
   },
@@ -111,7 +133,7 @@ export const api = {
     })
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string }
-      throw new ApiError(res.status, data.error || res.statusText)
+      throw new ApiError(res.status, friendlyError(res.status, data.error || res.statusText))
     }
     return new Uint8Array(await res.arrayBuffer())
   },
