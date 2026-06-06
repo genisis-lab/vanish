@@ -165,20 +165,17 @@ export function useRoom(session: RoomSession): RoomController {
     [recompute],
   )
 
-  // Apply a fresh participant count and surface join/leave notices on change.
+  // Apply a fresh participant count. Joins are announced by name via the
+  // "join" signal (see onSignal), so we only surface a generic notice when
+  // someone leaves — leavers can't be named from a bare count.
   const applyPresence = useCallback(
     (count: number) => {
       setParticipantCount(count)
       const prev = prevCountRef.current
       prevCountRef.current = count
-      if (prev === null || count === prev) return
-      if (count > prev) {
-        const n = count - prev
-        pushNotice(n === 1 ? "Someone joined the room" : n + " people joined")
-      } else {
-        const n = prev - count
-        pushNotice(n === 1 ? "Someone left the room" : n + " people left")
-      }
+      if (prev === null || count >= prev) return
+      const n = prev - count
+      pushNotice(n === 1 ? "Someone left the room" : n + " people left")
     },
     [pushNotice],
   )
@@ -301,6 +298,15 @@ export function useRoom(session: RoomSession): RoomController {
               void recompute()
             })
             .catch(() => {})
+        } else if (ev.type === "join" && ev.envelope) {
+          void decryptString(session.channelKey, ev.envelope, aad(session, "channel"))
+            .then((raw) => {
+              const name = raw.trim().slice(0, 32) || "anon"
+              nameOverrides.current.set(ev.participantId, name)
+              pushNotice(`${name} joined the room`)
+              void recompute()
+            })
+            .catch(() => {})
         }
       },
       onRoomDeleted: () => setDeleted(true),
@@ -309,6 +315,19 @@ export function useRoom(session: RoomSession): RoomController {
     })
     rt.current = realtime
     realtime.start()
+
+    // Announce ourselves so existing members see a named join notice. The
+    // username is encrypted with the channel key; the server only relays an
+    // opaque envelope. sendSignal falls back to the HTTP relay if the socket
+    // isn't open yet.
+    void encryptString(session.channelKey, session.username, aad(session, "channel"))
+      .then((envelope) => {
+        realtime.sendSignal({
+          t: "signal",
+          event: { type: "join", participantId: session.participantId, envelope },
+        })
+      })
+      .catch(() => {})
 
     // Keep our presence fresh so the participant count (and join/leave notices)
     // stay accurate even when we are on the polling fallback. The server only
