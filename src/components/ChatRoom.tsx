@@ -69,7 +69,6 @@ export function ChatRoom({
   const nearBottom = useRef(true)
   const lastCount = useRef(0)
   const unreadLen = useRef(0)
-  const nudgedRef = useRef(false)
 
   useEffect(() => () => revokeAllObjectUrls(), [])
 
@@ -114,17 +113,6 @@ export function ChatRoom({
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) Vanish` : "Vanish"
   }, [unread])
-
-  // Nudge the user to verify their safety number the first time a second
-  // participant appears (and only if they haven't already verified it).
-  useEffect(() => {
-    if (room.participantCount >= 2 && !nudgedRef.current) {
-      nudgedRef.current = true
-      if (!vault.get(session.invite.roomId)?.verifiedSafetyNumber) {
-        toast("Someone else is here — tap the shield to verify your safety number")
-      }
-    }
-  }, [room.participantCount, session.invite.roomId, toast])
 
   // When the visible viewport shrinks (mobile keyboard opening), keep the
   // latest messages in view if the user was already at the bottom.
