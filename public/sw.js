@@ -1,8 +1,10 @@
-// Vanish service worker — offline app shell only.
+// Vanish service worker — offline app shell + Web Push receiver.
 //
 // SECURITY: never caches API responses, media, or anything containing secrets.
 // Only static, non-sensitive build assets and the navigation shell are cached.
-const CACHE = "vanish-shell-v3"
+// Push payloads never contain message content (the server is zero-knowledge),
+// so the notification shown here is a generic "new message" ping.
+const CACHE = "vanish-shell-v4"
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
@@ -31,6 +33,28 @@ self.addEventListener("activate", (event) => {
 // worker take over immediately (a controllerchange then reloads the page).
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting()
+})
+
+// Background Web Push: wake the app and show a content-free notification. The
+// payload carries no message text (the server can't read it); tapping opens the
+// app, which decrypts and renders the conversation.
+self.addEventListener("push", (event) => {
+  let data = {}
+  try {
+    data = event.data ? event.data.json() : {}
+  } catch {
+    data = {}
+  }
+  const tag = data && data.room ? "vanish-" + data.room : "vanish-message"
+  event.waitUntil(
+    self.registration.showNotification("Vanish", {
+      body: "New encrypted message",
+      tag,
+      renotify: true,
+      icon: "/icon.svg",
+      badge: "/icon.svg",
+    }),
+  )
 })
 
 // Focus an existing window when a message notification is clicked, or open one.

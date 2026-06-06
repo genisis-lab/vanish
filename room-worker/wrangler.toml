@@ -24,3 +24,22 @@ new_sqlite_classes = ["RoomDurableObject"]
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "vanish-media"
+
+# ---------------------------------------------------------------------------
+# Web Push (VAPID). Required for background notifications that fire even when
+# the app is fully closed. Generate a key pair once:
+#
+#   npx web-push generate-vapid-keys
+#
+# Then set them as secrets on THIS worker (do not commit them):
+#
+#   npx wrangler secret put VAPID_PUBLIC_KEY
+#   npx wrangler secret put VAPID_PRIVATE_KEY
+#   npx wrangler secret put VAPID_SUBJECT      # e.g. mailto:you@example.com
+#
+# The Pages project also needs VAPID_PUBLIC_KEY (same value) so the client can
+# subscribe:  npx wrangler pages secret put VAPID_PUBLIC_KEY --project-name vanish
+#
+# When these are unset, push fan-out is silently disabled and Vanish falls back
+# to in-app + background-tab notifications only.
+# ---------------------------------------------------------------------------

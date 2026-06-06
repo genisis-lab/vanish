@@ -158,6 +158,27 @@ export interface ReactRequest {
   envelope: string | null
 }
 
+// ---------- web push ----------
+
+/** A browser Web Push registration (PushSubscription.toJSON shape). Opaque routing data. */
+export interface WebPushSubscriptionJSON {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
+export interface PushSubscribeRequest {
+  roomId: string
+  accessProof: string
+  participantId: string
+  subscription: WebPushSubscriptionJSON
+}
+
+export interface PushUnsubscribeRequest {
+  roomId: string
+  accessProof: string
+  endpoint: string
+}
+
 export interface ApiError {
   error: string
 }

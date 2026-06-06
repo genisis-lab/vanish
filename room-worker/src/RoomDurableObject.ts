@@ -7,6 +7,7 @@
 //   - sweep expired messages via storage alarms and delete orphaned R2 objects
 //   - self-destruct the whole room when its lifetime elapses
 //   - enforce basic abuse controls (rate limit, envelope size cap, room cap)
+//   - fan out background Web Push pings to closed/asleep devices
 //
 // All chat content is opaque to this object. It only ever sees ciphertext and
 // operational metadata (ids, timestamps, sizes, verifier hashes).
@@ -19,9 +20,12 @@ import type {
   ListMessagesRequest,
   PostMessageRequest,
   PruneRequest,
+  PushSubscribeRequest,
+  PushUnsubscribeRequest,
   ReactRequest,
   RealtimeFrame,
   SessionRequest,
+  StoredMessage,
   UpdateInviteRequest,
   ValidateInviteRequest,
 } from "../../shared/types"
@@ -33,9 +37,14 @@ import {
   MESSAGE_RATE_LIMIT,
   MESSAGE_RATE_WINDOW_MS,
 } from "../../shared/constants"
+import { sendWebPush, type PushSubscription, type VapidKeys } from "./webpush"
 
 export interface RoomEnv {
   MEDIA: R2Bucket
+  /** VAPID keys for Web Push. When unset, push fan-out is silently disabled. */
+  VAPID_PUBLIC_KEY?: string
+  VAPID_PRIVATE_KEY?: string
+  VAPID_SUBJECT?: string
 }
 
 interface Session {
@@ -43,7 +52,17 @@ interface Session {
   participantId: string
 }
 
+// A stored Web Push registration. The endpoint + keys are opaque routing data
+// for the push service; participantId lets us skip pushing to someone who is
+// already connected over a live socket.
+interface PushRecord {
+  sub: PushSubscription
+  participantId: string
+  at: number
+}
+
 const SNAPSHOT_KEY = "snapshot"
+const PUSH_KEY = "pushSubs"
 
 export class RoomDurableObject {
   private state: DurableObjectState
@@ -55,6 +74,9 @@ export class RoomDurableObject {
   private recentSignals: Array<{ at: number; frame: RealtimeFrame }> = []
   // Per-participant send timestamps for rate limiting. In-memory only.
   private rate = new Map<string, number[]>()
+  // Lazily-loaded Web Push registrations, keyed by endpoint. Persisted so they
+  // survive hibernation; null until first read.
+  private pushSubs: Map<string, PushRecord> | null = null
   private loaded = false
 
   constructor(state: DurableObjectState, env: RoomEnv) {
@@ -122,6 +144,10 @@ export class RoomDurableObject {
           return this.opReact(body as unknown as ReactRequest)
         case "broadcast":
           return this.opBroadcast(body as unknown as BroadcastRequest)
+        case "push-subscribe":
+          return this.opPushSubscribe(body as unknown as PushSubscribeRequest)
+        case "push-unsubscribe":
+          return this.opPushUnsubscribe(body as unknown as PushUnsubscribeRequest)
         case "delete":
           return this.opDelete(body as { accessProof: string })
         default:
@@ -241,6 +267,9 @@ export class RoomDurableObject {
     // Durability follows right after; a crash in the gap at worst drops a
     // single just-sent message, which the sender can resend.
     this.broadcast({ t: "message", message })
+    // Wake background/closed devices via Web Push. Fire-and-forget so it never
+    // blocks the send; only real content triggers it.
+    if (req.message.kind !== "system") void this.sendPushNotifications(message)
     // Rolling per-room cap: prune the oldest messages beyond the ceiling.
     const all = this.core.list(now)
     if (all.length > MAX_MESSAGES_PER_ROOM) {
@@ -319,6 +348,78 @@ export class RoomDurableObject {
     const now = Date.now()
     await this.destroyRoom(now)
     return json({ ok: true })
+  }
+
+  // ---------- web push ----------
+
+  private async getPushSubs(): Promise<Map<string, PushRecord>> {
+    if (this.pushSubs) return this.pushSubs
+    const obj = (await this.state.storage.get<Record<string, PushRecord>>(PUSH_KEY)) ?? {}
+    this.pushSubs = new Map(Object.entries(obj))
+    return this.pushSubs
+  }
+
+  private async savePushSubs(): Promise<void> {
+    if (!this.pushSubs) return
+    await this.state.storage.put(PUSH_KEY, Object.fromEntries(this.pushSubs))
+  }
+
+  private vapid(): VapidKeys | null {
+    const publicKey = this.env.VAPID_PUBLIC_KEY
+    const privateKey = this.env.VAPID_PRIVATE_KEY
+    if (!publicKey || !privateKey) return null
+    return { publicKey, privateKey, subject: this.env.VAPID_SUBJECT || "mailto:admin@vanish.app" }
+  }
+
+  private async opPushSubscribe(req: PushSubscribeRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    const s = req.subscription
+    if (!s?.endpoint || !s?.keys?.p256dh || !s?.keys?.auth) {
+      return json({ error: "bad subscription" }, 400)
+    }
+    const subs = await this.getPushSubs()
+    subs.set(s.endpoint, { sub: s, participantId: req.participantId, at: Date.now() })
+    await this.savePushSubs()
+    return json({ ok: true })
+  }
+
+  private async opPushUnsubscribe(req: PushUnsubscribeRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    const subs = await this.getPushSubs()
+    if (req.endpoint && subs.delete(req.endpoint)) await this.savePushSubs()
+    return json({ ok: true })
+  }
+
+  // Best-effort background fan-out. Skips the sender and anyone currently
+  // connected over a live socket (they already got the realtime frame), and
+  // prunes subscriptions the push service reports as gone. Payloads carry no
+  // message content — the server can't read it anyway.
+  private async sendPushNotifications(message: StoredMessage): Promise<void> {
+    const vapid = this.vapid()
+    if (!vapid) return
+    const subs = await this.getPushSubs()
+    if (subs.size === 0) return
+    const connected = new Set<string>()
+    for (const s of this.sessions) connected.add(s.participantId)
+    const room = this.core.getRoom()
+    const payload = JSON.stringify({ t: "msg", room: room?.roomId })
+    const dead: string[] = []
+    await Promise.all(
+      Array.from(subs.values()).map(async (rec) => {
+        if (rec.participantId === message.participantId) return
+        if (connected.has(rec.participantId)) return
+        try {
+          const status = await sendWebPush(rec.sub, payload, vapid)
+          if (status === 404 || status === 410) dead.push(rec.sub.endpoint)
+        } catch {
+          /* best effort */
+        }
+      }),
+    )
+    if (dead.length) {
+      for (const ep of dead) subs.delete(ep)
+      await this.savePushSubs()
+    }
   }
 
   // ---------- realtime ----------
@@ -444,6 +545,9 @@ export class RoomDurableObject {
     await this.persist()
     await this.deleteAllRoomObjects()
     if (keys.length) await this.deleteObjects(keys)
+    // Drop any push registrations along with the room data.
+    this.pushSubs = new Map()
+    await this.state.storage.delete(PUSH_KEY)
     this.broadcast({ t: "room-deleted" })
     for (const s of this.sessions) {
       try {
