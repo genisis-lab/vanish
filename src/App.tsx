@@ -8,6 +8,7 @@ import { VaultLock } from "./components/VaultLock"
 import { usePrefs } from "./lib/usePrefs"
 import { buildSession, type RoomSession } from "./lib/session"
 import { vault } from "./lib/vault"
+import { setActiveRoom } from "./lib/activeRoom"
 
 type Route =
   | { name: "home" }
@@ -44,6 +45,13 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Tell the service worker which room (if any) is on screen. A background push
+  // for the room you're viewing stays silent (handled in-app), while a push for
+  // a different room you've joined still alerts you — even with Vanish open.
+  useEffect(() => {
+    setActiveRoom(route.name === "chat" ? route.session.invite.roomId : null)
+  }, [route])
 
   const goHome = useCallback(() => {
     scrubInviteFromUrl()

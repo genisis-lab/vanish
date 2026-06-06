@@ -4,7 +4,7 @@
 // Only static, non-sensitive build assets and the navigation shell are cached.
 // Push payloads never contain message content (the server is zero-knowledge),
 // so the notification shown here is a generic "new message" ping.
-const CACHE = "vanish-shell-v5"
+const CACHE = "vanish-shell-v6"
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
@@ -39,8 +39,11 @@ self.addEventListener("message", (event) => {
 // payload carries no message text (the server can't read it); tapping opens the
 // app, which decrypts and renders the conversation.
 //
-// If the app already has a visible/focused window, there's no point alerting —
-// the user is looking at it — so we stay silent and let the in-app UI handle it.
+// We only stay silent when a *visible* window is already showing THIS room —
+// then the in-app UI handles it. If the app is backgrounded, sitting on the
+// home screen, or showing a *different* room you've joined, we still alert you,
+// so notifications for your other rooms keep coming through even with Vanish
+// open.
 self.addEventListener("push", (event) => {
   let data = {}
   try {
@@ -48,17 +51,15 @@ self.addEventListener("push", (event) => {
   } catch {
     data = {}
   }
-  const tag = data && data.room ? "vanish-" + data.room : "vanish-message"
+  const room = data && data.room ? data.room : null
+  const tag = room ? "vanish-" + room : "vanish-message"
   event.waitUntil(
     (async () => {
       const clients = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
       })
-      const appInForeground = clients.some(
-        (c) => c.focused || c.visibilityState === "visible",
-      )
-      if (appInForeground) return
+      if (await someClientViewingRoom(clients, room)) return
       await self.registration.showNotification("Vanish", {
         body: "New encrypted message",
         tag,
@@ -69,6 +70,37 @@ self.addEventListener("push", (event) => {
     })(),
   )
 })
+
+// Resolve true only if some *visible* window reports that it is currently
+// showing the given room. Each window is asked over a private MessageChannel;
+// if nobody answers promptly we resolve false so a push is never silently
+// dropped (worst case: a redundant alert for a room you're actually viewing).
+function someClientViewingRoom(clients, room) {
+  if (!room || !clients || clients.length === 0) return Promise.resolve(false)
+  return Promise.all(clients.map((c) => askClientRoom(c))).then((states) =>
+    states.some((s) => s && s.visible && s.room === room),
+  )
+}
+
+function askClientRoom(client) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (value) => {
+      if (done) return
+      done = true
+      resolve(value)
+    }
+    try {
+      const channel = new MessageChannel()
+      channel.port1.onmessage = (event) => finish(event.data || null)
+      client.postMessage({ type: "VANISH_WHICH_ROOM" }, [channel.port2])
+    } catch {
+      finish(null)
+    }
+    // Don't let an unresponsive window (e.g. mid-reload) stall the push.
+    setTimeout(() => finish(null), 350)
+  })
+}
 
 // Focus an existing window when a message notification is clicked, or open one.
 self.addEventListener("notificationclick", (event) => {
