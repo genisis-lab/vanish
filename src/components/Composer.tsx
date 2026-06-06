@@ -35,6 +35,14 @@ const TTL_OPTIONS = [
   { label: "1d", ms: 86_400_000 },
 ]
 
+// Keep attachments to the media types the pipeline understands (image/video).
+// Files with no reported type (some pastes) are allowed through.
+function mediaFilesFrom(list: FileList | File[] | null | undefined): File[] {
+  return Array.from(list ?? []).filter(
+    (f) => !f.type || f.type.startsWith("image/") || f.type.startsWith("video/"),
+  )
+}
+
 export function Composer({
   uploads,
   roomId,
@@ -50,6 +58,7 @@ export function Composer({
   const [ttlIdx, setTtlIdx] = useState(0)
   const [burn, setBurn] = useState(false)
   const [justSent, setJustSent] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
@@ -76,6 +85,11 @@ export function Composer({
   function flashSent() {
     setJustSent(true)
     setTimeout(() => setJustSent(false), 900)
+  }
+
+  function addFiles(list: FileList | File[] | null | undefined) {
+    const picked = mediaFilesFrom(list)
+    if (picked.length) setFiles((prev) => [...prev, ...picked])
   }
 
   function submit() {
@@ -113,15 +127,52 @@ export function Composer({
   }
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    const picked = Array.from(e.target.files ?? [])
-    if (picked.length) setFiles((prev) => [...prev, ...picked])
+    addFiles(e.target.files)
     e.target.value = ""
+  }
+
+  // Paste an image straight from the clipboard (e.g. a screenshot).
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const pasted = mediaFilesFrom(e.clipboardData?.files)
+    if (pasted.length) {
+      e.preventDefault()
+      addFiles(pasted)
+    }
+  }
+
+  function onDragOver(e: React.DragEvent) {
+    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+      e.preventDefault()
+      setDragOver(true)
+    }
+  }
+
+  function onDragLeave(e: React.DragEvent) {
+    if (e.currentTarget === e.target) setDragOver(false)
+  }
+
+  function onDrop(e: React.DragEvent) {
+    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+      e.preventDefault()
+      setDragOver(false)
+      addFiles(e.dataTransfer?.files)
+    }
   }
 
   const canSend = (text.trim().length > 0 || files.length > 0) && !busy
 
   return (
-    <div className="composer">
+    <div
+      className={`composer${dragOver ? " drag-over" : ""}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragOver && (
+        <div className="composer-drop" style={DROP}>
+          <Upload size={18} /> Drop to attach — encrypted before upload
+        </div>
+      )}
       {uploads.length > 0 && (
         <div className="upload-status">
           {uploads.map((u) => (
@@ -201,6 +252,7 @@ export function Composer({
             onTyping()
           }}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
         />
         <button
           type="button"
@@ -269,3 +321,16 @@ function barWidth(p: number) {
 
 const NAME = { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }
 const STATUS = { color: "var(--text-faint)" }
+const DROP = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  justifyContent: "center",
+  padding: "10px",
+  marginBottom: "8px",
+  border: "1px dashed var(--accent)",
+  borderRadius: "12px",
+  color: "var(--accent)",
+  fontSize: "13px",
+  background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+} as const
