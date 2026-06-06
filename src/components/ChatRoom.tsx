@@ -33,6 +33,7 @@ import type { MediaManifestItem } from "../lib/media"
 import { revokeAllObjectUrls } from "../lib/media"
 import { formatCountdown } from "../lib/format"
 import { vault } from "../lib/vault"
+import { enableNotifications, notificationsEnabled, setNotificationsEnabled } from "../lib/notify"
 import { IconButton, Sheet, useToast } from "./ui"
 import { MessageItem } from "./MessageItem"
 import { Composer } from "./Composer"
@@ -64,6 +65,7 @@ export function ChatRoom({
   const [hidden, setHidden] = useState(false)
   const [unread, setUnread] = useState(0)
   const [savePrompt, setSavePrompt] = useState(() => !vault.get(session.invite.roomId))
+  const [notifOn, setNotifOn] = useState(() => notificationsEnabled())
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
@@ -223,6 +225,28 @@ export function ChatRoom({
     toast("Saved — you can rejoin this room after a refresh")
   }
 
+  async function toggleNotifications() {
+    if (notifOn) {
+      setNotificationsEnabled(false)
+      setNotifOn(false)
+      if (prefs.sound) prefs.toggleSound()
+      toast("Notifications off")
+      return
+    }
+    const result = await enableNotifications()
+    if (result === "unsupported") {
+      toast("This browser can’t show notifications")
+      return
+    }
+    if (result === "blocked") {
+      toast("Notifications are blocked — allow them in your browser’s site settings")
+      return
+    }
+    setNotifOn(true)
+    if (!prefs.sound) prefs.toggleSound()
+    toast("Notifications on — you’ll be alerted when this tab is in the background")
+  }
+
   function exportTranscript() {
     const lines = room.messages
       .filter((m) => m.kind !== "system")
@@ -353,10 +377,10 @@ export function ChatRoom({
                 className="hide-sm"
               />
               <IconButton
-                icon={prefs.sound ? <Bell size={18} /> : <BellOff size={18} />}
-                label={prefs.sound ? "Mute notifications" : "Enable notifications"}
-                onClick={prefs.toggleSound}
-                active={prefs.sound}
+                icon={notifOn ? <Bell size={18} /> : <BellOff size={18} />}
+                label={notifOn ? "Notifications on" : "Enable notifications"}
+                onClick={toggleNotifications}
+                active={notifOn}
                 className="hide-sm"
               />
               <IconButton
