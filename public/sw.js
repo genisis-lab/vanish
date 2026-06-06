@@ -2,7 +2,7 @@
 //
 // SECURITY: never caches API responses, media, or anything containing secrets.
 // Only static, non-sensitive build assets and the navigation shell are cached.
-const CACHE = "vanish-shell-v2"
+const CACHE = "vanish-shell-v3"
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
@@ -31,6 +31,22 @@ self.addEventListener("activate", (event) => {
 // worker take over immediately (a controllerchange then reloads the page).
 self.addEventListener("message", (event) => {
   if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting()
+})
+
+// Focus an existing window when a message notification is clicked, or open one.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close()
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clients) => {
+        for (const client of clients) {
+          if ("focus" in client) return client.focus()
+        }
+        if (self.clients.openWindow) return self.clients.openWindow("/")
+        return undefined
+      }),
+  )
 })
 
 self.addEventListener("fetch", (event) => {
