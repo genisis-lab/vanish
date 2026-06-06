@@ -11,6 +11,13 @@
 //     - proof   : server access proof (proof-of-possession, never the secret)
 //     - channel : realtime / signalling key (typing, presence)
 //     - safety  : safety-number / fingerprint material
+//
+// Separately, each device generates an ephemeral Ed25519 signing keypair per
+// session (see generateSigningKeyPair). That key is NOT derived from the room
+// secret on purpose: deriving it from shared material would let any room member
+// forge another member's signature. The private key never leaves the device;
+// the public key travels inside the encrypted envelope so peers can verify
+// authorship.
 
 export const APP = "vanish"
 export const VERSION = "v1"
@@ -172,6 +179,86 @@ export function formatSafetyNumber(bits: Uint8Array): string {
   }
   digits = digits.slice(0, 60).padEnd(60, "0")
   return (digits.match(/.{1,5}/g) || []).join(" ")
+}
+
+// ---------- per-sender signing (Ed25519) ----------
+//
+// Each device generates one signing keypair per session and signs every message
+// it sends. Recipients verify the signature against the public key carried
+// inside the (encrypted) envelope, so a participant who merely holds the shared
+// room key cannot forge messages attributed to another sender. Trust-on-first-
+// use pinning + the fingerprint below let peers detect a key that changes
+// mid-conversation.
+
+export interface SigningKeyPair {
+  privateKey: CryptoKey
+  publicKey: CryptoKey
+  /** Raw 32-byte Ed25519 public key, base64url. Travels inside the envelope. */
+  publicKeyB64: string
+}
+
+// Cache the one-time capability check: some older runtimes lack WebCrypto
+// Ed25519, in which case the app runs without per-sender signing.
+let ed25519Supported: boolean | null = null
+
+export async function generateSigningKeyPair(): Promise<SigningKeyPair | null> {
+  if (ed25519Supported === false) return null
+  try {
+    const pair = (await subtle().generateKey({ name: "Ed25519" }, false, [
+      "sign",
+      "verify",
+    ])) as CryptoKeyPair
+    const rawPub = new Uint8Array(await subtle().exportKey("raw", pair.publicKey))
+    ed25519Supported = true
+    return {
+      privateKey: pair.privateKey,
+      publicKey: pair.publicKey,
+      publicKeyB64: toBase64Url(rawPub),
+    }
+  } catch {
+    ed25519Supported = false
+    return null
+  }
+}
+
+export async function signEd25519(privateKey: CryptoKey, bytes: Uint8Array): Promise<string> {
+  const sig = new Uint8Array(
+    await subtle().sign({ name: "Ed25519" }, privateKey, bytes as unknown as BufferSource),
+  )
+  return toBase64Url(sig)
+}
+
+export async function verifyEd25519(
+  publicKeyB64: string,
+  signatureB64: string,
+  bytes: Uint8Array,
+): Promise<boolean> {
+  try {
+    const pub = await subtle().importKey(
+      "raw",
+      fromBase64Url(publicKeyB64) as unknown as BufferSource,
+      { name: "Ed25519" },
+      false,
+      ["verify"],
+    )
+    return await subtle().verify(
+      { name: "Ed25519" },
+      pub,
+      fromBase64Url(signatureB64) as unknown as BufferSource,
+      bytes as unknown as BufferSource,
+    )
+  } catch {
+    return false
+  }
+}
+
+// Short, human-comparable fingerprint of a signing public key: first 8 bytes of
+// its SHA-256, rendered as four groups of four hex chars.
+export async function signingFingerprint(publicKeyB64: string): Promise<string> {
+  const digest = await sha256(fromBase64Url(publicKeyB64))
+  let hex = ""
+  for (let i = 0; i < 8; i++) hex += digest[i].toString(16).padStart(2, "0")
+  return (hex.match(/.{1,4}/g) || []).join(" ")
 }
 
 // ---------- opaque reaction ids ----------

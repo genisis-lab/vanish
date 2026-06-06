@@ -1,7 +1,21 @@
 // Encoding/decoding of encrypted message envelopes. The server only ever sees
 // the opaque `envelope` string; everything meaningful (username, text, caption,
 // filenames, media manifest) is encrypted here with the room message key.
-import { decryptJson, encryptString, opaqueReactionId } from "@shared/crypto"
+//
+// On top of confidentiality, each message carries a per-sender Ed25519 signature
+// (and the signer's public key) *inside* the encrypted payload. Recipients
+// verify it so that holding the shared room key is not enough to forge a message
+// attributed to someone else. The signature is computed over a canonical binding
+// of room id + message id + participant id + kind + content, so a captured
+// envelope cannot be re-attributed to a different id/sender without detection.
+import {
+  decryptJson,
+  encryptString,
+  opaqueReactionId,
+  signEd25519,
+  utf8,
+  verifyEd25519,
+} from "@shared/crypto"
 import { padText } from "@shared/padding"
 import type { EncryptedMediaRef, MessageKind, StoredMessage } from "@shared/types"
 import type { MediaManifestItem } from "./media"
@@ -18,12 +32,18 @@ export interface TextPayload {
   username: string
   text: string
   replyTo?: ReplyRef
+  /** signer public key (base64url) */
+  spk?: string
+  /** Ed25519 signature (base64url) */
+  sig?: string
 }
 export interface MediaPayload {
   username: string
   caption: string
   items: MediaManifestItem[]
   replyTo?: ReplyRef
+  spk?: string
+  sig?: string
 }
 export interface SystemPayload {
   event: "join" | "leave" | "notice"
@@ -62,6 +82,76 @@ export interface DecryptedMessage {
   /** transient client-only send state */
   pending?: boolean
   failed?: boolean
+  /** per-sender signature result: "ok" valid, "bad" present-but-invalid,
+   * "none" unsigned (legacy/unsupported). undefined for system/undecryptable. */
+  verified?: "ok" | "bad" | "none"
+  /** signer's Ed25519 public key (base64url), used for trust-on-first-use pinning */
+  signerKey?: string
+  /** set by the room controller when this participant's signing key differs
+   * from the first key seen for them this session */
+  keyChanged?: boolean
+}
+
+// Canonical bytes that get signed/verified. Everything here is reconstructable
+// by the recipient from the decrypted payload + the server-relayed stored
+// metadata (id/participantId/kind), so a mismatch reliably fails verification.
+interface SignCore {
+  username: string
+  text: string
+  replyToId: string
+  mediaKeys: string
+}
+function signableBytes(
+  roomId: string,
+  id: string,
+  pid: string,
+  kind: MessageKind,
+  core: SignCore,
+): Uint8Array {
+  return utf8(
+    JSON.stringify({
+      v: 1,
+      room: roomId,
+      id,
+      pid,
+      kind,
+      u: core.username,
+      t: core.text,
+      r: core.replyToId,
+      m: core.mediaKeys,
+    }),
+  )
+}
+
+async function attachSignature(
+  session: RoomSession,
+  payload: { spk?: string; sig?: string },
+  id: string,
+  kind: MessageKind,
+  core: SignCore,
+): Promise<void> {
+  if (!session.signing) return
+  payload.spk = session.signing.publicKeyB64
+  payload.sig = await signEd25519(
+    session.signing.privateKey,
+    signableBytes(session.invite.roomId, id, session.participantId, kind, core),
+  )
+}
+
+async function verifySignature(
+  session: RoomSession,
+  stored: StoredMessage,
+  core: SignCore,
+  spk?: string,
+  sig?: string,
+): Promise<"ok" | "bad" | "none"> {
+  if (!spk || !sig) return "none"
+  const ok = await verifyEd25519(
+    spk,
+    sig,
+    signableBytes(session.invite.roomId, stored.id, stored.participantId, stored.kind, core),
+  )
+  return ok ? "ok" : "bad"
 }
 
 // Encrypt a payload, padding the plaintext to a size bucket first so the
@@ -72,20 +162,34 @@ async function encryptPadded(key: CryptoKey, value: unknown, context: string): P
 
 export async function encodeText(
   session: RoomSession,
+  id: string,
   text: string,
   replyTo?: ReplyRef,
 ): Promise<string> {
   const payload: TextPayload = { username: session.username, text, replyTo }
+  await attachSignature(session, payload, id, "text", {
+    username: session.username,
+    text,
+    replyToId: replyTo?.id ?? "",
+    mediaKeys: "",
+  })
   return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
 export async function encodeMedia(
   session: RoomSession,
+  id: string,
   caption: string,
   items: MediaManifestItem[],
   replyTo?: ReplyRef,
 ): Promise<string> {
   const payload: MediaPayload = { username: session.username, caption, items, replyTo }
+  await attachSignature(session, payload, id, "media", {
+    username: session.username,
+    text: caption,
+    replyToId: replyTo?.id ?? "",
+    mediaKeys: items.map((i) => i.objectKey).join(","),
+  })
   return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
@@ -128,11 +232,32 @@ export async function decodeMessage(
       base.text = p.caption
       base.items = p.items
       base.replyTo = p.replyTo
+      base.signerKey = p.spk
+      base.verified = await verifySignature(
+        session,
+        stored,
+        {
+          username: p.username,
+          text: p.caption,
+          replyToId: p.replyTo?.id ?? "",
+          mediaKeys: (p.items || []).map((i) => i.objectKey).join(","),
+        },
+        p.spk,
+        p.sig,
+      )
     } else {
       const p = await decryptJson<TextPayload>(session.keys.msgKey, stored.envelope, aad(session, "msg"))
       base.username = p.username
       base.text = p.text
       base.replyTo = p.replyTo
+      base.signerKey = p.spk
+      base.verified = await verifySignature(
+        session,
+        stored,
+        { username: p.username, text: p.text, replyToId: p.replyTo?.id ?? "", mediaKeys: "" },
+        p.spk,
+        p.sig,
+      )
     }
   } catch {
     base.text = "\u26a0 Unable to decrypt (different key)"
