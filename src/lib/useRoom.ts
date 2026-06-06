@@ -19,6 +19,7 @@ import {
 } from "./messages"
 import { encryptAndUpload, type MediaManifestItem, type UploadStatus } from "./media"
 import { vault } from "./vault"
+import { ensureNotificationPrompt, notificationsEnabled, showMessageNotification } from "./notify"
 
 export interface TypingUser {
   participantId: string
@@ -198,6 +199,33 @@ export function useRoom(session: RoomSession): RoomController {
     [session.participantId],
   )
 
+  // Surface a local OS/PWA notification for an incoming message from someone
+  // else while the tab is hidden. The message is decrypted on-device and only
+  // the already-visible sender name + a short preview are shown; nothing extra
+  // leaves the browser. Gated on the user's pref + granted OS permission.
+  const maybeNotify = useCallback(
+    (m: StoredMessage) => {
+      if (m.participantId === session.participantId || m.kind === "system") return
+      if (typeof document !== "undefined" && document.visibilityState === "visible") return
+      if (!notificationsEnabled()) return
+      void decodeMessage(session, m)
+        .then((d) => {
+          const name = nameOverrides.current.get(d.participantId) || d.username || "Someone"
+          const body =
+            d.kind === "media"
+              ? d.text?.trim() || "Sent an attachment"
+              : d.text?.trim() || "New message"
+          void showMessageNotification({
+            title: name,
+            body: body.slice(0, 140),
+            tag: session.invite.roomId,
+          })
+        })
+        .catch(() => {})
+    },
+    [session],
+  )
+
   useEffect(() => {
     let cancelled = false
     async function boot() {
@@ -223,9 +251,14 @@ export function useRoom(session: RoomSession): RoomController {
     }
     void boot()
 
+    // Arm a gesture-backed permission prompt so message notifications can be
+    // enabled (browsers only prompt from a user gesture). No-op once decided.
+    ensureNotificationPrompt()
+
     const realtime = new Realtime(session, {
       onMessage: (m) => {
         markPeerActive(m.participantId)
+        maybeNotify(m)
         ingest(m)
       },
       onPrune: (ids, all) => {
