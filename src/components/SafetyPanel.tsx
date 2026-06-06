@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { BadgeCheck, Fingerprint, ShieldAlert } from "lucide-react"
+import { signingFingerprint } from "@shared/crypto"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
 import { toQrDataUrl } from "../lib/qr"
@@ -18,6 +19,7 @@ export function SafetyPanel({
   const toast = useToast()
   const safetyNumber = session.keys.safetyNumber
   const [qr, setQr] = useState<string | null>(null)
+  const [fingerprint, setFingerprint] = useState<string | null>(null)
   const [verifiedAt, setVerifiedAt] = useState<string | undefined>(
     () => vault.get(session.invite.roomId)?.verifiedSafetyNumber,
   )
@@ -26,6 +28,14 @@ export function SafetyPanel({
   useEffect(() => {
     void toQrDataUrl("vanish-safety:" + safetyNumber, prefs.theme === "dark").then(setQr)
   }, [safetyNumber, prefs.theme])
+
+  useEffect(() => {
+    if (!session.signing) {
+      setFingerprint(null)
+      return
+    }
+    void signingFingerprint(session.signing.publicKeyB64).then(setFingerprint)
+  }, [session.signing])
 
   const markVerified = () => {
     vault.setVerified(session.invite.roomId, safetyNumber)
@@ -57,6 +67,13 @@ export function SafetyPanel({
         {qr ? <img src={qr} alt="Safety verification QR code" /> : <span className="spinner" />}
       </div>
 
+      {fingerprint && (
+        <div style={MB}>
+          <span className="label">Your sender fingerprint</span>
+          <div className="safety-num">{fingerprint}</div>
+        </div>
+      )}
+
       <button className="btn btn-primary btn-block" style={MB} onClick={markVerified}>
         <BadgeCheck size={16} /> Mark as verified
       </button>
@@ -66,8 +83,10 @@ export function SafetyPanel({
           <strong style={STRONG}>How this works.</strong> Messages, usernames, captions, filenames,
           and media are encrypted in your browser before upload, using keys derived from the invite
           secret. Compare this safety number with another participant (read it aloud or scan the QR)
-          — if they match, no one has tampered with the keys. Cloudflare may still process
-          operational metadata such as IP addresses, timestamps, room IDs, and object sizes.
+          — if they match, no one has tampered with the keys. Each device also signs every message
+          it sends with a per-session key, so you will see a warning on any message whose signature
+          does not check out or whose sender's key changes mid-conversation. Cloudflare may still
+          process operational metadata such as IP addresses, timestamps, room IDs, and object sizes.
         </span>
       </div>
     </Sheet>

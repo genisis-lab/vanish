@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react"
-import { Check, CheckCheck, Clock, Flame, Reply, RotateCw, SmilePlus } from "lucide-react"
+import { Check, CheckCheck, Clock, Flame, Reply, RotateCw, ShieldAlert, SmilePlus } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
@@ -203,6 +203,18 @@ function MessageItemInner({
           <button className="retry-btn" onClick={() => onRetry(msg.id)} aria-label="Retry sending">
             <RotateCw size={11} /> Retry
           </button>
+        )}
+        {(msg.keyChanged || msg.verified === "bad") && (
+          <span
+            className="state-failed"
+            title={
+              msg.keyChanged
+                ? "This sender's signing key changed since their first message this session — it may not be the same person."
+                : "This message's signature could not be verified — it may have been forged or tampered with."
+            }
+          >
+            <ShieldAlert size={11} /> {msg.keyChanged ? "Key changed" : "Unverified"}
+          </span>
         )}
       </div>
     </div>
