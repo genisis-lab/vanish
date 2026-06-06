@@ -2,15 +2,18 @@
 //
 // SECURITY: never caches API responses, media, or anything containing secrets.
 // Only static, non-sensitive build assets and the navigation shell are cached.
-const CACHE = "vanish-shell-v1"
+const CACHE = "vanish-shell-v2"
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
+  // Note: we intentionally do NOT call skipWaiting() here. A freshly installed
+  // worker waits until the page tells it to activate (see the message handler),
+  // so the app can prompt the user to refresh instead of swapping assets out
+  // from under an open conversation.
   event.waitUntil(
     caches
       .open(CACHE)
       .then((c) => c.addAll(SHELL))
-      .then(() => self.skipWaiting())
       .catch(() => {}),
   )
 })
@@ -22,6 +25,12 @@ self.addEventListener("activate", (event) => {
       .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   )
+})
+
+// The page posts this when the user accepts an update, letting the waiting
+// worker take over immediately (a controllerchange then reloads the page).
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting()
 })
 
 self.addEventListener("fetch", (event) => {
