@@ -20,6 +20,7 @@ import {
 import { encryptAndUpload, type MediaManifestItem, type UploadStatus } from "./media"
 import { vault } from "./vault"
 import { ensureNotificationPrompt, notificationsEnabled, showMessageNotification } from "./notify"
+import { subscribePush } from "./push"
 
 export interface TypingUser {
   participantId: string
@@ -167,7 +168,7 @@ export function useRoom(session: RoomSession): RoomController {
 
   // Apply a fresh participant count. Joins are announced by name via the
   // "join" signal (see onSignal), so we only surface a generic notice when
-  // someone leaves — leavers can't be named from a bare count.
+  // someone leaves \u2014 leavers can't be named from a bare count.
   const applyPresence = useCallback(
     (count: number) => {
       setParticipantCount(count)
@@ -251,6 +252,10 @@ export function useRoom(session: RoomSession): RoomController {
     // Arm a gesture-backed permission prompt so message notifications can be
     // enabled (browsers only prompt from a user gesture). No-op once decided.
     ensureNotificationPrompt()
+
+    // If notifications are already enabled on this device, (re)register a Web
+    // Push subscription so messages can wake the app even when it's fully closed.
+    if (notificationsEnabled()) void subscribePush(session)
 
     const realtime = new Realtime(session, {
       onMessage: (m) => {
