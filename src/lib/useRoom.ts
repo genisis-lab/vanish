@@ -355,4 +355,281 @@ export function useRoom(session: RoomSession): RoomController {
   const markSendFailed = useCallback(
     (id: string) => {
       const p = pendingById.current.get(id)
-      if (p) pending
+      if (p) pendingById.current.set(id, { ...p, pending: false, failed: true })
+      void recompute()
+    },
+    [recompute],
+  )
+
+  // Core media send used by both the first attempt and retries. Keeps the same
+  // message id throughout so a retry replaces the failed bubble in place and a
+  // late-landing original can't duplicate it.
+  const doSendMedia = useCallback(
+    async (id: string, files: File[], caption: string, opts?: SendOpts) => {
+      const now = Date.now()
+      const optimistic: DecryptedMessage = {
+        id,
+        participantId: session.participantId,
+        kind: "media",
+        createdAt: now,
+        expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+        mine: true,
+        username: session.username,
+        text: caption.trim(),
+        items: [],
+        replyTo: opts?.replyTo,
+        burn: opts?.burn,
+        reactions: [],
+        pending: true,
+      }
+      pendingById.current.set(id, optimistic)
+      pendingMediaById.current.set(id, { files, caption, opts })
+      void recompute()
+
+      const items: MediaManifestItem[] = []
+      const refs = []
+      for (const file of files) {
+        const uploadId = randomId(6)
+        setUploads((prev) => [
+          ...prev,
+          { id: uploadId, filename: file.name, status: "encrypting", progress: 0 },
+        ])
+        try {
+          const { ref, manifest } = await encryptAndUpload(session, file, (status, progress) =>
+            setUploads((prev) =>
+              prev.map((u) => (u.id === uploadId ? { ...u, status, progress: progress ?? u.progress } : u)),
+            ),
+          )
+          items.push(manifest)
+          refs.push(ref)
+        } catch (e) {
+          markSendFailed(id)
+          setError(e instanceof ApiError ? e.message : "Upload failed")
+          return
+        } finally {
+          setTimeout(
+            () => setUploads((prev) => prev.filter((u) => u.id !== uploadId)),
+            1500,
+          )
+        }
+      }
+      try {
+        const envelope = await encodeMedia(session, id, caption.trim(), items, opts?.replyTo)
+        const res = await api.postMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "media",
+            media: refs,
+            ttlMs: opts?.ttlMs,
+            burn: opts?.burn,
+          },
+        })
+        pendingMediaById.current.delete(id)
+        ingest(res.message)
+      } catch (e) {
+        markSendFailed(id)
+        setError(e instanceof ApiError ? e.message : "Failed to send media")
+      }
+    },
+    [session, ingest, recompute, markSendFailed],
+  )
+
+  const sendMedia = useCallback(
+    async (files: File[], caption: string, opts?: SendOpts) => {
+      if (files.length === 0) return
+      await doSendMedia(randomId(), files, caption, opts)
+    },
+    [doSendMedia],
+  )
+
+  // Retry a previously-failed optimistic message in place (same id, so it keeps
+  // its position and won't duplicate if the original eventually lands). Handles
+  // both media (re-encrypt + re-upload the original files) and text.
+  const retrySend = useCallback(
+    async (id: string) => {
+      const media = pendingMediaById.current.get(id)
+      if (media) {
+        await doSendMedia(id, media.files, media.caption, media.opts)
+        return
+      }
+      const p = pendingById.current.get(id)
+      if (!p || p.kind !== "text" || !p.text) return
+      pendingById.current.set(id, { ...p, failed: false, pending: true })
+      void recompute()
+      try {
+        const ttlMs = p.expiresAt ? Math.max(1000, p.expiresAt - Date.now()) : undefined
+        const envelope = await encodeText(session, id, p.text, p.replyTo)
+        const res = await api.postMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "text",
+            ttlMs,
+            burn: p.burn,
+          },
+        })
+        ingest(res.message)
+      } catch (e) {
+        const cur = pendingById.current.get(id)
+        if (cur) pendingById.current.set(id, { ...cur, pending: false, failed: true })
+        void recompute()
+        setError(e instanceof ApiError ? e.message : "Failed to send")
+      }
+    },
+    [session, ingest, recompute, doSendMedia],
+  )
+
+  const toggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      const stored = storedById.current.get(messageId)
+      const rid = await makeReactionId(session, emoji)
+      const already = stored?.reactions?.[rid]
+      try {
+        const envelope = already ? null : await encodeReaction(session, emoji)
+        await api.react({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          messageId,
+          reactionId: rid,
+          participantId: session.participantId,
+          envelope,
+        })
+        if (stored) {
+          const reactions = { ...(stored.reactions || {}) }
+          if (envelope === null) delete reactions[rid]
+          else reactions[rid] = { participantId: session.participantId, envelope }
+          storedById.current.set(messageId, { ...stored, reactions })
+          void recompute()
+        }
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to react")
+      }
+    },
+    [session, recompute],
+  )
+
+  const prune = useCallback(
+    async (ids: string[]) => {
+      if (ids.length === 0) return
+      for (const id of ids) storedById.current.delete(id)
+      void recompute()
+      try {
+        await api.prune({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          messageIds: ids,
+        })
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to prune")
+      }
+    },
+    [session, recompute],
+  )
+
+  const pruneAll = useCallback(async () => {
+    storedById.current.clear()
+    void recompute()
+    try {
+      await api.prune({ roomId: session.invite.roomId, accessProof: session.keys.accessProof, all: true })
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to prune")
+    }
+  }, [session, recompute])
+
+  const deleteRoom = useCallback(async () => {
+    try {
+      await api.deleteRoom(session.invite.roomId, session.keys.accessProof)
+      vault.forget(session.invite.roomId)
+      setDeleted(true)
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to delete room")
+    }
+  }, [session])
+
+  const notifyTyping = useCallback(() => {
+    const now = Date.now()
+    if (now - lastTypingSent.current < 1800) return
+    lastTypingSent.current = now
+    void encryptString(session.channelKey, session.username, aad(session, "channel"))
+      .then((envelope) => {
+        rt.current?.sendSignal({
+          t: "signal",
+          event: { type: "typing", participantId: session.participantId, envelope },
+        })
+      })
+      .catch(() => {})
+  }, [session])
+
+  // Change my display name mid-session. Future messages carry the new name; a
+  // live override updates my existing bubbles, and peers are notified so they
+  // update my name on their side too.
+  const rename = useCallback(
+    (rawName: string) => {
+      const name = rawName.trim().slice(0, 32) || "anon"
+      session.username = name
+      nameOverrides.current.set(session.participantId, name)
+      const saved = vault.get(session.invite.roomId)
+      if (saved) vault.save({ ...saved, username: name, lastUsed: Date.now() })
+      void recompute()
+      void encryptString(session.channelKey, name, aad(session, "channel"))
+        .then((envelope) => {
+          rt.current?.sendSignal({
+            t: "signal",
+            event: { type: "rename", participantId: session.participantId, envelope },
+          })
+        })
+        .catch(() => {})
+    },
+    [session, recompute],
+  )
+
+  return useMemo(
+    () => ({
+      messages,
+      connState,
+      participantCount,
+      room,
+      typing,
+      othersSeenUpTo,
+      uploads,
+      error,
+      deleted,
+      sendText,
+      sendMedia,
+      retrySend,
+      toggleReaction,
+      prune,
+      pruneAll,
+      deleteRoom,
+      notifyTyping,
+      rename,
+    }),
+    [
+      messages,
+      connState,
+      participantCount,
+      room,
+      typing,
+      othersSeenUpTo,
+      uploads,
+      error,
+      deleted,
+      sendText,
+      sendMedia,
+      retrySend,
+      toggleReaction,
+      prune,
+      pruneAll,
+      deleteRoom,
+      notifyTyping,
+      rename,
+    ],
+  )
+}
