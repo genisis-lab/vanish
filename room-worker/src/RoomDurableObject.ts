@@ -236,6 +236,11 @@ export class RoomDurableObject {
       },
       now,
     )
+    // Deliver to connected peers immediately, before the storage round-trips
+    // (persist + alarm scheduling), so realtime delivery feels instant.
+    // Durability follows right after; a crash in the gap at worst drops a
+    // single just-sent message, which the sender can resend.
+    this.broadcast({ t: "message", message })
     // Rolling per-room cap: prune the oldest messages beyond the ceiling.
     const all = this.core.list(now)
     if (all.length > MAX_MESSAGES_PER_ROOM) {
@@ -246,7 +251,6 @@ export class RoomDurableObject {
     }
     await this.persist()
     await this.scheduleSweep()
-    this.broadcast({ t: "message", message })
     return json({ message })
   }
 
@@ -290,7 +294,7 @@ export class RoomDurableObject {
       envelope: req.envelope,
     })
     if (!m) return json({ error: "not found" }, 404)
-    await this.persist()
+    // Broadcast first for snappy delivery; persist the updated state after.
     this.broadcast({
       t: "react",
       messageId: req.messageId,
@@ -298,6 +302,7 @@ export class RoomDurableObject {
       participantId: req.participantId,
       envelope: req.envelope,
     })
+    await this.persist()
     return json({ ok: true })
   }
 

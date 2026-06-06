@@ -190,7 +190,8 @@ export class Realtime {
         /* keep trying */
       }
     }
-    this.pollTimer = setInterval(poll, 2000) as unknown as number
+    // 1s cadence keeps fallback delivery snappy when the socket is unavailable.
+    this.pollTimer = setInterval(poll, 1000) as unknown as number
     void poll()
   }
 
