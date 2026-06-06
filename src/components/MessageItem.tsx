@@ -50,6 +50,7 @@ function MessageItemInner({
   onJumpTo,
 }: Props) {
   const [picker, setPicker] = useState(false)
+  const [actions, setActions] = useState(false)
   const [dragX, setDragX] = useState(0)
   const dragStartX = useRef<number | null>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
@@ -70,6 +71,22 @@ function MessageItemInner({
     return () => document.removeEventListener("pointerdown", onDocPointerDown)
   }, [picker])
 
+  // Close the tap-revealed quick actions when tapping elsewhere. The message's
+  // own bubble is excluded so its click handler can toggle them, and the tools
+  // themselves are excluded so their buttons still register.
+  useEffect(() => {
+    if (!actions) return
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t) return
+      if (t.closest("[data-msg-actions]")) return
+      if (t.closest(`[data-mid="${msg.id}"]`)) return
+      setActions(false)
+    }
+    document.addEventListener("pointerdown", onDown)
+    return () => document.removeEventListener("pointerdown", onDown)
+  }, [actions, msg.id])
+
   if (msg.kind === "system") {
     return <div className="sys-line">{msg.text}</div>
   }
@@ -79,7 +96,20 @@ function MessageItemInner({
   const ttl = formatCountdown(msg.expiresAt)
 
   function click() {
-    if (selecting) onToggleSelect(msg.id)
+    if (selecting) {
+      onToggleSelect(msg.id)
+      return
+    }
+    // On touch devices (no hover) tapping a message reveals its quick actions;
+    // on pointer devices the hover affordance handles it, so we leave taps free
+    // for text selection.
+    if (
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(hover: none)").matches
+    ) {
+      setActions((v) => !v)
+    }
   }
 
   // Touch swipe-to-reply: drag a bubble toward its owner's side past a small
@@ -102,11 +132,14 @@ function MessageItemInner({
   }
 
   const tools = !selecting && (
-    <div className="msg-tools">
+    <div className={`msg-tools ${actions ? "open" : ""}`} data-msg-actions>
       <button
         className="icon-btn mini"
         aria-label="Reply"
-        onClick={() => onReply(msg)}
+        onClick={() => {
+          onReply(msg)
+          setActions(false)
+        }}
       >
         <Reply size={15} />
       </button>
@@ -114,7 +147,10 @@ function MessageItemInner({
         className="icon-btn mini"
         aria-label="Add reaction"
         data-emoji-toggle
-        onClick={() => setPicker((v) => !v)}
+        onClick={() => {
+          setPicker((v) => !v)
+          setActions(false)
+        }}
       >
         <SmilePlus size={15} />
       </button>
@@ -133,6 +169,7 @@ function MessageItemInner({
       )}
 
       <div
+        className="msg-row"
         style={{
           ...ROW,
           transform: dragX ? `translateX(${dragX}px)` : undefined,
@@ -142,8 +179,6 @@ function MessageItemInner({
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
       >
-        {!msg.mine && tools}
-
         <div className="bubble" onClick={click} role={selecting ? "button" : undefined}>
           {msg.replyTo && (
             <div
@@ -169,7 +204,7 @@ function MessageItemInner({
           )}
         </div>
 
-        {msg.mine && tools}
+        {tools}
       </div>
 
       {picker && (

@@ -1,5 +1,5 @@
 /* ============================================================
-   Enhancements layer \u2014 loaded last so it can override earlier
+   Enhancements layer — loaded last so it can override earlier
    rules. Adjustable text size, in-chat save prompt, clickable
    brand-home, media screenshot deterrent, light-mode contrast,
    failed-send retry.
@@ -110,4 +110,80 @@
   --text-dim: #5b4f42;
   --text-faint: #7d6f60;
   --line: #ddd1c0;
+}
+
+/* ============================================================
+   iOS icon paint fix
+   On iOS (especially installed PWAs) inline SVG icons inside the
+   sticky, backdrop-filtered topbar could fail to paint until a
+   reflow such as a device rotation. Guaranteeing intrinsic sizing
+   and promoting the affected bars onto their own paint layer makes
+   the icons render correctly on first load.
+   ============================================================ */
+svg {
+  flex-shrink: 0;
+}
+@supports (-webkit-touch-callout: none) {
+  .topbar,
+  .topbar-actions,
+  .select-bar,
+  .composer-row,
+  .send-btn,
+  .upload-btn {
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+  }
+  .topbar {
+    -webkit-backdrop-filter: blur(12px);
+  }
+}
+
+/* ============================================================
+   Floating per-message quick actions (reply / react)
+   Previously the reply + react buttons sat inline next to every
+   bubble. They were invisible until hover, but still reserved
+   horizontal space — which left an awkward gap beside every message
+   on touch devices (where there is no hover to reveal them).
+   Now they float as a small popover just above the bubble, taking
+   no layout space, revealed on hover (pointer devices) or by tapping
+   the message (touch).
+   ============================================================ */
+.msg-row {
+  position: relative;
+}
+.msg-tools {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s var(--ease);
+  z-index: 4;
+}
+.msg:not(.mine) .msg-tools {
+  left: 0;
+}
+.msg.mine .msg-tools {
+  right: 0;
+}
+.msg-row:hover .msg-tools,
+.msg-tools.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.msg-tools .icon-btn.mini {
+  width: 30px;
+  height: 30px;
+  color: var(--text-dim);
+}
+.msg-tools .icon-btn.mini:hover {
+  color: var(--text);
 }
