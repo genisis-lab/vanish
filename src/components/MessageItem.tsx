@@ -52,7 +52,23 @@ function MessageItemInner({
   const [picker, setPicker] = useState(false)
   const [dragX, setDragX] = useState(0)
   const dragStartX = useRef<number | null>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
   useSecondTick(msg.kind !== "system" && msg.expiresAt != null)
+
+  // Close the reaction picker when tapping/clicking anywhere outside it (but
+  // not on the toggle button, which manages its own open/close).
+  useEffect(() => {
+    if (!picker) return
+    const onDocPointerDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null
+      if (!t) return
+      if (pickerRef.current?.contains(t)) return
+      if (t.closest("[data-emoji-toggle]")) return
+      setPicker(false)
+    }
+    document.addEventListener("pointerdown", onDocPointerDown)
+    return () => document.removeEventListener("pointerdown", onDocPointerDown)
+  }, [picker])
 
   if (msg.kind === "system") {
     return <div className="sys-line">{msg.text}</div>
@@ -97,6 +113,7 @@ function MessageItemInner({
       <button
         className="icon-btn mini"
         aria-label="Add reaction"
+        data-emoji-toggle
         onClick={() => setPicker((v) => !v)}
       >
         <SmilePlus size={15} />
@@ -156,7 +173,7 @@ function MessageItemInner({
       </div>
 
       {picker && (
-        <div className="emoji-pop">
+        <div className="emoji-pop" ref={pickerRef}>
           {QUICK_EMOJI.map((e) => (
             <button
               key={e}
@@ -231,7 +248,7 @@ function SendState({
   seen: boolean
 }) {
   if (failed) return <span className="state-failed">Failed</span>
-  if (pending) return <span className="state-pending">Sending\u2026</span>
+  if (pending) return <span className="state-pending">Sending…</span>
   if (seen)
     return (
       <span className="state-seen" title="Seen">
