@@ -11,6 +11,51 @@ it.
 
 ---
 
+## Features
+
+- **Anonymous, instant rooms** — no account, email, or phone. Pick a display name, create a
+  room, and share the secret invite link or QR code.
+- **End-to-end encryption** — message text, usernames, captions, filenames, and media are
+  encrypted in your browser before they touch the network (AES-GCM-256, keys derived with
+  HKDF-SHA-256).
+- **Per-sender signatures** — every message is signed with an ephemeral Ed25519 key, with
+  trust-on-first-use pinning, so holding the room key alone can't forge messages as another
+  member.
+- **Encrypted media** — share images and video; bytes, filenames, and captions are encrypted
+  client-side and stored as opaque R2 blobs. Drag-and-drop and clipboard paste are supported.
+- **Replies & reactions** — quote any message and react with emoji; reactions are encrypted
+  too.
+- **Realtime presence** — live typing indicators, participant counts, and “seen” markers over
+  WebSockets, with an automatic polling fallback.
+- **Disappearing messages** — per-message timers, optional burn-after-read, and an optional
+  whole-room self-destruct.
+- **Background notifications** — Web Push wakes you for new messages even when Vanish is fully
+  closed, across every room you've joined (see below).
+- **Installable PWA** — runs offline as an app shell and prompts you to refresh when a new
+  build ships.
+- **Privacy guards** — a privacy blur veils the conversation when you switch away, plus a
+  one-tap “panic” wipe-and-leave.
+- **Stays on your device** — optionally remember a room in an encrypted local vault to rejoin
+  after a refresh, change your nickname mid-room, and export a local transcript.
+
+### Notifications across rooms
+
+Notifications follow you across every room you've joined, not just the one on screen:
+
+- A message in the room you're **currently viewing** is handled by the in-app UI — no
+  redundant system notification.
+- A message in a **different room you've joined** (or while Vanish is backgrounded or fully
+  closed) still raises a background push — even when the app is open on another room.
+- Push payloads are **content-free** (`{ "t": "msg", "room": <id> }`). The server can't read
+  your messages, so the notification is a generic “new encrypted message” ping that opens the
+  app to decrypt locally.
+- Toggle notifications per session with the bell icon. Turning them off unsubscribes this
+  browser, and the server prunes dead subscriptions automatically. Background push requires
+  VAPID keys to be configured at deploy time (see Deployment); without them, in-app and
+  on-screen notifications still work.
+
+---
+
 ## How the encryption works
 
 - The invite key is `anonchat:v1:<roomId>.<secret>`, where `roomId` is 16 random bytes and
@@ -53,10 +98,12 @@ it.
 | API | **Pages Functions** under `functions/api/*` |
 | Coordination + realtime | **Durable Object** (`RoomDurableObject`) in the companion `room-worker/` |
 | Encrypted media | **R2** bucket `vanish-media` (encrypted blobs only) |
+| Background push | **Web Push** (VAPID) fanned out from the Durable Object |
 
-The Durable Object owns each room's state, fans out realtime WebSocket frames, and runs
-`alarm()`-driven sweeps to delete expired messages and orphaned media. Pages Functions are thin
-auth/validation handlers that forward to the DO via a service binding.
+The Durable Object owns each room's state, fans out realtime WebSocket frames, sends background
+Web Push pings to closed/asleep devices, and runs `alarm()`-driven sweeps to delete expired
+messages and orphaned media. Pages Functions are thin auth/validation handlers that forward to
+the DO via a service binding.
 
 ```
 browser ──(ciphertext)──▶ Pages Functions ──(service binding)──▶ Room Durable Object
@@ -164,7 +211,26 @@ What the suites cover:
    > If `UPLOAD_SECRET` is **not** set, the worker falls back to a hard-coded development secret
    > (`vanish-dev-upload-secret-change-me`). That makes upload/download tokens forgeable, so
    > setting a real secret in production is required, not optional.
-5. **Build and deploy Pages**
+5. **Enable background notifications** (optional, recommended) — generate a VAPID key pair for
+   Web Push:
+   ```bash
+   npx web-push generate-vapid-keys
+   ```
+   Put the keys on the **worker** (it signs and sends the pushes) and the **public key** on
+   **Pages** (the client subscribes with it). Use the **same** public key in both places; the
+   private key must **never** be placed on Pages.
+   ```bash
+   # Worker (Durable Object) — sends notifications
+   npx wrangler secret put VAPID_PUBLIC_KEY
+   npx wrangler secret put VAPID_PRIVATE_KEY
+   npx wrangler secret put VAPID_SUBJECT      # a contact URI: mailto:you@example.com or https://…
+
+   # Pages — the client reads the public key to subscribe
+   npx wrangler pages secret put VAPID_PUBLIC_KEY --project-name vanish
+   ```
+   > If VAPID is unset, Vanish still works — background push fan-out is simply disabled, and
+   > in-app plus on-screen notifications continue to function.
+6. **Build and deploy Pages**
    ```bash
    npm run build
    npm run pages:deploy    # wrangler pages deploy dist --project-name vanish
@@ -172,14 +238,19 @@ What the suites cover:
    The Pages project binds the `ROOM` Durable Object namespace to the `vanish-room` worker and
    binds the `MEDIA` R2 bucket (see `wrangler.toml`). Confirm both bindings in the dashboard if
    you created the project through the UI.
-6. **Smoke test** the live deploy: open the site, create a room, open the invite link in a
-   second browser/profile, send a message, upload an image, prune, and delete.
+7. **Smoke test** the live deploy: open the site, create a room, open the invite link in a
+   second browser/profile, send a message, upload an image, prune, and delete. To check push,
+   enable notifications in two rooms and confirm a message in the room you're *not* viewing
+   raises a notification.
 
 ### Environment variables
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
 | `UPLOAD_SECRET` | Worker + Pages (secret) | Signs short-lived R2 upload/download tokens |
+| `VAPID_PUBLIC_KEY` | Worker + Pages (secret) | Web Push public key; the client subscribes with it (same value in both places) |
+| `VAPID_PRIVATE_KEY` | Worker (secret) | Web Push private key that signs push messages — never place it on Pages |
+| `VAPID_SUBJECT` | Worker (secret) | VAPID contact URI (`mailto:…` or `https://…`) |
 | `VITE_APP_NAME` | Build-time (optional) | Override the app name |
 | `VITE_CF_ANALYTICS_TOKEN` | Build-time (optional) | Cloudflare Web Analytics token |
 | `VITE_IPA_DOWNLOAD_URL` | Build-time (optional) | If set, shows the “Install the app” prompt and a Download IPA button |
@@ -195,6 +266,8 @@ What the suites cover:
   does not let someone forge messages as another participant.
 - Plaintext is size-padded before encryption, so ciphertext and stored object sizes reveal
   little about message or file length.
+- Background push notifications are **content-free** — they carry only a room id, never message
+  text — and the device decrypts locally after you open the app.
 - Static front-end assets are protected with **Subresource Integrity** (SHA-384 hashes injected
   at build time), so your browser refuses to run any script or stylesheet whose bytes have been
   altered in transit or at the edge.
@@ -265,3 +338,9 @@ share an invite link out-of-band**. Being explicit about what that does and does
   strict CSP help, but you are ultimately trusting the deployment and Cloudflare's edge.
 - When it matters, you compare the **safety number** out-of-band and heed the per-sender
   key-change warnings.
+
+---
+
+## License
+
+Vanish is released under the [MIT License](./LICENSE).

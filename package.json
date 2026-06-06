@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "license": "MIT",
   "description": "Vanish \u2014 anonymous, end-to-end encrypted, ephemeral chat rooms on Cloudflare.",
   "scripts": {
     "dev": "vite",
