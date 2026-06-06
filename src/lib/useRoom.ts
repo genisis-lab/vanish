@@ -81,6 +81,11 @@ export function useRoom(session: RoomSession): RoomController {
   // Optimistic, not-yet-acknowledged outgoing messages. Removed once the server
   // echoes the same id back into storedById.
   const pendingById = useRef(new Map<string, DecryptedMessage>())
+  // Original File objects for in-flight/failed media sends, keyed by message id,
+  // so a failed upload can be retried in place (same id, no duplicate).
+  const pendingMediaById = useRef(
+    new Map<string, { files: File[]; caption: string; opts?: SendOpts }>(),
+  )
   // Client-only system notices (join/leave). Never sent to or stored on server.
   const noticesRef = useRef<DecryptedMessage[]>([])
   // Live display-name overrides keyed by participantId, applied on top of the
@@ -110,6 +115,9 @@ export function useRoom(session: RoomSession): RoomController {
     }
     for (const id of Array.from(pendingById.current.keys())) {
       if (storedById.current.has(id)) pendingById.current.delete(id)
+    }
+    for (const id of Array.from(pendingMediaById.current.keys())) {
+      if (storedById.current.has(id)) pendingMediaById.current.delete(id)
     }
     const pending = Array.from(pendingById.current.values())
     const merged = [...decoded, ...pending, ...noticesRef.current].sort(
@@ -333,10 +341,111 @@ export function useRoom(session: RoomSession): RoomController {
     [session, ingest, recompute],
   )
 
-  // Retry a previously-failed optimistic text message in place (same id, so it
-  // keeps its position and won't duplicate if the original eventually lands).
+  // Mark an optimistic message as failed so the UI offers a retry affordance.
+  const markSendFailed = useCallback(
+    (id: string) => {
+      const p = pendingById.current.get(id)
+      if (p) pendingById.current.set(id, { ...p, pending: false, failed: true })
+      void recompute()
+    },
+    [recompute],
+  )
+
+  // Core media send used by both the first attempt and retries. Keeps the same
+  // message id throughout so a retry replaces the failed bubble in place and a
+  // late-landing original can't duplicate it.
+  const doSendMedia = useCallback(
+    async (id: string, files: File[], caption: string, opts?: SendOpts) => {
+      const now = Date.now()
+      const optimistic: DecryptedMessage = {
+        id,
+        participantId: session.participantId,
+        kind: "media",
+        createdAt: now,
+        expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+        mine: true,
+        username: session.username,
+        text: caption.trim(),
+        items: [],
+        replyTo: opts?.replyTo,
+        burn: opts?.burn,
+        reactions: [],
+        pending: true,
+      }
+      pendingById.current.set(id, optimistic)
+      pendingMediaById.current.set(id, { files, caption, opts })
+      void recompute()
+
+      const items: MediaManifestItem[] = []
+      const refs = []
+      for (const file of files) {
+        const uploadId = randomId(6)
+        setUploads((prev) => [
+          ...prev,
+          { id: uploadId, filename: file.name, status: "encrypting", progress: 0 },
+        ])
+        try {
+          const { ref, manifest } = await encryptAndUpload(session, file, (status, progress) =>
+            setUploads((prev) =>
+              prev.map((u) => (u.id === uploadId ? { ...u, status, progress: progress ?? u.progress } : u)),
+            ),
+          )
+          items.push(manifest)
+          refs.push(ref)
+        } catch (e) {
+          markSendFailed(id)
+          setError(e instanceof ApiError ? e.message : "Upload failed")
+          return
+        } finally {
+          setTimeout(
+            () => setUploads((prev) => prev.filter((u) => u.id !== uploadId)),
+            1500,
+          )
+        }
+      }
+      try {
+        const envelope = await encodeMedia(session, caption.trim(), items, opts?.replyTo)
+        const res = await api.postMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "media",
+            media: refs,
+            ttlMs: opts?.ttlMs,
+            burn: opts?.burn,
+          },
+        })
+        pendingMediaById.current.delete(id)
+        ingest(res.message)
+      } catch (e) {
+        markSendFailed(id)
+        setError(e instanceof ApiError ? e.message : "Failed to send media")
+      }
+    },
+    [session, ingest, recompute, markSendFailed],
+  )
+
+  const sendMedia = useCallback(
+    async (files: File[], caption: string, opts?: SendOpts) => {
+      if (files.length === 0) return
+      await doSendMedia(randomId(), files, caption, opts)
+    },
+    [doSendMedia],
+  )
+
+  // Retry a previously-failed optimistic message in place (same id, so it keeps
+  // its position and won't duplicate if the original eventually lands). Handles
+  // both media (re-encrypt + re-upload the original files) and text.
   const retrySend = useCallback(
     async (id: string) => {
+      const media = pendingMediaById.current.get(id)
+      if (media) {
+        await doSendMedia(id, media.files, media.caption, media.opts)
+        return
+      }
       const p = pendingById.current.get(id)
       if (!p || p.kind !== "text" || !p.text) return
       pendingById.current.set(id, { ...p, failed: false, pending: true })
@@ -364,60 +473,7 @@ export function useRoom(session: RoomSession): RoomController {
         setError(e instanceof ApiError ? e.message : "Failed to send")
       }
     },
-    [session, ingest, recompute],
-  )
-
-  const sendMedia = useCallback(
-    async (files: File[], caption: string, opts?: SendOpts) => {
-      if (files.length === 0) return
-      const items: MediaManifestItem[] = []
-      const refs = []
-      for (const file of files) {
-        const uploadId = randomId(6)
-        setUploads((prev) => [
-          ...prev,
-          { id: uploadId, filename: file.name, status: "encrypting", progress: 0 },
-        ])
-        try {
-          const { ref, manifest } = await encryptAndUpload(session, file, (status, progress) =>
-            setUploads((prev) =>
-              prev.map((u) => (u.id === uploadId ? { ...u, status, progress: progress ?? u.progress } : u)),
-            ),
-          )
-          items.push(manifest)
-          refs.push(ref)
-        } catch (e) {
-          setError(e instanceof ApiError ? e.message : "Upload failed")
-          return
-        } finally {
-          setTimeout(
-            () => setUploads((prev) => prev.filter((u) => u.id !== uploadId)),
-            1500,
-          )
-        }
-      }
-      try {
-        const id = randomId()
-        const envelope = await encodeMedia(session, caption.trim(), items, opts?.replyTo)
-        const res = await api.postMessage({
-          roomId: session.invite.roomId,
-          accessProof: session.keys.accessProof,
-          message: {
-            id,
-            participantId: session.participantId,
-            envelope,
-            kind: "media",
-            media: refs,
-            ttlMs: opts?.ttlMs,
-            burn: opts?.burn,
-          },
-        })
-        ingest(res.message)
-      } catch (e) {
-        setError(e instanceof ApiError ? e.message : "Failed to send media")
-      }
-    },
-    [session, ingest],
+    [session, ingest, recompute, doSendMedia],
   )
 
   const toggleReaction = useCallback(
