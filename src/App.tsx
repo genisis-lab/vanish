@@ -55,7 +55,10 @@ export default function App() {
   }, [])
 
   const goJoinByKey = useCallback((rawKey: string): boolean => {
-    const invite = parseInviteKey(rawKey.trim())
+    const trimmed = rawKey.trim()
+    // Accept either a raw invite key (anonchat:v1:…) or a full invite link
+    // (https://…/#invite=…) pasted into the join box.
+    const invite = parseInviteKey(trimmed) ?? parseInviteFromUrl(trimmed)
     if (invite) setRoute({ name: "join", invite })
     return !!invite
   }, [])
