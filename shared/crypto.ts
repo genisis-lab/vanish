@@ -12,12 +12,13 @@
 //     - channel : realtime / signalling key (typing, presence)
 //     - safety  : safety-number / fingerprint material
 //
-// Separately, each device generates an ephemeral Ed25519 signing keypair per
-// session (see generateSigningKeyPair). That key is NOT derived from the room
-// secret on purpose: deriving it from shared material would let any room member
-// forge another member's signature. The private key never leaves the device;
-// the public key travels inside the encrypted envelope so peers can verify
-// authorship.
+// Separately, each device generates an Ed25519 signing keypair, persisted
+// locally per room (see generateSigningKeyPair / exportSigningKeyPair) so a
+// returning participant keeps a stable signing identity. That key is NOT derived
+// from the room secret on purpose: deriving it from shared material would let any
+// room member forge another member's signature. The private key never leaves the
+// device; the public key travels inside the encrypted envelope so peers can
+// verify authorship.
 
 export const APP = "vanish"
 export const VERSION = "v1"
@@ -183,12 +184,12 @@ export function formatSafetyNumber(bits: Uint8Array): string {
 
 // ---------- per-sender signing (Ed25519) ----------
 //
-// Each device generates one signing keypair per session and signs every message
-// it sends. Recipients verify the signature against the public key carried
-// inside the (encrypted) envelope, so a participant who merely holds the shared
-// room key cannot forge messages attributed to another sender. Trust-on-first-
-// use pinning + the fingerprint below let peers detect a key that changes
-// mid-conversation.
+// Each device generates one signing keypair per room (persisted locally so it
+// stays stable across rejoins) and signs every message it sends. Recipients
+// verify the signature against the public key carried inside the (encrypted)
+// envelope, so a participant who merely holds the shared room key cannot forge
+// messages attributed to another sender. Trust-on-first-use pinning + the
+// fingerprint below let peers detect a key that changes mid-conversation.
 
 export interface SigningKeyPair {
   privateKey: CryptoKey
@@ -204,7 +205,9 @@ let ed25519Supported: boolean | null = null
 export async function generateSigningKeyPair(): Promise<SigningKeyPair | null> {
   if (ed25519Supported === false) return null
   try {
-    const pair = (await subtle().generateKey({ name: "Ed25519" }, false, [
+    // Extractable so the keypair can be persisted locally (see
+    // exportSigningKeyPair) and reloaded for a stable identity across rejoins.
+    const pair = (await subtle().generateKey({ name: "Ed25519" }, true, [
       "sign",
       "verify",
     ])) as CryptoKeyPair
@@ -217,6 +220,50 @@ export async function generateSigningKeyPair(): Promise<SigningKeyPair | null> {
     }
   } catch {
     ed25519Supported = false
+    return null
+  }
+}
+
+// Export a signing keypair to a persistable form (private key as PKCS#8, public
+// key as the raw base64url already carried in envelopes). Stored only on this
+// device; never transmitted.
+export async function exportSigningKeyPair(
+  pair: SigningKeyPair,
+): Promise<{ priv: string; pub: string } | null> {
+  try {
+    const pkcs8 = new Uint8Array(await subtle().exportKey("pkcs8", pair.privateKey))
+    return { priv: toBase64Url(pkcs8), pub: pair.publicKeyB64 }
+  } catch {
+    return null
+  }
+}
+
+// Re-import a previously exported signing keypair so a returning participant
+// keeps a stable signing identity across reloads. Returns null if the runtime
+// lacks Ed25519 or the stored material is unusable (caller then regenerates).
+export async function importSigningKeyPair(
+  privPkcs8B64: string,
+  publicKeyB64: string,
+): Promise<SigningKeyPair | null> {
+  if (ed25519Supported === false) return null
+  try {
+    const privateKey = await subtle().importKey(
+      "pkcs8",
+      fromBase64Url(privPkcs8B64) as unknown as BufferSource,
+      { name: "Ed25519" },
+      true,
+      ["sign"],
+    )
+    const publicKey = await subtle().importKey(
+      "raw",
+      fromBase64Url(publicKeyB64) as unknown as BufferSource,
+      { name: "Ed25519" },
+      false,
+      ["verify"],
+    )
+    ed25519Supported = true
+    return { privateKey, publicKey, publicKeyB64 }
+  } catch {
     return null
   }
 }
