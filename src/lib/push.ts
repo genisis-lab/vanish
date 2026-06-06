@@ -6,11 +6,14 @@
 import { api } from "./api"
 import type { RoomSession } from "./session"
 
-function urlBase64ToUint8Array(base64: string): Uint8Array {
+// Returns a Uint8Array backed by a plain ArrayBuffer (not ArrayBufferLike), as
+// required by PushManager.subscribe's applicationServerKey under TS 5.7+.
+function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4)
   const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/")
   const raw = atob(b64)
-  const out = new Uint8Array(raw.length)
+  const buffer = new ArrayBuffer(raw.length)
+  const out = new Uint8Array(buffer)
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i)
   return out
 }
