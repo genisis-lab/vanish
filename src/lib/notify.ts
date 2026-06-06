@@ -69,6 +69,10 @@ export function ensureNotificationPrompt(): void {
 
 let lastNotification: Notification | null = null
 
+// `renotify` is valid at runtime (and requires `tag`) but isn't declared on
+// NotificationOptions in this project's DOM lib, so widen the payload type.
+type VanishNotificationOptions = NotificationOptions & { renotify?: boolean }
+
 export async function showMessageNotification(opts: {
   title: string
   body: string
@@ -78,7 +82,7 @@ export async function showMessageNotification(opts: {
   // Never interrupt while the tab is actually in the foreground.
   if (typeof document !== "undefined" && document.visibilityState === "visible") return
 
-  const payload: NotificationOptions = {
+  const payload: VanishNotificationOptions = {
     body: opts.body,
     tag: opts.tag || "vanish-message",
     icon: "/icon.svg",
