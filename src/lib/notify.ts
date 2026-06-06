@@ -47,6 +47,20 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
   }
 }
 
+// One-call helper for an explicit, user-initiated "enable notifications"
+// control. Requests OS permission when needed and flips the local pref on.
+// Returns a short status the UI can surface as a toast.
+export async function enableNotifications(): Promise<
+  "enabled" | "blocked" | "unsupported"
+> {
+  if (!notificationsSupported()) return "unsupported"
+  let permission = Notification.permission
+  if (permission === "default") permission = await requestNotificationPermission()
+  if (permission !== "granted") return "blocked"
+  setNotificationsEnabled(true)
+  return "enabled"
+}
+
 let promptArmed = false
 
 // Browsers only show the permission prompt in response to a user gesture, so
