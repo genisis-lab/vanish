@@ -10,7 +10,9 @@ import "./styles/enhancements.css"
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("/sw.js")
+      // updateViaCache:"none" makes the browser bypass its HTTP cache when
+      // checking sw.js, so update() reliably notices a freshly deployed build.
+      .register("/sw.js", { updateViaCache: "none" })
       .then((reg) => {
         if (reg.waiting) promptUpdate(reg)
         reg.addEventListener("updatefound", () => {
@@ -24,6 +26,20 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
             }
           })
         })
+
+        // Proactively poll for a new build so the refresh prompt appears
+        // promptly, instead of only after a full tab reload or PWA relaunch.
+        // We check shortly after load, on a steady interval, and whenever the
+        // app regains focus/visibility (e.g. switching back to the PWA).
+        const checkForUpdate = () => {
+          reg.update().catch(() => {})
+        }
+        checkForUpdate()
+        setInterval(checkForUpdate, 60_000)
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") checkForUpdate()
+        })
+        window.addEventListener("focus", checkForUpdate)
       })
       .catch(() => {})
 
