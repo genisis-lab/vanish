@@ -27,6 +27,14 @@ it.
 - Every payload is sealed as `[version][iv(12)][ciphertext]` (base64url) with AES-GCM and a
   purpose-bound AAD (`<roomId>:msg`, `:media`, `:react`, `:channel`). The `msgKey`/`mediaKey`
   are non-extractable `CryptoKey`s.
+- Each device also generates an ephemeral **Ed25519 signing keypair** when it joins. This key
+  is deliberately **not** derived from the room secret — deriving it from shared material would
+  let any member forge another member's signature. The device signs every message, and the
+  signature plus its public key travel **inside** the encrypted envelope. Recipients verify the
+  signature, so merely holding the shared room key is **not** enough to forge a message
+  attributed to another sender. The UI flags any message whose signature fails to verify or
+  whose sender's signing key changes mid-session (trust-on-first-use pinning). If a browser
+  lacks WebCrypto Ed25519, the app gracefully falls back to sending unsigned messages.
 - Plaintext is padded to coarse size buckets before encryption (messages to 256-byte buckets,
   media to power-of-four byte buckets) so ciphertext length leaks far less about content.
 - The server stores only: room id, an access-verifier hash, invite expiry, created/deleted
@@ -128,6 +136,14 @@ What the suites cover:
    ```bash
    npx wrangler r2 bucket create vanish-media
    ```
+   > **Optional safety net:** the Durable Object already deletes media on prune,
+   > burn-after-read, per-message expiry, and room destruction. As belt-and-braces against any
+   > object the DO ever misses (e.g. an upload whose message post failed), add an R2 lifecycle
+   > rule that auto-expires objects under the `rooms/` prefix. List current rules with
+   > `npx wrangler r2 bucket lifecycle list vanish-media`, and add one with
+   > `npx wrangler r2 bucket lifecycle add vanish-media` (interactive) or via the R2 dashboard
+   > (Bucket ▸ Settings ▸ Object lifecycle rules). Use an expiry comfortably longer than your
+   > longest message TTL (e.g. 7 days).
 3. **Deploy the Room Durable Object worker**
    ```bash
    npm run worker:deploy   # publishes the "vanish-room" worker that exports RoomDurableObject
@@ -145,6 +161,9 @@ What the suites cover:
    npx wrangler secret list
    npx wrangler pages secret list --project-name vanish
    ```
+   > If `UPLOAD_SECRET` is **not** set, the worker falls back to a hard-coded development secret
+   > (`vanish-dev-upload-secret-change-me`). That makes upload/download tokens forgeable, so
+   > setting a real secret in production is required, not optional.
 5. **Build and deploy Pages**
    ```bash
    npm run build
@@ -171,6 +190,9 @@ What the suites cover:
 
 - Messages, usernames, captions, filenames, and media are encrypted in your browser before
   upload. The server cannot read them.
+- Each message is **signed with a per-sender Ed25519 key**, so other participants are warned if
+  a message can't be verified or a sender's signing key changes — holding the room key alone
+  does not let someone forge messages as another participant.
 - Plaintext is size-padded before encryption, so ciphertext and stored object sizes reveal
   little about message or file length.
 - Static front-end assets are protected with **Subresource Integrity** (SHA-384 hashes injected
@@ -187,3 +209,59 @@ What the suites cover:
   to operate the service.
 - Vanish uses strong, modern, secure-by-default cryptography, but it is **not** intended for
   legal, military, or classified use.
+
+---
+
+## Threat model
+
+Vanish is built for **anonymous, ephemeral, end-to-end-encrypted conversations among people who
+share an invite link out-of-band**. Being explicit about what that does and does not cover:
+
+### What Vanish protects against
+
+- **The server / host reading content.** Pages Functions, the Durable Object, and R2 only ever
+  store ciphertext and operational metadata. They hold no key material and cannot decrypt
+  messages, usernames, captions, filenames, or media — even if fully compromised.
+- **Network eavesdroppers.** All content is AES-GCM-256 encrypted in the browser before it
+  touches the network, underneath TLS.
+- **Tampering with stored or in-transit ciphertext.** AES-GCM authentication tags make any
+  modified envelope fail decryption rather than yield altered plaintext.
+- **Impersonation by another room member.** Per-sender Ed25519 signatures plus trust-on-first-
+  use pinning mean a participant (or anyone who merely holds the invite key) cannot forge a
+  message attributed to a different sender without the UI flagging it.
+- **Tampered front-end delivery.** Subresource Integrity (SHA-384) makes the browser refuse any
+  script or stylesheet whose bytes were altered at the edge or in transit.
+- **Indefinite retention.** Messages auto-expire on a per-room schedule, support
+  burn-after-read, and the whole room can self-destruct; deletion removes envelopes and the
+  associated R2 objects.
+- **Content-length leakage.** Plaintext is padded to coarse size buckets before encryption.
+
+### What Vanish does NOT protect against
+
+- **A malicious or careless participant.** Anyone you give the invite key to can read
+  everything, screenshot it, copy it, or re-share the key. Signing proves *who said what among
+  current members* — it does not stop an authorized member from leaking.
+- **A compromised device or browser.** Keys live in your browser; malware, a hostile extension,
+  or someone with your unlocked device can read plaintext. Vanish is only as trustworthy as the
+  endpoints.
+- **Metadata.** Cloudflare necessarily processes transport metadata — IP addresses, timestamps,
+  room IDs, request sizes, and object sizes. Vanish does not use Tor-style mix routing; it is
+  not designed to hide *that* you are talking or *with whom* at the network level.
+- **Forward secrecy (not yet).** The room key is static for the life of the invite, so a future
+  compromise of the invite secret could decrypt previously captured ciphertext. Key ratcheting
+  is a planned enhancement.
+- **Lost keys.** The secret lives only in the invite link and your browser. Lose the link and
+  the room is unrecoverable by design — there is no reset or recovery.
+- **Traffic analysis.** Presence counts and message timing are observable to the server.
+- **Legal, military, or classified use.** Vanish uses strong, modern, secure-by-default
+  cryptography, but it has not been independently audited and is not intended for high-stakes
+  adversarial use.
+
+### Trust assumptions
+
+- You trust the people you share the invite key with.
+- You trust the device and browser you run Vanish in.
+- You trust that the code served to your browser is authentic. Subresource Integrity and a
+  strict CSP help, but you are ultimately trusting the deployment and Cloudflare's edge.
+- When it matters, you compare the **safety number** out-of-band and heed the per-sender
+  key-change warnings.
