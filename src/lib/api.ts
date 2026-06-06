@@ -8,6 +8,8 @@ import type {
   PostMessageRequest,
   PruneRequest,
   PublicRoomState,
+  PushSubscribeRequest,
+  PushUnsubscribeRequest,
   ReactRequest,
   SignUploadRequest,
   SignUploadResponse,
@@ -59,6 +61,16 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return data as T
 }
 
+async function get<T>(path: string): Promise<T> {
+  const res = await fetch(path)
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (!res.ok) {
+    const raw = (data.error as string) || res.statusText
+    throw new ApiError(res.status, friendlyError(res.status, raw))
+  }
+  return data as T
+}
+
 export const api = {
   createRoom(body: CreateRoomRequest) {
     return post<{ room: PublicRoomState }>("/api/rooms", body)
@@ -86,6 +98,15 @@ export const api = {
   },
   broadcast(body: BroadcastRequest) {
     return post<{ ok: boolean }>("/api/broadcast", body)
+  },
+  pushVapid() {
+    return get<{ publicKey: string }>("/api/push/vapid")
+  },
+  pushSubscribe(body: PushSubscribeRequest) {
+    return post<{ ok: boolean }>("/api/push/subscribe", body)
+  },
+  pushUnsubscribe(body: PushUnsubscribeRequest) {
+    return post<{ ok: boolean }>("/api/push/unsubscribe", body)
   },
   signUpload(body: SignUploadRequest) {
     return post<SignUploadResponse>("/api/uploads/sign", body)
