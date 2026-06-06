@@ -82,6 +82,20 @@ export function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 140) + "px"
   }
 
+  // When the field is focused (the user taps to type), snap the conversation to
+  // the latest messages so the on-screen keyboard doesn't leave the most recent
+  // messages hidden above the fold.
+  function scrollChatToLatest() {
+    const scroller = document.querySelector(".messages")
+    if (!(scroller instanceof HTMLElement)) return
+    const toBottom = () => {
+      scroller.scrollTop = scroller.scrollHeight
+    }
+    requestAnimationFrame(toBottom)
+    // Re-pin once the keyboard has finished animating in and resized the view.
+    window.setTimeout(toBottom, 250)
+  }
+
   function flashSent() {
     setJustSent(true)
     setTimeout(() => setJustSent(false), 900)
@@ -238,6 +252,8 @@ export function Composer({
           accept="image/*,video/*"
           multiple
           hidden
+          tabIndex={-1}
+          aria-hidden="true"
           onChange={onPick}
         />
         <textarea
@@ -246,6 +262,7 @@ export function Composer({
           rows={1}
           placeholder="Write an encrypted message…"
           value={text}
+          onFocus={scrollChatToLatest}
           onChange={(e) => {
             setText(e.target.value)
             autosize()

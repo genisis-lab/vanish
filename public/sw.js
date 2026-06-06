@@ -4,7 +4,7 @@
 // Only static, non-sensitive build assets and the navigation shell are cached.
 // Push payloads never contain message content (the server is zero-knowledge),
 // so the notification shown here is a generic "new message" ping.
-const CACHE = "vanish-shell-v4"
+const CACHE = "vanish-shell-v5"
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
@@ -38,6 +38,9 @@ self.addEventListener("message", (event) => {
 // Background Web Push: wake the app and show a content-free notification. The
 // payload carries no message text (the server can't read it); tapping opens the
 // app, which decrypts and renders the conversation.
+//
+// If the app already has a visible/focused window, there's no point alerting —
+// the user is looking at it — so we stay silent and let the in-app UI handle it.
 self.addEventListener("push", (event) => {
   let data = {}
   try {
@@ -47,13 +50,23 @@ self.addEventListener("push", (event) => {
   }
   const tag = data && data.room ? "vanish-" + data.room : "vanish-message"
   event.waitUntil(
-    self.registration.showNotification("Vanish", {
-      body: "New encrypted message",
-      tag,
-      renotify: true,
-      icon: "/icon.svg",
-      badge: "/icon.svg",
-    }),
+    (async () => {
+      const clients = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      })
+      const appInForeground = clients.some(
+        (c) => c.focused || c.visibilityState === "visible",
+      )
+      if (appInForeground) return
+      await self.registration.showNotification("Vanish", {
+        body: "New encrypted message",
+        tag,
+        renotify: true,
+        icon: "/icon.svg",
+        badge: "/icon.svg",
+      })
+    })(),
   )
 })
 
