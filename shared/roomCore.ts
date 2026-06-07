@@ -21,6 +21,12 @@ export interface RoomRecord {
   deletedAt: number | null
   /** When set, the whole room self-destructs at this timestamp. */
   destroyAt: number | null
+  /** SHA-256(ownerSecret) verifier for owner controls. null = no owner registered. */
+  ownerKeyHash: string | null
+  /** Opaque encrypted room topic/name envelope, or null. */
+  topicEnvelope: string | null
+  /** Participant ids the owner has banned from the room. */
+  banned: string[]
 }
 
 export interface RoomSnapshot {
@@ -53,8 +59,13 @@ export class RoomCore {
 
   constructor(snapshot?: Partial<RoomSnapshot>) {
     this.room = snapshot?.room ?? null
-    // Backfill destroyAt for rooms persisted before auto-destruct existed.
-    if (this.room && this.room.destroyAt === undefined) this.room.destroyAt = null
+    // Backfill fields for rooms persisted before they existed (backward compat).
+    if (this.room) {
+      if (this.room.destroyAt === undefined) this.room.destroyAt = null
+      if (this.room.ownerKeyHash === undefined) this.room.ownerKeyHash = null
+      if (this.room.topicEnvelope === undefined) this.room.topicEnvelope = null
+      if (this.room.banned === undefined) this.room.banned = []
+    }
     this.messages = new Map((snapshot?.messages ?? []).map((m) => [m.id, m]))
     this.participants = new Map(Object.entries(snapshot?.participants ?? {}))
   }
@@ -76,6 +87,8 @@ export class RoomCore {
     ttlMs?: number
     burnAfterRead?: boolean
     roomLifetimeMs?: number
+    ownerKeyHash?: string | null
+    topicEnvelope?: string | null
     now: number
   }): RoomRecord {
     if (this.room && this.room.deletedAt === null) {
@@ -92,6 +105,9 @@ export class RoomCore {
       createdAt: input.now,
       deletedAt: null,
       destroyAt: lifetime > 0 ? input.now + lifetime : null,
+      ownerKeyHash: input.ownerKeyHash ?? null,
+      topicEnvelope: input.topicEnvelope ?? null,
+      banned: [],
     }
     this.messages.clear()
     this.participants.clear()
@@ -102,6 +118,13 @@ export class RoomCore {
   verifyHash(accessProofHash: string): boolean {
     if (!this.room || this.room.deletedAt !== null) return false
     return timingSafeEqual(this.room.accessProofHash, accessProofHash)
+  }
+
+  /** Verify a hashed owner proof. False when no owner is registered. */
+  verifyOwner(ownerKeyHash: string): boolean {
+    if (!this.room || this.room.deletedAt !== null) return false
+    if (!this.room.ownerKeyHash) return false
+    return timingSafeEqual(this.room.ownerKeyHash, ownerKeyHash)
   }
 
   isInviteExpired(now: number): boolean {
@@ -142,6 +165,32 @@ export class RoomCore {
     if (input.burnAfterRead !== undefined) this.room.burnAfterRead = input.burnAfterRead
     if (input.destroyAt !== undefined) this.room.destroyAt = input.destroyAt
     return this.room
+  }
+
+  /** Owner-only: set or clear the opaque encrypted room topic. */
+  setTopic(topicEnvelope: string | null): RoomRecord | null {
+    if (!this.room || this.room.deletedAt !== null) return null
+    this.room.topicEnvelope = topicEnvelope
+    return this.room
+  }
+
+  // ---------- bans ----------
+
+  banParticipant(participantId: string): void {
+    if (!this.room || this.room.deletedAt !== null) return
+    if (!participantId) return
+    if (!this.room.banned.includes(participantId)) this.room.banned.push(participantId)
+    // A banned participant is no longer an active member.
+    this.participants.delete(participantId)
+  }
+
+  unbanParticipant(participantId: string): void {
+    if (!this.room || this.room.deletedAt !== null) return
+    this.room.banned = this.room.banned.filter((id) => id !== participantId)
+  }
+
+  isBanned(participantId: string): boolean {
+    return !!this.room && this.room.banned.includes(participantId)
   }
 
   deleteRoom(now: number): string[] {
@@ -346,6 +395,9 @@ export class RoomCore {
       burnAfterRead: this.room.burnAfterRead,
       participantCount: this.participantCount(now),
       destroyAt: this.room.destroyAt,
+      topicEnvelope: this.room.topicEnvelope ?? null,
+      hasOwner: !!this.room.ownerKeyHash,
+      banned: [...this.room.banned],
     }
   }
 }
