@@ -10,10 +10,12 @@ export type ConnState = "connecting" | "live" | "polling" | "closed"
 
 export interface RealtimeHandlers {
   onMessage: (m: StoredMessage) => void
+  onEdit: (m: StoredMessage) => void
   onPrune: (ids: string[], all?: boolean) => void
   onReact: (f: Extract<RealtimeFrame, { t: "react" }>) => void
   onPresence: (count: number) => void
   onSignal: (f: Extract<RealtimeFrame, { t: "signal" }>) => void
+  onSeen: (participantId: string, lastSeen: number) => void
   onRoomDeleted: () => void
   onState: (s: ConnState) => void
   /** Newest message timestamp the UI already has, for polling/catch-up. */
@@ -117,6 +119,9 @@ export class Realtime {
       case "message":
         this.handlers.onMessage(frame.message)
         break
+      case "edit":
+        this.handlers.onEdit(frame.message)
+        break
       case "prune":
         this.handlers.onPrune(frame.messageIds, frame.all)
         break
@@ -131,6 +136,9 @@ export class Realtime {
         break
       case "signal":
         this.handlers.onSignal(frame)
+        break
+      case "seen":
+        this.handlers.onSeen(frame.participantId, frame.lastSeen)
         break
       case "room-deleted":
         this.handlers.onRoomDeleted()

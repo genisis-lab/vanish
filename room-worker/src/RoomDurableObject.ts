@@ -17,6 +17,8 @@ import { hashAccessProof } from "../../shared/crypto"
 import type {
   BroadcastRequest,
   CreateRoomRequest,
+  DeleteOwnMessageRequest,
+  EditMessageRequest,
   ListMessagesRequest,
   PostMessageRequest,
   PruneRequest,
@@ -136,6 +138,10 @@ export class RoomDurableObject {
           return this.opUpdate(body as unknown as UpdateInviteRequest)
         case "message":
           return this.opMessage(body as unknown as PostMessageRequest)
+        case "edit":
+          return this.opEdit(body as unknown as EditMessageRequest)
+        case "delete-message":
+          return this.opDeleteOwn(body as unknown as DeleteOwnMessageRequest)
         case "list":
           return this.opList(body as unknown as ListMessagesRequest)
         case "prune":
@@ -281,6 +287,42 @@ export class RoomDurableObject {
     await this.persist()
     await this.scheduleSweep()
     return json({ message })
+  }
+
+  // Replace the caller's own message envelope (edit-your-own). The plaintext is
+  // re-encrypted + re-signed client-side; we only swap one opaque envelope for
+  // another. Broadcast a dedicated "edit" frame so peers update in place without
+  // re-notifying or re-ordering.
+  private async opEdit(req: EditMessageRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    const now = Date.now()
+    if ((req.envelope?.length ?? 0) > MAX_ENVELOPE_CHARS) {
+      return json({ error: "message too large" }, 413)
+    }
+    const message = this.core.editMessage(
+      { messageId: req.messageId, participantId: req.participantId, envelope: req.envelope },
+      now,
+    )
+    if (!message) return json({ error: "not found" }, 404)
+    this.broadcast({ t: "edit", message })
+    await this.persist()
+    return json({ message })
+  }
+
+  // Soft-delete the caller's own message, leaving a tombstone and freeing any
+  // backing R2 bytes. Broadcast as an "edit" frame (same in-place update path).
+  private async opDeleteOwn(req: DeleteOwnMessageRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    const now = Date.now()
+    const result = this.core.deleteOwnMessage(
+      { messageId: req.messageId, participantId: req.participantId },
+      now,
+    )
+    if (!result) return json({ error: "not found" }, 404)
+    await this.persist()
+    if (result.orphanObjectKeys.length) await this.deleteObjects(result.orphanObjectKeys)
+    this.broadcast({ t: "edit", message: result.message })
+    return json({ message: result.message })
   }
 
   private async opList(req: ListMessagesRequest): Promise<Response> {

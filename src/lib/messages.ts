@@ -79,6 +79,10 @@ export interface DecryptedMessage {
   replyTo?: ReplyRef
   /** read-once: server burns this after another participant reads it */
   burn?: boolean
+  /** server time the author last edited this message, if ever */
+  editedAt?: number | null
+  /** soft-deleted tombstone: the author removed this message for everyone */
+  deleted?: boolean
   /** transient client-only send state */
   pending?: boolean
   failed?: boolean
@@ -217,7 +221,14 @@ export async function decodeMessage(
     username: "anon",
     media: stored.media,
     burn: stored.burn,
+    editedAt: stored.editedAt ?? null,
     reactions: [],
+  }
+
+  // Soft-deleted tombstone: nothing left to decrypt; render a neutral notice.
+  if (stored.deletedAt) {
+    base.deleted = true
+    return base
   }
 
   try {
