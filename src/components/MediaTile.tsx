@@ -37,8 +37,8 @@ export function MediaTile({
     if (isAudio) {
       return (
         <div className="media-tile audio-tile" style={AUDIO_TILE}>
-          <Mic size={14} style= flex: "none"  />
-          <audio src={url} controls preload="metadata" style= width: "100%"  />
+          <Mic size={14} style={AUDIO_ICON} />
+          <audio src={url} controls preload="metadata" style={AUDIO_EL} />
         </div>
       )
     }
@@ -67,13 +67,13 @@ export function MediaTile({
             {isAudio ? <Mic size={18} /> : <Lock size={18} />}
             <span>
               {failed
-                ? "Failed \u2014 tap to retry"
+                ? "Failed — tap to retry"
                 : isAudio
                   ? "Tap to play voice note"
                   : "Tap to decrypt"}
             </span>
             <span style={DIM}>
-              {isAudio ? "voice note" : item.previewKind} \u00b7 {formatBytes(item.size)}
+              {isAudio ? "voice note" : item.previewKind} · {formatBytes(item.size)}
             </span>
           </>
         )}
@@ -90,4 +90,6 @@ const AUDIO_TILE = {
   padding: "8px 10px",
   minWidth: "220px",
   cursor: "default",
-}
+} as const
+const AUDIO_ICON = { flex: "none", color: "var(--accent)" } as const
+const AUDIO_EL = { width: "100%" } as const
