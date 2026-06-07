@@ -18,6 +18,9 @@
     "pages:deploy": "wrangler pages deploy dist",
     "worker:deploy": "wrangler deploy -c room-worker/wrangler.toml",
     "worker:dev": "wrangler dev -c room-worker/wrangler.toml",
+    "cap:sync": "cap sync",
+    "cap:ios": "cap open ios",
+    "cap:android": "cap open android",
     "verify": "tsx tests/manual/verify.ts"
   },
   "dependencies": {

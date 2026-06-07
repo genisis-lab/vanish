@@ -81,6 +81,85 @@ function promptUpdate(reg: ServiceWorkerRegistration) {
   document.body.appendChild(bar)
 }
 
+// ---------- desktop PWA install polish ----------
+//
+// Chromium desktop/Android fire `beforeinstallprompt` when the app is
+// installable. We capture it, suppress the default mini-infobar, and show our
+// own tidy "Install" bar so installing Vanish on desktop is a first-class,
+// on-brand action. Built in vanilla DOM (like the update bar) so it never
+// touches the React tree. Does nothing on iOS Safari (no event) or when the
+// app is already running standalone.
+function setupInstallPrompt() {
+  const isStandalone =
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true
+  if (isStandalone) return
+
+  let deferred: (Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }) | null =
+    null
+  const DISMISS_KEY = "vanish.install.dismissed.v1"
+
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault()
+    deferred = e as never
+    try {
+      if (sessionStorage.getItem(DISMISS_KEY) === "1") return
+    } catch {
+      /* ignore */
+    }
+    showInstallBar()
+  })
+
+  window.addEventListener("appinstalled", () => {
+    document.getElementById("vanish-install-bar")?.remove()
+    deferred = null
+  })
+
+  function showInstallBar() {
+    if (document.getElementById("vanish-install-bar")) return
+    const bar = document.createElement("div")
+    bar.id = "vanish-install-bar"
+    bar.setAttribute("role", "dialog")
+    bar.setAttribute("aria-label", "Install Vanish")
+    bar.style.cssText =
+      "position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom));z-index:9998;display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:12px;background:#15151f;color:#fff;box-shadow:0 8px 30px rgba(0,0,0,.4);font:500 14px system-ui,sans-serif;max-width:calc(100vw - 32px)"
+    const label = document.createElement("span")
+    label.textContent = "Install Vanish for a faster, standalone window."
+    const btn = document.createElement("button")
+    btn.textContent = "Install"
+    btn.style.cssText =
+      "border:none;border-radius:8px;padding:6px 14px;background:#7c83fd;color:#fff;font:600 14px system-ui,sans-serif;cursor:pointer"
+    btn.onclick = async () => {
+      if (!deferred) return
+      btn.disabled = true
+      try {
+        await deferred.prompt()
+        await deferred.userChoice
+      } catch {
+        /* ignore */
+      }
+      deferred = null
+      bar.remove()
+    }
+    const dismiss = document.createElement("button")
+    dismiss.textContent = "Not now"
+    dismiss.setAttribute("aria-label", "Dismiss install prompt")
+    dismiss.style.cssText =
+      "border:none;background:transparent;color:#aaa;font:500 13px system-ui,sans-serif;cursor:pointer"
+    dismiss.onclick = () => {
+      try {
+        sessionStorage.setItem(DISMISS_KEY, "1")
+      } catch {
+        /* ignore */
+      }
+      bar.remove()
+    }
+    bar.append(label, btn, dismiss)
+    document.body.appendChild(bar)
+  }
+}
+setupInstallPrompt()
+
 // Keep a CSS var in sync with the *visible* viewport height so the chat
 // layout shrinks when the mobile keyboard opens, instead of the composer
 // being pushed below the keyboard (which forced users to scroll up).
