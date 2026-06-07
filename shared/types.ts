@@ -30,6 +30,10 @@ export interface StoredMessage {
   reactions?: Record<string, { participantId: string; envelope: string }>
   /** burn-after-read marker: removed once delivered to a reader other than sender. */
   burn?: boolean
+  /** Server time the author last edited this message's envelope, if ever. */
+  editedAt?: number | null
+  /** Soft-delete tombstone time: the author removed this message for everyone. */
+  deletedAt?: number | null
 }
 
 export interface PublicRoomState {
@@ -95,6 +99,23 @@ export interface PostMessageRequest {
     ttlMs?: number
     burn?: boolean
   }
+}
+
+export interface EditMessageRequest {
+  roomId: string
+  accessProof: string
+  messageId: string
+  participantId: string
+  /** New opaque AES-GCM envelope (re-signed by the author). */
+  envelope: string
+  kind?: MessageKind
+}
+
+export interface DeleteOwnMessageRequest {
+  roomId: string
+  accessProof: string
+  messageId: string
+  participantId: string
 }
 
 export interface ListMessagesRequest {
@@ -188,6 +209,7 @@ export interface ApiError {
 export type RealtimeFrame =
   | { t: "hello"; serverTime: number; participantCount: number }
   | { t: "message"; message: StoredMessage }
+  | { t: "edit"; message: StoredMessage }
   | { t: "prune"; messageIds: string[]; all?: boolean }
   | { t: "react"; messageId: string; reactionId: string; participantId: string; envelope: string | null }
   | { t: "presence"; participantCount: number }
