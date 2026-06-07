@@ -3,6 +3,8 @@
 import type {
   BroadcastRequest,
   CreateRoomRequest,
+  DeleteOwnMessageRequest,
+  EditMessageRequest,
   ListMessagesRequest,
   ListMessagesResponse,
   PostMessageRequest,
@@ -86,6 +88,12 @@ export const api = {
   },
   postMessage(body: PostMessageRequest) {
     return post<{ message: StoredMessage }>("/api/messages", body)
+  },
+  editMessage(body: EditMessageRequest) {
+    return post<{ message: StoredMessage }>("/api/messages/edit", body)
+  },
+  deleteOwnMessage(body: DeleteOwnMessageRequest) {
+    return post<{ message: StoredMessage }>("/api/messages/delete", body)
   },
   listMessages(body: ListMessagesRequest) {
     return post<ListMessagesResponse>("/api/messages/list", body)
