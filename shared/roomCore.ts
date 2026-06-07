@@ -189,6 +189,50 @@ export class RoomCore {
     return message
   }
 
+  /**
+   * Replace the encrypted envelope of a message the caller authored. Used for
+   * "edit your own message". The server never sees the plaintext; it only swaps
+   * one opaque envelope for another and stamps editedAt. Returns null when the
+   * message is missing, not owned by the caller, or already deleted.
+   */
+  editMessage(
+    input: { messageId: string; participantId: string; envelope: string },
+    now: number,
+  ): StoredMessage | null {
+    const m = this.messages.get(input.messageId)
+    if (!m) return null
+    if (m.participantId !== input.participantId) return null
+    if (m.deletedAt) return null
+    m.envelope = input.envelope
+    m.editedAt = now
+    return m
+  }
+
+  /**
+   * Soft-delete a message the caller authored, leaving a tombstone so peers see
+   * "message deleted" instead of stale ciphertext. Frees any backing R2 bytes.
+   * Returns null when missing or not owned by the caller.
+   */
+  deleteOwnMessage(
+    input: { messageId: string; participantId: string },
+    now: number,
+  ): { message: StoredMessage; orphanObjectKeys: string[] } | null {
+    const m = this.messages.get(input.messageId)
+    if (!m) return null
+    if (m.participantId !== input.participantId) return null
+    const orphanObjectKeys = (m.media ?? []).map((ref) => ref.objectKey)
+    const tomb: StoredMessage = {
+      ...m,
+      envelope: "",
+      media: undefined,
+      reactions: undefined,
+      burn: false,
+      deletedAt: now,
+    }
+    this.messages.set(m.id, tomb)
+    return { message: tomb, orphanObjectKeys }
+  }
+
   list(now: number): StoredMessage[] {
     this.sweep(now)
     return [...this.messages.values()].sort((a, b) => a.createdAt - b.createdAt)
@@ -220,6 +264,7 @@ export class RoomCore {
   }): StoredMessage | null {
     const m = this.messages.get(input.messageId)
     if (!m) return null
+    if (m.deletedAt) return null
     m.reactions = m.reactions ?? {}
     if (input.envelope === null) {
       delete m.reactions[input.reactionId]
