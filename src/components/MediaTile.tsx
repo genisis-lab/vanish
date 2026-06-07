@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Film, ImageIcon, Lock } from "lucide-react"
+import { Film, ImageIcon, Lock, Mic } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import { decryptToObjectUrl, type MediaManifestItem } from "../lib/media"
 import { formatBytes } from "../lib/format"
@@ -16,6 +16,7 @@ export function MediaTile({
   const [url, setUrl] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
+  const isAudio = item.previewKind === "audio"
 
   async function decrypt() {
     if (loading) return
@@ -32,6 +33,15 @@ export function MediaTile({
   }
 
   if (url) {
+    // Voice notes get an inline player rather than a thumbnail/lightbox.
+    if (isAudio) {
+      return (
+        <div className="media-tile audio-tile" style={AUDIO_TILE}>
+          <Mic size={14} style= flex: "none"  />
+          <audio src={url} controls preload="metadata" style= width: "100%"  />
+        </div>
+      )
+    }
     return (
       <button className="media-tile" onClick={() => onOpen(item)} aria-label={`Open ${item.filename}`}>
         {item.previewKind === "video" ? (
@@ -54,10 +64,16 @@ export function MediaTile({
           <span className="spinner" />
         ) : (
           <>
-            <Lock size={18} />
-            <span>{failed ? "Failed — tap to retry" : "Tap to decrypt"}</span>
+            {isAudio ? <Mic size={18} /> : <Lock size={18} />}
+            <span>
+              {failed
+                ? "Failed \u2014 tap to retry"
+                : isAudio
+                  ? "Tap to play voice note"
+                  : "Tap to decrypt"}
+            </span>
             <span style={DIM}>
-              {item.previewKind} · {formatBytes(item.size)}
+              {isAudio ? "voice note" : item.previewKind} \u00b7 {formatBytes(item.size)}
             </span>
           </>
         )}
@@ -67,3 +83,11 @@ export function MediaTile({
 }
 
 const DIM = { color: "var(--text-faint)", fontSize: "11px" }
+const AUDIO_TILE = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "8px 10px",
+  minWidth: "220px",
+  cursor: "default",
+}
