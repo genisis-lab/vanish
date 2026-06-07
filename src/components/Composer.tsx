@@ -6,8 +6,10 @@ import {
   Flame,
   Loader2,
   Lock,
+  Mic,
   Reply,
   SendHorizonal,
+  Square,
   Timer,
   Upload,
   X,
@@ -35,12 +37,48 @@ const TTL_OPTIONS = [
   { label: "1d", ms: 86_400_000 },
 ]
 
-// Keep attachments to the media types the pipeline understands (image/video).
-// Files with no reported type (some pastes) are allowed through.
+// Keep attachments to the media types the pipeline understands
+// (image/video/audio). Files with no reported type (some pastes) are allowed.
 function mediaFilesFrom(list: FileList | File[] | null | undefined): File[] {
   return Array.from(list ?? []).filter(
-    (f) => !f.type || f.type.startsWith("image/") || f.type.startsWith("video/"),
+    (f) =>
+      !f.type ||
+      f.type.startsWith("image/") ||
+      f.type.startsWith("video/") ||
+      f.type.startsWith("audio/"),
   )
+}
+
+// Pick the best-supported container/codec for recorded voice notes.
+function pickAudioMime(): string | undefined {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return undefined
+  }
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/mp4",
+  ]
+  for (const c of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(c)) return c
+    } catch {
+      /* ignore */
+    }
+  }
+  return undefined
+}
+
+function extFor(mime: string): string {
+  if (mime.includes("ogg")) return "ogg"
+  if (mime.includes("mp4")) return "m4a"
+  return "webm"
+}
+
+function formatSecs(s: number): string {
+  const m = Math.floor(s / 60)
+  return `${m}:${String(s % 60).padStart(2, "0")}`
 }
 
 export function Composer({
@@ -59,10 +97,22 @@ export function Composer({
   const [burn, setBurn] = useState(false)
   const [justSent, setJustSent] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [recSecs, setRecSecs] = useState(0)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const recRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
+  const recTimer = useRef<number | null>(null)
+  const recSecsRef = useRef(0)
+  const discardRef = useRef(false)
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
   const ttl = TTL_OPTIONS[ttlIdx]
+  const supportsRecording =
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof MediaRecorder !== "undefined"
 
   // Persist the draft per-room so a refresh or accidental tab close keeps it.
   useEffect(() => {
@@ -74,6 +124,22 @@ export function Composer({
   useEffect(() => {
     if (replyTo) taRef.current?.focus()
   }, [replyTo])
+
+  // Tear down any in-flight recording (and release the mic) on unmount.
+  useEffect(() => {
+    return () => {
+      if (recTimer.current) clearInterval(recTimer.current)
+      if (recRef.current && recRef.current.state !== "inactive") {
+        discardRef.current = true
+        try {
+          recRef.current.stop()
+        } catch {
+          /* ignore */
+        }
+      }
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+    }
+  }, [])
 
   function autosize() {
     const ta = taRef.current
@@ -104,6 +170,70 @@ export function Composer({
   function addFiles(list: FileList | File[] | null | undefined) {
     const picked = mediaFilesFrom(list)
     if (picked.length) setFiles((prev) => [...prev, ...picked])
+  }
+
+  function releaseStream() {
+    streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
+  }
+
+  async function startRecording() {
+    if (recording || !supportsRecording) return
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      const mime = pickAudioMime()
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
+      chunksRef.current = []
+      discardRef.current = false
+      rec.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data)
+      }
+      rec.onstop = () => {
+        releaseStream()
+        if (recTimer.current) {
+          clearInterval(recTimer.current)
+          recTimer.current = null
+        }
+        setRecording(false)
+        setRecSecs(0)
+        recSecsRef.current = 0
+        if (discardRef.current || chunksRef.current.length === 0) return
+        const type = rec.mimeType || mime || "audio/webm"
+        const blob = new Blob(chunksRef.current, { type })
+        const file = new File([blob], `voice-note-${Date.now()}.${extFor(type)}`, { type })
+        addFiles([file])
+      }
+      recRef.current = rec
+      rec.start()
+      setRecording(true)
+      setRecSecs(0)
+      recSecsRef.current = 0
+      recTimer.current = window.setInterval(() => {
+        recSecsRef.current += 1
+        setRecSecs(recSecsRef.current)
+        if (recSecsRef.current >= 300) stopRecording() // 5-minute safety cap
+      }, 1000)
+    } catch {
+      releaseStream()
+      setRecording(false)
+    }
+  }
+
+  function stopRecording() {
+    const rec = recRef.current
+    if (rec && rec.state !== "inactive") {
+      try {
+        rec.stop()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  function cancelRecording() {
+    discardRef.current = true
+    stopRecording()
   }
 
   function submit() {
@@ -235,6 +365,20 @@ export function Composer({
         </div>
       )}
 
+      {recording && (
+        <div className="rec-bar" style={REC_BAR}>
+          <span style={REC_DOT} aria-hidden="true" />
+          <span>Recording voice note… {formatSecs(recSecs)}</span>
+          <span style= flex: 1  />
+          <button className="icon-btn mini" aria-label="Discard recording" onClick={cancelRecording}>
+            <X size={15} />
+          </button>
+          <button className="btn btn-primary" onClick={stopRecording}>
+            <Square size={14} /> Stop & attach
+          </button>
+        </div>
+      )}
+
       <div className="composer-row">
         <button
           type="button"
@@ -242,14 +386,26 @@ export function Composer({
           onClick={() => fileRef.current?.click()}
           title="Attach encrypted photo or video"
           aria-label="Attach encrypted photo or video"
+          disabled={recording}
         >
           {busy && <span className="ring" />}
           <Upload size={20} />
         </button>
+        {supportsRecording && (
+          <button
+            type="button"
+            className={`upload-btn ${recording ? "recording" : ""}`}
+            onClick={recording ? stopRecording : startRecording}
+            title={recording ? "Stop recording" : "Record an encrypted voice note"}
+            aria-label={recording ? "Stop recording" : "Record an encrypted voice note"}
+          >
+            {recording ? <Square size={20} /> : <Mic size={20} />}
+          </button>
+        )}
         <input
           ref={fileRef}
           type="file"
-          accept="image/*,video/*"
+          accept="image/*,video/*,audio/*"
           multiple
           hidden
           tabIndex={-1}
@@ -338,6 +494,25 @@ function barWidth(p: number) {
 
 const NAME = { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }
 const STATUS = { color: "var(--text-faint)" }
+const REC_BAR = {
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "8px 10px",
+  marginBottom: "8px",
+  border: "1px solid var(--danger)",
+  borderRadius: "12px",
+  fontSize: "13px",
+  background: "color-mix(in srgb, var(--danger) 10%, transparent)",
+} as const
+const REC_DOT = {
+  width: "10px",
+  height: "10px",
+  borderRadius: "999px",
+  background: "var(--danger)",
+  flex: "none",
+  animation: "pulse 1s ease-in-out infinite",
+} as const
 const DROP = {
   display: "flex",
   alignItems: "center",

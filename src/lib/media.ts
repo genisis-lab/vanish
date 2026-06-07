@@ -8,16 +8,20 @@ import { aad, type RoomSession } from "./session"
 
 export type UploadStatus = "idle" | "encrypting" | "uploading" | "done" | "failed"
 
+export type MediaPreviewKind = "image" | "video" | "audio"
+
 export interface MediaManifestItem {
   objectKey: string
   filename: string
   mime: string
   size: number // original (plaintext) size
-  previewKind: "image" | "video"
+  previewKind: MediaPreviewKind
 }
 
-function previewKindFor(mime: string): "image" | "video" {
-  return mime.startsWith("video/") ? "video" : "image"
+function previewKindFor(mime: string): MediaPreviewKind {
+  if (mime.startsWith("audio/")) return "audio"
+  if (mime.startsWith("video/")) return "video"
+  return "image"
 }
 
 interface NormalizedFile {
@@ -29,7 +33,8 @@ interface NormalizedFile {
 
 // Re-encode images through a canvas to strip embedded metadata (EXIF, GPS,
 // camera/timestamp tags) before encryption. Animated GIFs pass through untouched
-// (canvas would flatten them); non-images and videos pass through too.
+// (canvas would flatten them); non-images (video, audio/voice notes) pass
+// through too.
 async function normalizeFile(file: File): Promise<NormalizedFile> {
   const passthrough = async (): Promise<NormalizedFile> => {
     const data = new Uint8Array(await file.arrayBuffer())
