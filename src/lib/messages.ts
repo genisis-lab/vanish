@@ -36,6 +36,8 @@ export interface TextPayload {
   spk?: string
   /** Ed25519 signature (base64url) */
   sig?: string
+  /** decoy/cover-traffic marker: recipients silently discard these. */
+  decoy?: boolean
 }
 export interface MediaPayload {
   username: string
@@ -83,6 +85,8 @@ export interface DecryptedMessage {
   editedAt?: number | null
   /** soft-deleted tombstone: the author removed this message for everyone */
   deleted?: boolean
+  /** decoy/cover-traffic message: decoded but never shown to the user */
+  decoy?: boolean
   /** transient client-only send state */
   pending?: boolean
   failed?: boolean
@@ -180,6 +184,16 @@ export async function encodeText(
   return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
 }
 
+// Cover traffic: an encrypted message that looks exactly like a real one to the
+// server/observers but is flagged decoy INSIDE the ciphertext so recipients drop
+// it. Not signed (it carries no authorship meaning) and intentionally padded
+// like normal text so its size blends in.
+export async function encodeDecoy(session: RoomSession, id: string): Promise<string> {
+  const payload: TextPayload = { username: session.username, text: "", decoy: true }
+  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
+  void id
+}
+
 export async function encodeMedia(
   session: RoomSession,
   id: string,
@@ -204,6 +218,28 @@ export async function encodeSystem(session: RoomSession, payload: SystemPayload)
 export async function encodeReaction(session: RoomSession, emoji: string): Promise<string> {
   const payload: ReactionPayload = { emoji, username: session.username }
   return encryptPadded(session.keys.msgKey, payload, aad(session, "react"))
+}
+
+// ---------- encrypted room topic/name ----------
+//
+// The room topic is opaque to the server (same msgKey, distinct AAD context so
+// it can't be swapped with a chat message). Only the owner can set it server-
+// side, but any member can decrypt it for display.
+export async function encodeTopic(session: RoomSession, topic: string): Promise<string> {
+  return encryptString(session.keys.msgKey, JSON.stringify({ topic }), aad(session, "topic"))
+}
+
+export async function decodeTopic(session: RoomSession, envelope: string): Promise<string> {
+  try {
+    const p = await decryptJson<{ topic: string }>(
+      session.keys.msgKey,
+      envelope,
+      aad(session, "topic"),
+    )
+    return (p.topic || "").slice(0, 200)
+  } catch {
+    return ""
+  }
 }
 
 export async function decodeMessage(
@@ -258,6 +294,11 @@ export async function decodeMessage(
       )
     } else {
       const p = await decryptJson<TextPayload>(session.keys.msgKey, stored.envelope, aad(session, "msg"))
+      // Cover-traffic messages decrypt fine but must never be shown.
+      if (p.decoy) {
+        base.decoy = true
+        return base
+      }
       base.username = p.username
       base.text = p.text
       base.replyTo = p.replyTo
