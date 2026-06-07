@@ -369,7 +369,7 @@ export function Composer({
         <div className="rec-bar" style={REC_BAR}>
           <span style={REC_DOT} aria-hidden="true" />
           <span>Recording voice note… {formatSecs(recSecs)}</span>
-          <span style= flex: 1  />
+          <span style={SPACER} />
           <button className="icon-btn mini" aria-label="Discard recording" onClick={cancelRecording}>
             <X size={15} />
           </button>
@@ -494,6 +494,7 @@ function barWidth(p: number) {
 
 const NAME = { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }
 const STATUS = { color: "var(--text-faint)" }
+const SPACER = { flex: 1 } as const
 const REC_BAR = {
   display: "flex",
   alignItems: "center",
