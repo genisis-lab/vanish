@@ -7,6 +7,7 @@
 //   - sweep expired messages via storage alarms and delete orphaned R2 objects
 //   - self-destruct the whole room when its lifetime elapses
 //   - enforce basic abuse controls (rate limit, envelope size cap, room cap)
+//   - enforce owner controls (encrypted topic, bans, clear, destroy)
 //   - fan out background Web Push pings to closed/asleep devices
 //
 // All chat content is opaque to this object. It only ever sees ciphertext and
@@ -20,6 +21,7 @@ import type {
   DeleteOwnMessageRequest,
   EditMessageRequest,
   ListMessagesRequest,
+  OwnerActionRequest,
   PostMessageRequest,
   PruneRequest,
   PushSubscribeRequest,
@@ -27,6 +29,7 @@ import type {
   ReactRequest,
   RealtimeFrame,
   SessionRequest,
+  SetTopicRequest,
   StoredMessage,
   UpdateInviteRequest,
   ValidateInviteRequest,
@@ -136,6 +139,10 @@ export class RoomDurableObject {
           return this.opSession(body as unknown as SessionRequest)
         case "update":
           return this.opUpdate(body as unknown as UpdateInviteRequest)
+        case "set-topic":
+          return this.opSetTopic(body as unknown as SetTopicRequest)
+        case "owner-action":
+          return this.opOwnerAction(body as unknown as OwnerActionRequest)
         case "message":
           return this.opMessage(body as unknown as PostMessageRequest)
         case "edit":
@@ -164,12 +171,20 @@ export class RoomDurableObject {
     }
   }
 
-  // ---------- proof gate ----------
+  // ---------- proof gates ----------
 
   private async verifyProof(accessProof: string | undefined): Promise<boolean> {
     if (!accessProof) return false
     const hash = await hashAccessProof(accessProof)
     return this.core.verifyHash(hash)
+  }
+
+  // Owner proof-of-possession: the raw owner secret hashes to the stored owner
+  // verifier. Distinct from the access proof so only the creator can moderate.
+  private async verifyOwnerProof(ownerProof: string | undefined): Promise<boolean> {
+    if (!ownerProof) return false
+    const hash = await hashAccessProof(ownerProof)
+    return this.core.verifyOwner(hash)
   }
 
   // Sliding-window per-participant rate limiter. Best-effort; in-memory only.
@@ -196,6 +211,8 @@ export class RoomDurableObject {
       ttlMs: req.ttlMs,
       burnAfterRead: req.burnAfterRead,
       roomLifetimeMs: req.roomLifetimeMs,
+      ownerKeyHash: req.ownerKeyHash ?? null,
+      topicEnvelope: req.topicEnvelope ?? null,
       now,
     })
     await this.persist()
@@ -212,6 +229,7 @@ export class RoomDurableObject {
 
   private async opSession(req: SessionRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return json({ error: "expired" }, 410)
     this.core.touchParticipant(req.participantId, now)
@@ -241,8 +259,76 @@ export class RoomDurableObject {
     return json({ room: this.core.publicState(now) })
   }
 
+  // Owner-gated: set or clear the opaque encrypted room topic, then notify peers.
+  private async opSetTopic(req: SetTopicRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
+    const now = Date.now()
+    const envelope = req.topicEnvelope ?? null
+    if (envelope && envelope.length > MAX_ENVELOPE_CHARS) return json({ error: "too large" }, 413)
+    const room = this.core.setTopic(envelope)
+    if (!room) return json({ error: "not found" }, 404)
+    await this.persist()
+    const state = this.core.publicState(now)
+    if (state) this.broadcast({ t: "room-updated", room: state })
+    return json({ room: state })
+  }
+
+  // Owner-gated moderation: ban/unban a participant, clear all messages, or
+  // destroy the whole room.
+  private async opOwnerAction(req: OwnerActionRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
+    const now = Date.now()
+    switch (req.action) {
+      case "ban": {
+        if (!req.targetParticipantId) return json({ error: "missing target" }, 400)
+        this.core.banParticipant(req.targetParticipantId)
+        await this.persist()
+        // Notify the banned device, then drop its live sockets.
+        this.broadcast({ t: "banned", participantId: req.targetParticipantId })
+        for (const s of this.sessions) {
+          if (s.participantId === req.targetParticipantId) {
+            try {
+              s.ws.close(1008, "banned")
+            } catch {
+              /* ignore */
+            }
+            this.sessions.delete(s)
+          }
+        }
+        this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
+        const state = this.core.publicState(now)
+        if (state) this.broadcast({ t: "room-updated", room: state })
+        return json({ room: state })
+      }
+      case "unban": {
+        if (!req.targetParticipantId) return json({ error: "missing target" }, 400)
+        this.core.unbanParticipant(req.targetParticipantId)
+        await this.persist()
+        const state = this.core.publicState(now)
+        if (state) this.broadcast({ t: "room-updated", room: state })
+        return json({ room: state })
+      }
+      case "clear": {
+        const result = this.core.pruneAll()
+        await this.persist()
+        if (result.orphanObjectKeys.length) await this.deleteObjects(result.orphanObjectKeys)
+        this.broadcast({ t: "prune", messageIds: result.removedIds, all: true })
+        return json({ removedIds: result.removedIds })
+      }
+      case "destroy": {
+        await this.destroyRoom(now)
+        return json({ ok: true })
+      }
+      default:
+        return json({ error: "unknown action" }, 400)
+    }
+  }
+
   private async opMessage(req: PostMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (this.core.isBanned(req.message.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now) && req.message.kind !== "system") {
       // Expired invites block new joins/sends but existing data is preserved.
@@ -475,6 +561,7 @@ export class RoomDurableObject {
     if (!(await this.verifyProof(accessProof))) {
       return new Response("forbidden", { status: 403 })
     }
+    if (this.core.isBanned(participantId)) return new Response("banned", { status: 403 })
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return new Response("expired", { status: 410 })
 
@@ -512,6 +599,7 @@ export class RoomDurableObject {
       return
     }
     if (!frame) return
+    if (this.core.isBanned(session.participantId)) return
     const now = Date.now()
     this.core.touchParticipant(session.participantId, now)
     if (frame.t === "signal" || frame.t === "seen") {

@@ -9,8 +9,8 @@ export interface EncryptedMediaRef {
   objectKey: string
   /** Encrypted byte length stored in R2 (operational metadata only). */
   size: number
-  /** "image" | "video" hint for lazy decrypt UI. The real mime is inside the envelope. */
-  previewKind: "image" | "video"
+  /** "image" | "video" | "audio" hint for lazy decrypt UI. Real mime is inside the envelope. */
+  previewKind: "image" | "video" | "audio"
 }
 
 export interface StoredMessage {
@@ -46,6 +46,12 @@ export interface PublicRoomState {
   participantCount: number
   /** When set, the entire room self-destructs at this timestamp. */
   destroyAt: number | null
+  /** Opaque encrypted room topic/name envelope (base64url) or null. Server can't read it. */
+  topicEnvelope: string | null
+  /** True when the room has a registered owner credential (owner controls available). */
+  hasOwner: boolean
+  /** Participant ids the owner has banned. Opaque pseudonymous ids. */
+  banned: string[]
 }
 
 // ---------- request/response payloads ----------
@@ -58,6 +64,10 @@ export interface CreateRoomRequest {
   burnAfterRead?: boolean
   /** Whole-room auto-destruct lifetime in ms from creation. 0/undefined = off. */
   roomLifetimeMs?: number
+  /** SHA-256(ownerSecret) registering the creator as owner. Optional/legacy-safe. */
+  ownerKeyHash?: string
+  /** Optional initial encrypted room topic envelope. */
+  topicEnvelope?: string | null
 }
 
 export interface SessionRequest {
@@ -84,6 +94,28 @@ export interface UpdateInviteRequest {
   burnAfterRead?: boolean
   /** Reset the room auto-destruct lifetime (ms from now). 0 disables it. */
   roomLifetimeMs?: number
+}
+
+/** Owner-gated: set or clear the encrypted room topic/name. */
+export interface SetTopicRequest {
+  roomId: string
+  accessProof: string
+  /** Proof-of-possession of the owner secret (raw). Server hashes to compare. */
+  ownerProof: string
+  /** New opaque encrypted topic envelope, or null to clear. */
+  topicEnvelope: string | null
+}
+
+export type OwnerActionType = "ban" | "unban" | "clear" | "destroy"
+
+/** Owner-gated moderation actions. */
+export interface OwnerActionRequest {
+  roomId: string
+  accessProof: string
+  ownerProof: string
+  action: OwnerActionType
+  /** Target participant id for ban/unban. */
+  targetParticipantId?: string
 }
 
 export interface PostMessageRequest {
@@ -139,7 +171,7 @@ export interface SignUploadRequest {
   roomId: string
   accessProof: string
   size: number
-  previewKind: "image" | "video"
+  previewKind: "image" | "video" | "audio"
 }
 
 export interface SignUploadResponse {
@@ -215,4 +247,6 @@ export type RealtimeFrame =
   | { t: "presence"; participantCount: number }
   | { t: "signal"; event: { type: string; envelope?: string; participantId: string } }
   | { t: "seen"; participantId: string; lastSeen: number }
+  | { t: "room-updated"; room: PublicRoomState }
+  | { t: "banned"; participantId: string }
   | { t: "room-deleted" }
