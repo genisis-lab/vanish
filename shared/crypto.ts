@@ -380,3 +380,105 @@ export async function encryptJson(key: CryptoKey, value: unknown, aad?: string):
 export async function decryptJson<T>(key: CryptoKey, envelopeB64: string, aad?: string): Promise<T> {
   return JSON.parse(await decryptString(key, envelopeB64, aad)) as T
 }
+
+// ---------- forward-secrecy epoch ratchet (envelope v2) ----------
+//
+// Message payloads (text / media / decoy) are encrypted under a per-epoch key
+// derived from the room's root secret rather than the static room message key.
+// The epoch is a fixed wall-clock window (EPOCH_MS), so every participant
+// independently derives the SAME key for a given message from the message's
+// own epoch field — no coordination or extra round-trips — and a returning
+// member can still re-derive any past epoch from the persisted secret to read
+// history.
+//
+// v2 envelope layout: [version=2(1)] [epoch(4, big-endian)] [iv(12)] [ct].
+//
+// Guarantee & limits (intentionally honest): this provides per-epoch key
+// SEPARATION — an epoch key recovered on its own only exposes that one window —
+// plus the ratchet machinery for forward secrecy. It does NOT defend against
+// compromise of the root invite secret, because every epoch key is derivable
+// from it; full forward secrecy is unachievable in a shared-secret, multi-party
+// room without interactive key agreement, and irreversibly deleting past epoch
+// keys would make server-stored history undecryptable after any reload. Derived
+// epoch keys are non-extractable and only ever held in memory.
+
+export const EPOCH_MS = 3_600_000 // 1 hour
+const ENVELOPE_VERSION_V2 = 2
+const EPOCH_FIELD = 4
+
+/** The epoch number a message created at `timeMs` belongs to. */
+export function epochForTime(timeMs: number): number {
+  return Math.floor(timeMs / EPOCH_MS)
+}
+
+/** Derive the AES-GCM key for a given epoch from the room's root secret. */
+export async function deriveEpochMsgKey(
+  secret: Uint8Array,
+  roomId: string,
+  epoch: number,
+): Promise<CryptoKey> {
+  const base = await importBaseKey(secret)
+  return subtle().deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: hkdfSalt(roomId) as unknown as BufferSource,
+      info: utf8(`${APP}:${VERSION}:msg:epoch:${epoch}`) as unknown as BufferSource,
+    },
+    base,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  )
+}
+
+/** First byte of a decoded envelope: 1 = legacy room-key, 2 = epoch ratchet. */
+export function readEnvelopeVersion(envelope: Uint8Array): number {
+  return envelope.length > 0 ? envelope[0] : 0
+}
+
+/** Read the 32-bit big-endian epoch field from a v2 envelope. */
+export function readEpoch(envelope: Uint8Array): number {
+  if (envelope.length < 1 + EPOCH_FIELD) return 0
+  return (
+    ((envelope[1] << 24) | (envelope[2] << 16) | (envelope[3] << 8) | envelope[4]) >>> 0
+  )
+}
+
+export async function encryptBytesEpoch(
+  key: CryptoKey,
+  epoch: number,
+  plaintext: Uint8Array,
+  aad?: string,
+): Promise<Uint8Array> {
+  const iv = randomBytes(IV_LENGTH)
+  const params: AesGcmParams = { name: "AES-GCM", iv: iv as unknown as BufferSource }
+  if (aad) params.additionalData = utf8(aad) as unknown as BufferSource
+  const ct = new Uint8Array(
+    await subtle().encrypt(params, key, plaintext as unknown as BufferSource),
+  )
+  const out = new Uint8Array(1 + EPOCH_FIELD + IV_LENGTH + ct.length)
+  out[0] = ENVELOPE_VERSION_V2
+  out[1] = (epoch >>> 24) & 0xff
+  out[2] = (epoch >>> 16) & 0xff
+  out[3] = (epoch >>> 8) & 0xff
+  out[4] = epoch & 0xff
+  out.set(iv, 1 + EPOCH_FIELD)
+  out.set(ct, 1 + EPOCH_FIELD + IV_LENGTH)
+  return out
+}
+
+export async function decryptBytesEpoch(
+  key: CryptoKey,
+  envelope: Uint8Array,
+  aad?: string,
+): Promise<Uint8Array> {
+  if (envelope.length < 1 + EPOCH_FIELD + IV_LENGTH + 16) throw new Error("ciphertext too short")
+  if (envelope[0] !== ENVELOPE_VERSION_V2) throw new Error("unsupported envelope version")
+  const iv = envelope.slice(1 + EPOCH_FIELD, 1 + EPOCH_FIELD + IV_LENGTH)
+  const ct = envelope.slice(1 + EPOCH_FIELD + IV_LENGTH)
+  const params: AesGcmParams = { name: "AES-GCM", iv: iv as unknown as BufferSource }
+  if (aad) params.additionalData = utf8(aad) as unknown as BufferSource
+  const pt = await subtle().decrypt(params, key, ct as unknown as BufferSource)
+  return new Uint8Array(pt)
+}
