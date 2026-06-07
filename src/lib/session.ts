@@ -9,6 +9,7 @@ import {
 } from "@shared/crypto"
 import type { ParsedInvite } from "@shared/invite"
 import { importAesKey, randomId } from "./clientCrypto"
+import { loadOwnerSecret } from "./owner"
 
 export interface RoomSession {
   invite: ParsedInvite
@@ -22,6 +23,9 @@ export interface RoomSession {
    * rejoins. Undefined when the runtime lacks WebCrypto Ed25519, in which case
    * messages are sent unsigned (and peers simply show no verification state). */
   signing?: SigningKeyPair
+  /** Owner secret (proof-of-possession) when this device created the room or
+   * imported owner rights via multi-device sync. Present => owner controls. */
+  ownerSecret?: string
 }
 
 // Per-room signing identity is persisted locally so a participant who rejoins
@@ -83,6 +87,7 @@ export async function buildSession(
     participantId: pid,
     username: username.trim() || "anon",
     signing,
+    ownerSecret: loadOwnerSecret(invite.roomId),
   }
 }
 

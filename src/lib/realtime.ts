@@ -2,7 +2,7 @@
 // reconnect and a polling fallback when the socket is unavailable. All frames
 // are opaque to the server; signalling payloads are encrypted with the channel
 // key before they are sent.
-import type { RealtimeFrame, StoredMessage } from "@shared/types"
+import type { PublicRoomState, RealtimeFrame, StoredMessage } from "@shared/types"
 import { api } from "./api"
 import type { RoomSession } from "./session"
 
@@ -16,6 +16,8 @@ export interface RealtimeHandlers {
   onPresence: (count: number) => void
   onSignal: (f: Extract<RealtimeFrame, { t: "signal" }>) => void
   onSeen: (participantId: string, lastSeen: number) => void
+  onRoomUpdated: (room: PublicRoomState) => void
+  onBanned: (participantId: string) => void
   onRoomDeleted: () => void
   onState: (s: ConnState) => void
   /** Newest message timestamp the UI already has, for polling/catch-up. */
@@ -139,6 +141,12 @@ export class Realtime {
         break
       case "seen":
         this.handlers.onSeen(frame.participantId, frame.lastSeen)
+        break
+      case "room-updated":
+        this.handlers.onRoomUpdated(frame.room)
+        break
+      case "banned":
+        this.handlers.onBanned(frame.participantId)
         break
       case "room-deleted":
         this.handlers.onRoomDeleted()

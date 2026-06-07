@@ -7,12 +7,14 @@ import type {
   EditMessageRequest,
   ListMessagesRequest,
   ListMessagesResponse,
+  OwnerActionRequest,
   PostMessageRequest,
   PruneRequest,
   PublicRoomState,
   PushSubscribeRequest,
   PushUnsubscribeRequest,
   ReactRequest,
+  SetTopicRequest,
   SignUploadRequest,
   SignUploadResponse,
   StoredMessage,
@@ -82,6 +84,15 @@ export const api = {
   },
   updateInvite(body: UpdateInviteRequest) {
     return post<{ room: PublicRoomState }>("/api/invites/update", body)
+  },
+  setTopic(body: SetTopicRequest) {
+    return post<{ room: PublicRoomState }>("/api/rooms/topic", body)
+  },
+  ownerAction(body: OwnerActionRequest) {
+    return post<{ room?: PublicRoomState; removedIds?: string[]; ok?: boolean }>(
+      "/api/rooms/owner",
+      body,
+    )
   },
   session(body: { roomId: string; accessProof: string; participantId: string }) {
     return post<{ room: PublicRoomState }>("/api/session", body)
