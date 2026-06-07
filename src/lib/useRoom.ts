@@ -49,12 +49,19 @@ export interface RoomController {
   room: PublicRoomState | null
   typing: TypingUser[]
   othersSeenUpTo: number
+  /** participantId -> latest message timestamp that peer has read (per-person receipts). */
+  seenBy: Record<string, number>
+  /** participantId -> best-known display name, for rendering read receipts. */
+  names: Record<string, string>
   uploads: UploadState[]
   error: string | null
   deleted: boolean
   sendText: (text: string, opts?: SendOpts) => Promise<void>
   sendMedia: (files: File[], caption: string, opts?: SendOpts) => Promise<void>
   retrySend: (id: string) => Promise<void>
+  editMessage: (id: string, text: string) => Promise<void>
+  deleteMessage: (id: string) => Promise<void>
+  markSeen: (lastSeen: number) => void
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
   pruneAll: () => Promise<void>
@@ -70,6 +77,8 @@ export function useRoom(session: RoomSession): RoomController {
   const [room, setRoom] = useState<PublicRoomState | null>(null)
   const [typing, setTyping] = useState<TypingUser[]>([])
   const [othersSeenUpTo, setOthersSeenUpTo] = useState(0)
+  const [seenBy, setSeenBy] = useState<Record<string, number>>({})
+  const [names, setNames] = useState<Record<string, string>>({})
   const [uploads, setUploads] = useState<UploadState[]>([])
   const [error, setError] = useState<string | null>(null)
   const [deleted, setDeleted] = useState(false)
@@ -100,6 +109,7 @@ export function useRoom(session: RoomSession): RoomController {
   const rt = useRef<Realtime | null>(null)
   const sinceRef = useRef(0)
   const lastTypingSent = useRef(0)
+  const lastSeenSent = useRef(0)
 
   const recompute = useCallback(async () => {
     const all = Array.from(storedById.current.values()).sort((a, b) => a.createdAt - b.createdAt)
@@ -144,6 +154,14 @@ export function useRoom(session: RoomSession): RoomController {
       return out
     })
     setMessages(final)
+    // Build a best-known name map (from baked-in usernames, with live overrides
+    // winning) so per-person read receipts can show real names.
+    const nameMap: Record<string, string> = {}
+    for (const m of final) {
+      if (m.kind !== "system" && m.username && m.username !== "anon") nameMap[m.participantId] = m.username
+    }
+    for (const [pid, nm] of nameOverrides.current) nameMap[pid] = nm
+    setNames(nameMap)
     sinceRef.current = all.reduce((mx, m) => Math.max(mx, m.createdAt), sinceRef.current)
   }, [session])
 
@@ -263,6 +281,15 @@ export function useRoom(session: RoomSession): RoomController {
         maybeNotify(m)
         ingest(m)
       },
+      onEdit: (m) => {
+        // In-place envelope swap or tombstone from a peer (or our own echo).
+        // Update the stored record, drop its decode cache, and recompute
+        // without notifying or reordering.
+        storedById.current.set(m.id, m)
+        decodeCache.current.delete(m.id)
+        markPeerActive(m.participantId)
+        void recompute()
+      },
       onPrune: (ids, all) => {
         if (all) storedById.current.clear()
         else for (const id of ids) storedById.current.delete(id)
@@ -313,6 +340,15 @@ export function useRoom(session: RoomSession): RoomController {
             })
             .catch(() => {})
         }
+      },
+      onSeen: (participantId, lastSeen) => {
+        if (participantId === session.participantId) return
+        markPeerActive(participantId)
+        setSeenBy((prev) => {
+          const cur = prev[participantId] ?? 0
+          if (lastSeen <= cur) return prev
+          return { ...prev, [participantId]: lastSeen }
+        })
       },
       onRoomDeleted: () => setDeleted(true),
       onState: setConnState,
@@ -543,6 +579,93 @@ export function useRoom(session: RoomSession): RoomController {
     [session, ingest, recompute, doSendMedia],
   )
 
+  // Edit one of my own already-sent messages. Re-encrypts (and re-signs) the new
+  // text into a fresh envelope, optimistically swaps it locally, then asks the
+  // server to relay the edit to everyone. Preserves any reply reference.
+  const editMessage = useCallback(
+    async (id: string, newText: string) => {
+      const trimmed = newText.trim()
+      if (!trimmed) return
+      const stored = storedById.current.get(id)
+      if (!stored || stored.participantId !== session.participantId) return
+      if (stored.kind !== "text" && stored.kind !== "media") return
+      const cached = decodeCache.current.get(id)?.out
+      const replyTo = cached?.replyTo
+      try {
+        const editedAt = Date.now()
+        const envelope =
+          stored.kind === "media"
+            ? await encodeMedia(session, id, trimmed, cached?.items ?? [], replyTo)
+            : await encodeText(session, id, trimmed, replyTo)
+        storedById.current.set(id, { ...stored, envelope, editedAt })
+        decodeCache.current.delete(id)
+        void recompute()
+        const res = await api.editMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          messageId: id,
+          participantId: session.participantId,
+          envelope,
+          kind: stored.kind,
+        })
+        ingest(res.message)
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to edit message")
+      }
+    },
+    [session, ingest, recompute],
+  )
+
+  // Delete one of my own messages for everyone. A still-pending optimistic
+  // message is just dropped locally; an acked one becomes a tombstone both
+  // locally and on the server (which also frees any backing media bytes).
+  const deleteMessage = useCallback(
+    async (id: string) => {
+      if (pendingById.current.has(id) && !storedById.current.has(id)) {
+        pendingById.current.delete(id)
+        pendingMediaById.current.delete(id)
+        void recompute()
+        return
+      }
+      const stored = storedById.current.get(id)
+      if (!stored || stored.participantId !== session.participantId) return
+      const tomb: StoredMessage = {
+        ...stored,
+        envelope: "",
+        media: undefined,
+        reactions: undefined,
+        deletedAt: Date.now(),
+      }
+      storedById.current.set(id, tomb)
+      decodeCache.current.delete(id)
+      void recompute()
+      try {
+        const res = await api.deleteOwnMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          messageId: id,
+          participantId: session.participantId,
+        })
+        ingest(res.message)
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to delete message")
+      }
+    },
+    [session, ingest, recompute],
+  )
+
+  // Broadcast how far we've read so peers can show per-person read receipts.
+  // Throttled via lastSeenSent; sent over the live socket (silently dropped on
+  // the polling fallback, which is acceptable for ephemeral receipts).
+  const markSeen = useCallback(
+    (lastSeen: number) => {
+      if (!lastSeen || lastSeen <= lastSeenSent.current) return
+      lastSeenSent.current = lastSeen
+      rt.current?.sendSignal({ t: "seen", participantId: session.participantId, lastSeen })
+    },
+    [session.participantId],
+  )
+
   const toggleReaction = useCallback(
     async (messageId: string, emoji: string) => {
       const stored = storedById.current.get(messageId)
@@ -655,12 +778,17 @@ export function useRoom(session: RoomSession): RoomController {
       room,
       typing,
       othersSeenUpTo,
+      seenBy,
+      names,
       uploads,
       error,
       deleted,
       sendText,
       sendMedia,
       retrySend,
+      editMessage,
+      deleteMessage,
+      markSeen,
       toggleReaction,
       prune,
       pruneAll,
@@ -675,12 +803,17 @@ export function useRoom(session: RoomSession): RoomController {
       room,
       typing,
       othersSeenUpTo,
+      seenBy,
+      names,
       uploads,
       error,
       deleted,
       sendText,
       sendMedia,
       retrySend,
+      editMessage,
+      deleteMessage,
+      markSeen,
       toggleReaction,
       prune,
       pruneAll,
