@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react"
-import { BadgeCheck, Fingerprint, ShieldAlert } from "lucide-react"
-import { signingFingerprint } from "@shared/crypto"
+import { BadgeCheck, Copy, Fingerprint, ShieldAlert, Smartphone } from "lucide-react"
+import { exportSigningKeyPair, signingFingerprint } from "@shared/crypto"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
 import { toQrDataUrl } from "../lib/qr"
+import { buildDeviceTransfer } from "../lib/deviceTransfer"
 import { vault } from "../lib/vault"
 import { Sheet, useToast } from "./ui"
 
@@ -23,6 +24,10 @@ export function SafetyPanel({
   const [verifiedAt, setVerifiedAt] = useState<string | undefined>(
     () => vault.get(session.invite.roomId)?.verifiedSafetyNumber,
   )
+  const [transfer, setTransfer] = useState<string | null>(null)
+  const [transferQr, setTransferQr] = useState<string | null>(null)
+  const [transferPin, setTransferPin] = useState<string | null>(null)
+  const [preparing, setPreparing] = useState(false)
   const changed = verifiedAt !== undefined && verifiedAt !== safetyNumber
 
   useEffect(() => {
@@ -41,6 +46,47 @@ export function SafetyPanel({
     vault.setVerified(session.invite.roomId, safetyNumber)
     setVerifiedAt(safetyNumber)
     toast("Marked as verified on this device")
+  }
+
+  // Prepare an ephemeral, PIN-locked transfer code so this room (its keys,
+  // identity and — if you are the owner — owner rights) can be added to another
+  // device by scanning the QR or pasting the code and entering the PIN.
+  const startTransfer = async () => {
+    if (preparing) return
+    setPreparing(true)
+    try {
+      const pinBytes = new Uint32Array(1)
+      globalThis.crypto.getRandomValues(pinBytes)
+      const pin = String(100000 + (pinBytes[0] % 900000))
+      const signing = session.signing ? await exportSigningKeyPair(session.signing) : null
+      const token = await buildDeviceTransfer(
+        {
+          inviteKey: session.invite.inviteKey,
+          username: session.username,
+          participantId: session.participantId,
+          ownerSecret: session.ownerSecret,
+          signing: signing ?? undefined,
+        },
+        pin,
+      )
+      setTransferPin(pin)
+      setTransfer(token)
+      setTransferQr(await toQrDataUrl(token, prefs.theme === "dark"))
+    } catch {
+      toast("Could not prepare the transfer code")
+    } finally {
+      setPreparing(false)
+    }
+  }
+
+  const copyTransfer = async () => {
+    if (!transfer) return
+    try {
+      await navigator.clipboard.writeText(transfer)
+      toast("Transfer code copied")
+    } catch {
+      toast("Copy failed — select and copy manually")
+    }
   }
 
   return (
@@ -78,7 +124,32 @@ export function SafetyPanel({
         <BadgeCheck size={16} /> Mark as verified
       </button>
 
-      <div className="callout">
+      <span className="label">Multi-device</span>
+      <button className="btn btn-block" style={MT_SM} disabled={preparing} onClick={() => void startTransfer()}>
+        <Smartphone size={16} /> {transfer ? "Regenerate transfer code" : "Move room to another device"}
+      </button>
+
+      {transfer && (
+        <div className="callout" style={TRANSFER_BOX}>
+          <span className="label">Scan on your other device, or copy the code</span>
+          <div className="qr-wrap" style={MARGIN}>
+            {transferQr ? <img src={transferQr} alt="Device transfer QR code" /> : <span className="spinner" />}
+          </div>
+          <div className="copy-field">
+            <div className="box mono" style={WRAP}>{transfer}</div>
+            <button className="btn" onClick={() => void copyTransfer()} aria-label="Copy transfer code">
+              <Copy size={16} />
+            </button>
+          </div>
+          <p className="hint" style={MT_SM}>
+            Transfer PIN: <strong style={STRONG}>{transferPin}</strong> — enter it on the other
+            device. This code grants full access to the room (and owner rights, if you have them),
+            so share it only with your own device and let it expire by closing this panel.
+          </p>
+        </div>
+      )}
+
+      <div className="callout" style={MT}>
         <span>
           <strong style={STRONG}>How this works.</strong> Messages, usernames, captions, filenames,
           and media are encrypted in your browser before upload, using keys derived from the invite
@@ -95,4 +166,8 @@ export function SafetyPanel({
 
 const MB = { marginBottom: "14px" }
 const MARGIN = { margin: "14px 0" }
+const MT = { marginTop: "14px" }
+const MT_SM = { marginTop: "8px" }
 const STRONG = { color: "var(--text)" }
+const WRAP = { wordBreak: "break-all" as const, maxHeight: "110px", overflow: "auto" as const }
+const TRANSFER_BOX = { marginTop: "10px", marginBottom: "14px" }

@@ -11,6 +11,7 @@ import {
   Plus,
   ServerOff,
   Shield,
+  Smartphone,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -20,6 +21,7 @@ import type { Prefs } from "../lib/usePrefs"
 import type { RoomSession } from "../lib/session"
 import { createRoom } from "../lib/createRoom"
 import { vault, type RememberedRoom } from "../lib/vault"
+import { applyDeviceBundle, parseDeviceTransfer } from "../lib/deviceTransfer"
 import { formatRelative, hueFromString, initials } from "../lib/format"
 import { IconButton, useToast } from "./ui"
 
@@ -312,6 +314,8 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
             </ul>
           </div>
 
+          <DeviceTransferCard onResume={onResume} />
+
           <LockCard />
         </div>
       </div>
@@ -364,6 +368,46 @@ function LockCard() {
       </p>
       <button className="btn btn-block" onClick={() => void (enabled ? disable() : enable())}>
         <Lock size={16} /> {enabled ? "Remove passphrase" : "Protect with passphrase"}
+      </button>
+    </div>
+  )
+}
+
+// Import a room from another device using a PIN-locked transfer code (generated
+// in that device's "Verify encryption" panel). Brings over the room key,
+// participant identity, signing key and — if present — owner rights.
+function DeviceTransferCard({ onResume }: { onResume: (roomId: string) => void }) {
+  const toast = useToast()
+  const [busy, setBusy] = useState(false)
+
+  async function importFromDevice() {
+    if (busy) return
+    const code = window.prompt("Paste the device-transfer code from your other device:")
+    if (!code) return
+    const pin = window.prompt("Enter the transfer PIN shown on your other device:")
+    if (!pin) return
+    setBusy(true)
+    try {
+      const bundle = await parseDeviceTransfer(code, pin)
+      const { roomId } = applyDeviceBundle(bundle)
+      toast("Room added to this device")
+      onResume(roomId)
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Could not import transfer code")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Add from another device</h2>
+      <p className="sub">
+        Already in this room on another device? Move it here — keys, owner rights and identity travel
+        inside a PIN-locked code.
+      </p>
+      <button className="btn btn-block" disabled={busy} onClick={() => void importFromDevice()}>
+        <Smartphone size={16} /> Import device transfer
       </button>
     </div>
   )
