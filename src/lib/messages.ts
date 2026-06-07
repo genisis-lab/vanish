@@ -9,10 +9,19 @@
 // of room id + message id + participant id + kind + content, so a captured
 // envelope cannot be re-attributed to a different id/sender without detection.
 import {
+  decryptBytesEpoch,
   decryptJson,
+  deriveEpochMsgKey,
+  encryptBytesEpoch,
   encryptString,
+  epochForTime,
+  fromBase64Url,
+  fromUtf8,
   opaqueReactionId,
+  readEnvelopeVersion,
+  readEpoch,
   signEd25519,
+  toBase64Url,
   utf8,
   verifyEd25519,
 } from "@shared/crypto"
@@ -90,8 +99,8 @@ export interface DecryptedMessage {
   /** transient client-only send state */
   pending?: boolean
   failed?: boolean
-  /** per-sender signature result: "ok" valid, "bad" present-but-invalid,
-   * "none" unsigned (legacy/unsupported). undefined for system/undecryptable. */
+  /** per-sender signature result: \"ok\" valid, \"bad\" present-but-invalid,
+   * \"none\" unsigned (legacy/unsupported). undefined for system/undecryptable. */
   verified?: "ok" | "bad" | "none"
   /** signer's Ed25519 public key (base64url), used for trust-on-first-use pinning */
   signerKey?: string
@@ -162,6 +171,58 @@ async function verifySignature(
   return ok ? "ok" : "bad"
 }
 
+// ---------- forward-secrecy epoch ratchet ----------
+//
+// Text/media/decoy payloads are encrypted under a per-epoch key (see
+// shared/crypto deriveEpochMsgKey) instead of the static room message key. Keys
+// are derived lazily and cached in-memory per session so we don't re-run HKDF
+// for every message in a busy epoch. Signalling, reactions and the room topic
+// intentionally stay on the room key.
+const epochKeyCache = new WeakMap<RoomSession, Map<number, Promise<CryptoKey>>>()
+
+function epochKey(session: RoomSession, epoch: number): Promise<CryptoKey> {
+  let perSession = epochKeyCache.get(session)
+  if (!perSession) {
+    perSession = new Map()
+    epochKeyCache.set(session, perSession)
+  }
+  let key = perSession.get(epoch)
+  if (!key) {
+    key = deriveEpochMsgKey(session.invite.secret, session.invite.roomId, epoch)
+    perSession.set(epoch, key)
+  }
+  return key
+}
+
+// Encrypt a payload under the current epoch key, padding the plaintext to a size
+// bucket first so ciphertext length leaks less about content (see shared/padding).
+async function encryptEpochPadded(
+  session: RoomSession,
+  value: unknown,
+  context: string,
+): Promise<string> {
+  const epoch = epochForTime(Date.now())
+  const key = await epochKey(session, epoch)
+  const bytes = utf8(padText(JSON.stringify(value)))
+  return toBase64Url(await encryptBytesEpoch(key, epoch, bytes, context))
+}
+
+// Decrypt a message payload, transparently handling both the current epoch-
+// ratchet envelope (v2) and legacy room-key envelopes (v1) still in history.
+async function decryptMsgJson<T>(
+  session: RoomSession,
+  envelopeB64: string,
+  context: string,
+): Promise<T> {
+  const raw = fromBase64Url(envelopeB64)
+  if (readEnvelopeVersion(raw) === 2) {
+    const key = await epochKey(session, readEpoch(raw))
+    const pt = await decryptBytesEpoch(key, raw, context)
+    return JSON.parse(fromUtf8(pt)) as T
+  }
+  return decryptJson<T>(session.keys.msgKey, envelopeB64, context)
+}
+
 // Encrypt a payload, padding the plaintext to a size bucket first so the
 // ciphertext length leaks less about the content (see shared/padding).
 async function encryptPadded(key: CryptoKey, value: unknown, context: string): Promise<string> {
@@ -181,17 +242,17 @@ export async function encodeText(
     replyToId: replyTo?.id ?? "",
     mediaKeys: "",
   })
-  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
+  return encryptEpochPadded(session, payload, aad(session, "msg"))
 }
 
 // Cover traffic: an encrypted message that looks exactly like a real one to the
 // server/observers but is flagged decoy INSIDE the ciphertext so recipients drop
-// it. Not signed (it carries no authorship meaning) and intentionally padded
-// like normal text so its size blends in.
+// it. Not signed (it carries no authorship meaning) and intentionally padded and
+// epoch-encrypted exactly like normal text so its size and envelope version blend in.
 export async function encodeDecoy(session: RoomSession, id: string): Promise<string> {
-  const payload: TextPayload = { username: session.username, text: "", decoy: true }
-  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
   void id
+  const payload: TextPayload = { username: session.username, text: "", decoy: true }
+  return encryptEpochPadded(session, payload, aad(session, "msg"))
 }
 
 export async function encodeMedia(
@@ -208,7 +269,7 @@ export async function encodeMedia(
     replyToId: replyTo?.id ?? "",
     mediaKeys: items.map((i) => i.objectKey).join(","),
   })
-  return encryptPadded(session.keys.msgKey, payload, aad(session, "msg"))
+  return encryptEpochPadded(session, payload, aad(session, "msg"))
 }
 
 export async function encodeSystem(session: RoomSession, payload: SystemPayload): Promise<string> {
@@ -274,7 +335,7 @@ export async function decodeMessage(
       base.username = p.username || "system"
       base.text = p.text
     } else if (stored.kind === "media") {
-      const p = await decryptJson<MediaPayload>(session.keys.msgKey, stored.envelope, aad(session, "msg"))
+      const p = await decryptMsgJson<MediaPayload>(session, stored.envelope, aad(session, "msg"))
       base.username = p.username
       base.text = p.caption
       base.items = p.items
@@ -293,7 +354,7 @@ export async function decodeMessage(
         p.sig,
       )
     } else {
-      const p = await decryptJson<TextPayload>(session.keys.msgKey, stored.envelope, aad(session, "msg"))
+      const p = await decryptMsgJson<TextPayload>(session, stored.envelope, aad(session, "msg"))
       // Cover-traffic messages decrypt fine but must never be shown.
       if (p.decoy) {
         base.decoy = true
@@ -330,7 +391,7 @@ async function decodeReactions(
       const existing = byEmoji.get(p.emoji) || { emoji: p.emoji, count: 0, mine: false, users: [] }
       existing.count++
       existing.users.push(p.username)
-      // "mine" comes from the stored participant id, not the reaction id (the id
+      // \"mine\" comes from the stored participant id, not the reaction id (the id
       // is now an opaque hash that intentionally hides the emoji).
       if (r.participantId === session.participantId) existing.mine = true
       byEmoji.set(p.emoji, existing)
