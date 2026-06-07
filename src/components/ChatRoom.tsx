@@ -157,6 +157,28 @@ export function ChatRoom({
     }
   }, [room.messages.length])
 
+  // Tell peers how far we've read so they get per-person read receipts. Fires
+  // when new messages arrive (while visible) and when the tab regains focus.
+  useEffect(() => {
+    const markIfVisible = () => {
+      if (document.visibilityState === "hidden") return
+      const msgs = room.messages
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].kind !== "system") {
+          room.markSeen(msgs[i].createdAt)
+          break
+        }
+      }
+    }
+    markIfVisible()
+    window.addEventListener("focus", markIfVisible)
+    document.addEventListener("visibilitychange", markIfVisible)
+    return () => {
+      window.removeEventListener("focus", markIfVisible)
+      document.removeEventListener("visibilitychange", markIfVisible)
+    }
+  }, [room.messages, room.markSeen])
+
   function onScroll() {
     const el = scrollRef.current
     if (!el) return
@@ -206,6 +228,22 @@ export function ChatRoom({
           ? "📎 Attachment"
           : "Message"
     setReplyTo({ id: m.id, username: m.username, preview })
+  }
+
+  function editMessage(m: DecryptedMessage) {
+    const next = window.prompt("Edit your message:", m.text ?? "")
+    if (next === null) return
+    const trimmed = next.trim()
+    if (trimmed && trimmed !== m.text) {
+      void room.editMessage(m.id, trimmed)
+      toast("Message edited")
+    }
+  }
+
+  function deleteMessage(m: DecryptedMessage) {
+    if (window.confirm("Delete this message for everyone in the room?")) {
+      void room.deleteMessage(m.id)
+    }
   }
 
   function saveRoom() {
@@ -314,6 +352,30 @@ export function ChatRoom({
     if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
     return "Several people are typing…"
   }, [room.typing])
+
+  // Id of my most recent (non-deleted) message — the only one we annotate with
+  // per-person read receipts, to avoid cluttering every bubble.
+  const lastMineId = useMemo(() => {
+    for (let i = room.messages.length - 1; i >= 0; i--) {
+      const m = room.messages[i]
+      if (m.mine && m.kind !== "system" && !m.deleted) return m.id
+    }
+    return null
+  }, [room.messages])
+
+  // Reply-thread indicators: how many messages reply to each message, and the
+  // first reply's id for the jump-to-thread chip.
+  const replyInfo = useMemo(() => {
+    const counts = new Map<string, number>()
+    const firstReply = new Map<string, string>()
+    for (const m of room.messages) {
+      if (m.replyTo) {
+        counts.set(m.replyTo.id, (counts.get(m.replyTo.id) ?? 0) + 1)
+        if (!firstReply.has(m.replyTo.id)) firstReply.set(m.replyTo.id, m.id)
+      }
+    }
+    return { counts, firstReply }
+  }, [room.messages])
 
   if (room.deleted) {
     return (
@@ -444,6 +506,12 @@ export function ChatRoom({
             const prev = room.messages[i - 1]
             const showWho = !prev || prev.participantId !== m.participantId || prev.kind === "system"
             const seen = room.participantCount > 1 && room.othersSeenUpTo >= m.createdAt
+            const seenByNames =
+              m.id === lastMineId
+                ? Object.entries(room.seenBy)
+                    .filter(([pid, ts]) => pid !== session.participantId && ts >= m.createdAt)
+                    .map(([pid]) => room.names[pid] || "someone")
+                : undefined
             return (
               <MessageItem
                 key={m.id}
@@ -453,9 +521,14 @@ export function ChatRoom({
                 selecting={selecting}
                 selected={selected.has(m.id)}
                 seen={seen}
+                seenByNames={seenByNames}
+                replyCount={replyInfo.counts.get(m.id) ?? 0}
+                firstReplyId={replyInfo.firstReply.get(m.id)}
                 onToggleSelect={toggleSelect}
                 onReact={room.toggleReaction}
                 onReply={startReply}
+                onEdit={editMessage}
+                onDelete={deleteMessage}
                 onOpenMedia={setViewer}
                 onRetry={room.retrySend}
                 onJumpTo={jumpToMessage}

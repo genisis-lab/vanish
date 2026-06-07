@@ -1,5 +1,18 @@
 import { memo, useEffect, useRef, useState } from "react"
-import { Check, CheckCheck, Clock, Flame, Reply, RotateCw, ShieldAlert, SmilePlus } from "lucide-react"
+import {
+  Ban,
+  Check,
+  CheckCheck,
+  Clock,
+  CornerDownRight,
+  Flame,
+  Pencil,
+  Reply,
+  RotateCw,
+  ShieldAlert,
+  SmilePlus,
+  Trash2,
+} from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
@@ -15,9 +28,17 @@ interface Props {
   selecting: boolean
   selected: boolean
   seen: boolean
+  /** Names of peers who have read up to this message (only set for my latest). */
+  seenByNames?: string[]
+  /** How many messages reply to this one. */
+  replyCount?: number
+  /** Id of the first reply, for the jump-to-thread chip. */
+  firstReplyId?: string
   onToggleSelect: (id: string) => void
   onReact: (id: string, emoji: string) => void
   onReply: (msg: DecryptedMessage) => void
+  onEdit?: (msg: DecryptedMessage) => void
+  onDelete?: (msg: DecryptedMessage) => void
   onOpenMedia: (item: MediaManifestItem) => void
   onRetry?: (id: string) => void
   onJumpTo?: (id: string) => void
@@ -42,9 +63,14 @@ function MessageItemInner({
   selecting,
   selected,
   seen,
+  seenByNames,
+  replyCount = 0,
+  firstReplyId,
   onToggleSelect,
   onReact,
   onReply,
+  onEdit,
+  onDelete,
   onOpenMedia,
   onRetry,
   onJumpTo,
@@ -131,7 +157,12 @@ function MessageItemInner({
     setDragX(0)
   }
 
-  const tools = !selecting && (
+  // Edit is offered for my own plain-text messages; delete for any of my own
+  // messages. Both require the message to be acked (not pending/failed) and not
+  // already deleted.
+  const canModify = msg.mine && !msg.deleted && !msg.pending && !msg.failed
+
+  const tools = !selecting && !msg.deleted && (
     <div className={`msg-tools ${actions ? "open" : ""}`} data-msg-actions>
       <button
         className="icon-btn mini"
@@ -143,6 +174,30 @@ function MessageItemInner({
       >
         <Reply size={15} />
       </button>
+      {canModify && msg.kind === "text" && onEdit && (
+        <button
+          className="icon-btn mini"
+          aria-label="Edit message"
+          onClick={() => {
+            onEdit(msg)
+            setActions(false)
+          }}
+        >
+          <Pencil size={15} />
+        </button>
+      )}
+      {canModify && onDelete && (
+        <button
+          className="icon-btn mini"
+          aria-label="Delete message"
+          onClick={() => {
+            onDelete(msg)
+            setActions(false)
+          }}
+        >
+          <Trash2 size={15} />
+        </button>
+      )}
       <button
         className="icon-btn mini"
         aria-label="Add reaction"
@@ -180,27 +235,35 @@ function MessageItemInner({
         onTouchEnd={onTouchEnd}
       >
         <div className="bubble" onClick={click} role={selecting ? "button" : undefined}>
-          {msg.replyTo && (
-            <div
-              className="quote"
-              role="button"
-              style={onJumpTo ? QUOTE_CLICK : undefined}
-              onClick={(e) => {
-                e.stopPropagation()
-                if (msg.replyTo) onJumpTo?.(msg.replyTo.id)
-              }}
-            >
-              <b>{msg.replyTo.username}</b>
-              <span>{msg.replyTo.preview}</span>
-            </div>
-          )}
-          {msg.text && <span>{msg.text}</span>}
-          {msg.items && msg.items.length > 0 && (
-            <div className="media-grid">
-              {msg.items.map((it) => (
-                <MediaTile key={it.objectKey} session={session} item={it} onOpen={onOpenMedia} />
-              ))}
-            </div>
+          {msg.deleted ? (
+            <span className="deleted-msg" style={DELETED}>
+              <Ban size={13} /> This message was deleted
+            </span>
+          ) : (
+            <>
+              {msg.replyTo && (
+                <div
+                  className="quote"
+                  role="button"
+                  style={onJumpTo ? QUOTE_CLICK : undefined}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (msg.replyTo) onJumpTo?.(msg.replyTo.id)
+                  }}
+                >
+                  <b>{msg.replyTo.username}</b>
+                  <span>{msg.replyTo.preview}</span>
+                </div>
+              )}
+              {msg.text && <span>{msg.text}</span>}
+              {msg.items && msg.items.length > 0 && (
+                <div className="media-grid">
+                  {msg.items.map((it) => (
+                    <MediaTile key={it.objectKey} session={session} item={it} onOpen={onOpenMedia} />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -223,7 +286,7 @@ function MessageItemInner({
         </div>
       )}
 
-      {msg.reactions.length > 0 && (
+      {!msg.deleted && msg.reactions.length > 0 && (
         <div className="react-row">
           {msg.reactions.map((r) => (
             <button
@@ -238,25 +301,48 @@ function MessageItemInner({
         </div>
       )}
 
+      {!msg.deleted && replyCount > 0 && (
+        <button
+          className="thread-chip"
+          style={THREAD}
+          title={`Jump to ${replyCount === 1 ? "reply" : "replies"}`}
+          onClick={() => {
+            if (firstReplyId) onJumpTo?.(firstReplyId)
+          }}
+        >
+          <CornerDownRight size={11} /> {replyCount} {replyCount === 1 ? "reply" : "replies"}
+        </button>
+      )}
+
       <div className="foot">
         <span>{formatTime(msg.createdAt)}</span>
-        {msg.burn && (
+        {!msg.deleted && msg.editedAt && (
+          <span className="edited-tag" style={EDITED}>
+            edited
+          </span>
+        )}
+        {!msg.deleted && msg.burn && (
           <span className="burn-tag">
             <Flame size={10} /> Read once
           </span>
         )}
-        {ttl && (
+        {!msg.deleted && ttl && (
           <span className="ttl">
             <Clock size={10} /> {ttl}
           </span>
         )}
-        {msg.mine && <SendState failed={msg.failed} pending={msg.pending} seen={seen} />}
+        {msg.mine && !msg.deleted && <SendState failed={msg.failed} pending={msg.pending} seen={seen} />}
+        {msg.mine && !msg.deleted && seenByNames && seenByNames.length > 0 && (
+          <span className="seen-by" style={SEENBY} title={`Seen by ${seenByNames.join(", ")}`}>
+            Seen by {seenByNames.length <= 2 ? seenByNames.join(", ") : `${seenByNames.length} people`}
+          </span>
+        )}
         {msg.mine && msg.failed && onRetry && (
           <button className="retry-btn" onClick={() => onRetry(msg.id)} aria-label="Retry sending">
             <RotateCw size={11} /> Retry
           </button>
         )}
-        {(msg.keyChanged || msg.verified === "bad") && (
+        {!msg.deleted && (msg.keyChanged || msg.verified === "bad") && (
           <span
             className="state-failed"
             title={
@@ -299,5 +385,28 @@ function SendState({
 
 const ROW = { display: "flex", alignItems: "center", gap: "4px" }
 const QUOTE_CLICK = { cursor: "pointer" }
+const DELETED = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "5px",
+  fontStyle: "italic" as const,
+  opacity: 0.6,
+}
+const EDITED = { opacity: 0.6, fontStyle: "italic" as const }
+const SEENBY = { opacity: 0.75 }
+const THREAD = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "4px",
+  marginTop: "3px",
+  padding: "2px 8px",
+  fontSize: "11px",
+  lineHeight: 1.4,
+  borderRadius: "999px",
+  border: "1px solid var(--border, rgba(255,255,255,0.14))",
+  background: "transparent",
+  color: "var(--text-dim, inherit)",
+  cursor: "pointer",
+} as const
 
 export const MessageItem = memo(MessageItemInner)
