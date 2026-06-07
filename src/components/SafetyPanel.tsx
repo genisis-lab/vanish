@@ -125,26 +125,38 @@ export function SafetyPanel({
       </button>
 
       <span className="label">Multi-device</span>
-      <button className="btn btn-block" style={MT_SM} disabled={preparing} onClick={() => void startTransfer()}>
+      <button
+        className="btn btn-block"
+        style={MT_SM}
+        disabled={preparing}
+        onClick={() => void startTransfer()}
+      >
         <Smartphone size={16} /> {transfer ? "Regenerate transfer code" : "Move room to another device"}
       </button>
 
       {transfer && (
-        <div className="callout" style={TRANSFER_BOX}>
-          <span className="label">Scan on your other device, or copy the code</span>
-          <div className="qr-wrap" style={MARGIN}>
-            {transferQr ? <img src={transferQr} alt="Device transfer QR code" /> : <span className="spinner" />}
+        <div className="transfer-block">
+          <span className="label">1. Scan this on your other device</span>
+          <div className="qr-wrap">
+            {transferQr ? (
+              <img src={transferQr} alt="Device transfer QR code" />
+            ) : (
+              <span className="spinner" />
+            )}
           </div>
-          <div className="copy-field">
-            <div className="box mono" style={WRAP}>{transfer}</div>
-            <button className="btn" onClick={() => void copyTransfer()} aria-label="Copy transfer code">
-              <Copy size={16} />
-            </button>
-          </div>
-          <p className="hint" style={MT_SM}>
-            Transfer PIN: <strong style={STRONG}>{transferPin}</strong> — enter it on the other
-            device. This code grants full access to the room (and owner rights, if you have them),
-            so share it only with your own device and let it expire by closing this panel.
+
+          <span className="label">2. Enter this PIN there</span>
+          <div className="transfer-pin">{transferPin}</div>
+
+          <span className="label">No camera? Copy the code and paste it instead</span>
+          <div className="transfer-code mono">{transfer}</div>
+          <button className="btn btn-block" onClick={() => void copyTransfer()}>
+            <Copy size={16} /> Copy transfer code
+          </button>
+
+          <p className="hint">
+            This code grants full access to the room (and owner rights, if you have them). Share it
+            only with your own device, and close this panel to expire it.
           </p>
         </div>
       )}
@@ -169,5 +181,3 @@ const MARGIN = { margin: "14px 0" }
 const MT = { marginTop: "14px" }
 const MT_SM = { marginTop: "8px" }
 const STRONG = { color: "var(--text)" }
-const WRAP = { wordBreak: "break-all" as const, maxHeight: "110px", overflow: "auto" as const }
-const TRANSFER_BOX = { marginTop: "10px", marginBottom: "14px" }
