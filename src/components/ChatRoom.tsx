@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowDown,
+  Ban,
   Bell,
   BellOff,
   BookmarkPlus,
@@ -10,6 +11,7 @@ import {
   Eye,
   EyeOff,
   Flame,
+  Ghost,
   Maximize2,
   Minimize2,
   Moon,
@@ -19,6 +21,7 @@ import {
   Share2,
   ShieldCheck,
   Sun,
+  Tag,
   Trash2,
   Type,
   Users,
@@ -67,6 +70,9 @@ export function ChatRoom({
   const [unread, setUnread] = useState(0)
   const [savePrompt, setSavePrompt] = useState(() => !vault.get(session.invite.roomId))
   const [notifOn, setNotifOn] = useState(() => notificationsEnabled())
+
+  const isOwner = room.isOwner
+  const topic = room.topic
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
@@ -222,10 +228,10 @@ export function ChatRoom({
 
   function startReply(m: DecryptedMessage) {
     const preview =
-      m.text && !m.text.startsWith("⚠")
+      m.text && !m.text.startsWith("\u26a0")
         ? m.text.slice(0, 90)
         : m.items && m.items.length > 0
-          ? "📎 Attachment"
+          ? "\ud83d\udcce Attachment"
           : "Message"
     setReplyTo({ id: m.id, username: m.username, preview })
   }
@@ -261,7 +267,7 @@ export function ChatRoom({
       lastUsed: Date.now(),
     })
     setSavePrompt(false)
-    toast("Saved — you can rejoin this room after a refresh")
+    toast("Saved \u2014 you can rejoin this room after a refresh")
   }
 
   async function toggleNotifications() {
@@ -275,17 +281,28 @@ export function ChatRoom({
     }
     const result = await enableNotifications()
     if (result === "unsupported") {
-      toast("This browser can’t show notifications")
+      toast("This browser can\u2019t show notifications")
       return
     }
     if (result === "blocked") {
-      toast("Notifications are blocked — allow them in your browser’s site settings")
+      toast("Notifications are blocked \u2014 allow them in your browser\u2019s site settings")
       return
     }
     setNotifOn(true)
     if (!prefs.sound) prefs.toggleSound()
     void subscribePush(session)
-    toast("Notifications on — you’ll be alerted even when Vanish is closed")
+    toast("Notifications on \u2014 you\u2019ll be alerted even when Vanish is closed")
+  }
+
+  function editTopic() {
+    const next = window.prompt(
+      "Set an encrypted room topic (everyone with the invite key can read it):",
+      topic,
+    )
+    if (next === null) return
+    void room.setTopic(next.trim())
+    setPanel(null)
+    toast(next.trim() ? "Topic updated" : "Topic cleared")
   }
 
   function exportTranscript() {
@@ -295,7 +312,7 @@ export function ChatRoom({
         const when = new Date(m.createdAt).toISOString()
         const who = m.mine ? `${m.username || "anon"} (you)` : m.username || "anon"
         const body =
-          m.text && !m.text.startsWith("⚠")
+          m.text && !m.text.startsWith("\u26a0")
             ? m.text
             : m.items && m.items.length > 0
               ? `[${m.items.length} attachment(s)]`
@@ -348,9 +365,9 @@ export function ChatRoom({
   const typingText = useMemo(() => {
     const names = room.typing.map((t) => t.username)
     if (names.length === 0) return ""
-    if (names.length === 1) return `${names[0]} is typing…`
-    if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
-    return "Several people are typing…"
+    if (names.length === 1) return `${names[0]} is typing\u2026`
+    if (names.length === 2) return `${names[0]} and ${names[1]} are typing\u2026`
+    return "Several people are typing\u2026"
   }, [room.typing])
 
   // Id of my most recent (non-deleted) message — the only one we annotate with
@@ -376,6 +393,43 @@ export function ChatRoom({
     }
     return { counts, firstReply }
   }, [room.messages])
+
+  // Known participants for the member sheet: anyone we have a name for, plus
+  // ourselves and anyone currently banned. Participants are anonymous, so this
+  // is necessarily limited to people who have spoken (or been banned).
+  const participants = useMemo(() => {
+    const banned = new Set(room.room?.banned ?? [])
+    const map = new Map<string, { pid: string; name: string; banned: boolean }>()
+    map.set(session.participantId, {
+      pid: session.participantId,
+      name: session.username,
+      banned: false,
+    })
+    for (const [pid, name] of Object.entries(room.names)) {
+      map.set(pid, { pid, name: name || "anon", banned: banned.has(pid) })
+    }
+    for (const pid of banned) {
+      if (!map.has(pid)) map.set(pid, { pid, name: "anon", banned: true })
+    }
+    return Array.from(map.values())
+  }, [room.names, room.room, session.participantId, session.username])
+
+  if (room.bannedSelf) {
+    return (
+      <div className="center-shell">
+        <div className="card join-card" style={CENTER}>
+          <Ban size={34} color="var(--accent)" />
+          <h2 style={MT}>Removed from room</h2>
+          <p className="hint" style={MB}>
+            The room owner has removed you from this room. Your access has ended.
+          </p>
+          <button className="btn btn-primary btn-block" onClick={onLeave}>
+            Back to home
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (room.deleted) {
     return (
@@ -412,7 +466,7 @@ export function ChatRoom({
             <div className="room-id">
               <button type="button" className="t brand-home" onClick={onLeave} title="Back to home">
                 <Flame size={16} color="var(--accent)" />
-                <span className="hide-sm">Vanish room</span>
+                <span className="hide-sm">{topic || "Vanish room"}</span>
               </button>
               <span className="s">
                 <span className={`dot ${room.connState}`} />
@@ -497,7 +551,7 @@ export function ChatRoom({
             <div className="center-spinner" style={EMPTY}>
               <Flame size={26} color="var(--accent)" />
               <p className="hint" style={EMPTYTEXT}>
-                This room is empty and encrypted end-to-end. Say hello — messages auto-delete on the
+                This room is empty and encrypted end-to-end. Say hello \u2014 messages auto-delete on the
                 schedule you chose.
               </p>
             </div>
@@ -584,20 +638,51 @@ export function ChatRoom({
         <SafetyPanel session={session} prefs={prefs} onClose={() => setPanel(null)} />
       )}
       {panel === "members" && (
-        <Sheet title="Who’s here" icon={<Users size={18} />} onClose={() => setPanel(null)}>
+        <Sheet title="Who\u2019s here" icon={<Users size={18} />} onClose={() => setPanel(null)}>
           <div className="stack">
             <div className="members-count">
               <span className="big">{room.participantCount}</span>
               <span>
                 {room.participantCount === 1
-                  ? "person here right now — just you"
+                  ? "person here right now \u2014 just you"
                   : "people here right now"}
               </span>
             </div>
+            {topic && (
+              <p className="hint">
+                <Tag size={13} /> Topic: <strong>{topic}</strong>
+              </p>
+            )}
+            <div className="member-list">
+              {participants.map((p) => (
+                <div
+                  key={p.pid}
+                  className="member-row"
+                  style={MEMBER_ROW}
+                >
+                  <span style={p.banned ? MEMBER_BANNED : undefined}>
+                    {p.name}
+                    {p.pid === session.participantId ? " (you)" : ""}
+                    {p.banned ? " \u2014 banned" : ""}
+                  </span>
+                  {isOwner && p.pid !== session.participantId && (
+                    <button
+                      className={`btn ${p.banned ? "" : "btn-danger"}`}
+                      onClick={() =>
+                        p.banned ? room.unbanMember(p.pid) : room.banMember(p.pid)
+                      }
+                    >
+                      {p.banned ? "Unban" : <><Ban size={14} /> Ban</>}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
             <p className="hint">
               Presence counts anyone active in roughly the last 45 seconds. Vanish is anonymous, so
-              the server can’t verify identities — treat this as an approximate count, and use the
-              safety number (the shield icon) to confirm exactly who you’re talking to.
+              the server can\u2019t verify identities \u2014 treat this as an approximate count, and use
+              the safety number (the shield icon) to confirm exactly who you\u2019re talking to.
+              {isOwner ? " As the room owner, you can ban anyone who has spoken here." : ""}
             </p>
           </div>
         </Sheet>
@@ -607,6 +692,24 @@ export function ChatRoom({
           <div className="stack">
             <button className="btn btn-block" onClick={changeNickname}>
               <Pencil size={16} /> Change your nickname
+            </button>
+            {isOwner && (
+              <button className="btn btn-block" onClick={editTopic}>
+                <Tag size={16} /> {topic ? "Change room topic" : "Set room topic"}
+              </button>
+            )}
+            <button
+              className="btn btn-block"
+              onClick={() => {
+                room.toggleDecoy()
+                toast(
+                  room.decoyEnabled
+                    ? "Cover traffic off"
+                    : "Cover traffic on \u2014 sending decoy messages to mask activity",
+                )
+              }}
+            >
+              <Ghost size={16} /> Cover traffic: {room.decoyEnabled ? "on" : "off"}
             </button>
             <button className="btn btn-block" onClick={exportTranscript}>
               <Download size={16} /> Export transcript (this device)
@@ -631,11 +734,11 @@ export function ChatRoom({
               <Trash2 size={16} /> Clear all visible messages
             </button>
             <button className="btn btn-danger btn-block" onClick={panic}>
-              <Zap size={16} /> Panic — wipe view & leave
+              <Zap size={16} /> Panic \u2014 wipe view & leave
             </button>
             {confirmDelete ? (
               <button className="btn btn-danger btn-block" onClick={doDelete}>
-                <Trash2 size={16} /> Confirm — delete room & all data
+                <Trash2 size={16} /> Confirm \u2014 delete room & all data
               </button>
             ) : (
               <button className="btn btn-danger btn-block" onClick={() => setConfirmDelete(true)}>
@@ -661,7 +764,7 @@ function MemberDots({ count, onClick }: { count: number; onClick?: () => void })
     <button
       type="button"
       className="members members-btn"
-      title={`${count} here — tap for details`}
+      title={`${count} here \u2014 tap for details`}
       onClick={onClick}
     >
       <span className="member-dots" aria-hidden="true">
@@ -721,7 +824,7 @@ function labelFor(state: string): string {
     case "polling":
       return "Connected"
     case "connecting":
-      return "Connecting…"
+      return "Connecting\u2026"
     default:
       return "Offline"
   }
@@ -733,3 +836,11 @@ const MB = { marginBottom: "16px" }
 const GROW = { flex: 1, border: "none", padding: 0, background: "transparent" }
 const EMPTY = { flex: "none" as const, padding: "40px 20px" }
 const EMPTYTEXT = { maxWidth: "320px", textAlign: "center" as const }
+const MEMBER_ROW = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "10px",
+  padding: "8px 0",
+}
+const MEMBER_BANNED = { opacity: 0.6, textDecoration: "line-through" as const }

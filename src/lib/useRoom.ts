@@ -10,10 +10,13 @@ import { aad, type RoomSession } from "./session"
 import { randomId } from "./clientCrypto"
 import {
   decodeMessage,
+  decodeTopic,
+  encodeDecoy,
   encodeMedia,
-  encodeText,
-  reactionId as makeReactionId,
   encodeReaction,
+  encodeText,
+  encodeTopic,
+  reactionId as makeReactionId,
   type DecryptedMessage,
   type ReplyRef,
 } from "./messages"
@@ -47,6 +50,14 @@ export interface RoomController {
   connState: ConnState
   participantCount: number
   room: PublicRoomState | null
+  /** Decrypted room topic/name ("" when unset). */
+  topic: string
+  /** True when this device holds the owner secret for the room. */
+  isOwner: boolean
+  /** True once the owner has removed (banned) this participant. */
+  bannedSelf: boolean
+  /** Whether cover-traffic (decoy messages) is currently being emitted. */
+  decoyEnabled: boolean
   typing: TypingUser[]
   othersSeenUpTo: number
   /** participantId -> latest message timestamp that peer has read (per-person receipts). */
@@ -68,6 +79,14 @@ export interface RoomController {
   deleteRoom: () => Promise<void>
   notifyTyping: () => void
   rename: (name: string) => void
+  /** Owner-only: set (or clear, with "") the encrypted room topic. */
+  setTopic: (topic: string) => Promise<void>
+  /** Owner-only: ban a participant by id (server-enforced). */
+  banMember: (participantId: string) => Promise<void>
+  /** Owner-only: lift a ban. */
+  unbanMember: (participantId: string) => Promise<void>
+  /** Toggle cover-traffic emission on/off. */
+  toggleDecoy: () => void
 }
 
 export function useRoom(session: RoomSession): RoomController {
@@ -75,6 +94,9 @@ export function useRoom(session: RoomSession): RoomController {
   const [connState, setConnState] = useState<ConnState>("connecting")
   const [participantCount, setParticipantCount] = useState(1)
   const [room, setRoom] = useState<PublicRoomState | null>(null)
+  const [topic, setTopicState] = useState("")
+  const [bannedSelf, setBannedSelf] = useState(false)
+  const [decoyEnabled, setDecoyEnabled] = useState(false)
   const [typing, setTyping] = useState<TypingUser[]>([])
   const [othersSeenUpTo, setOthersSeenUpTo] = useState(0)
   const [seenBy, setSeenBy] = useState<Record<string, number>>({})
@@ -82,6 +104,11 @@ export function useRoom(session: RoomSession): RoomController {
   const [uploads, setUploads] = useState<UploadState[]>([])
   const [error, setError] = useState<string | null>(null)
   const [deleted, setDeleted] = useState(false)
+
+  // This device owns the room iff it holds the owner secret (set at creation or
+  // imported via multi-device sync). The server independently verifies the
+  // secret on every owner action, so this only governs which controls we show.
+  const isOwner = !!session.ownerSecret
 
   const storedById = useRef(new Map<string, StoredMessage>())
   // Cache of already-decrypted messages keyed by id. Avoids re-running AES-GCM
@@ -138,21 +165,24 @@ export function useRoom(session: RoomSession): RoomController {
     const merged = [...decoded, ...pending, ...noticesRef.current].sort(
       (a, b) => a.createdAt - b.createdAt,
     )
-    // Single ordered pass: apply live nickname overrides and trust-on-first-use
-    // signing-key pinning. Both produce new objects so cached decode results are
-    // never mutated. Iterating in chronological order means the earliest key we
-    // see for a participant becomes the pinned one; a later mismatch is flagged.
-    const final = merged.map((m) => {
-      let out = m
-      const o = nameOverrides.current.get(m.participantId)
-      if (o && m.kind !== "system" && m.username !== o) out = { ...out, username: o }
-      if (m.kind !== "system" && m.verified === "ok" && m.signerKey) {
-        const pinned = signerKeys.current.get(m.participantId)
-        if (!pinned) signerKeys.current.set(m.participantId, m.signerKey)
-        else if (pinned !== m.signerKey) out = out === m ? { ...m, keyChanged: true } : { ...out, keyChanged: true }
-      }
-      return out
-    })
+    // Single ordered pass: drop cover-traffic decoys (never shown), then apply
+    // live nickname overrides and trust-on-first-use signing-key pinning. Both
+    // produce new objects so cached decode results are never mutated. Iterating
+    // in chronological order means the earliest key we see for a participant
+    // becomes the pinned one; a later mismatch is flagged.
+    const final = merged
+      .filter((m) => !m.decoy)
+      .map((m) => {
+        let out = m
+        const o = nameOverrides.current.get(m.participantId)
+        if (o && m.kind !== "system" && m.username !== o) out = { ...out, username: o }
+        if (m.kind !== "system" && m.verified === "ok" && m.signerKey) {
+          const pinned = signerKeys.current.get(m.participantId)
+          if (!pinned) signerKeys.current.set(m.participantId, m.signerKey)
+          else if (pinned !== m.signerKey) out = out === m ? { ...m, keyChanged: true } : { ...out, keyChanged: true }
+        }
+        return out
+      })
     setMessages(final)
     // Build a best-known name map (from baked-in usernames, with live overrides
     // winning) so per-person read receipts can show real names.
@@ -182,6 +212,23 @@ export function useRoom(session: RoomSession): RoomController {
       void recompute()
     },
     [recompute],
+  )
+
+  // Apply a fresh public room snapshot: store it and (re)decrypt the topic. The
+  // topic envelope is opaque to the server; only members with the key can read
+  // it. Used both on initial load and on every "room-updated" realtime frame.
+  const applyRoomState = useCallback(
+    (r: PublicRoomState) => {
+      setRoom(r)
+      if (r.topicEnvelope) {
+        void decodeTopic(session, r.topicEnvelope)
+          .then((t) => setTopicState(t))
+          .catch(() => setTopicState(""))
+      } else {
+        setTopicState("")
+      }
+    },
+    [session],
   )
 
   // Apply a fresh participant count. Joins are announced by name via the
@@ -226,6 +273,7 @@ export function useRoom(session: RoomSession): RoomController {
       if (!notificationsEnabled()) return
       void decodeMessage(session, m)
         .then((d) => {
+          if (d.decoy) return
           const name = nameOverrides.current.get(d.participantId) || d.username || "Someone"
           const body =
             d.kind === "media"
@@ -258,7 +306,7 @@ export function useRoom(session: RoomSession): RoomController {
         })
         if (cancelled) return
         for (const m of res.messages) storedById.current.set(m.id, m)
-        setRoom(res.room)
+        applyRoomState(res.room)
         applyPresence(res.room.participantCount)
         await recompute()
       } catch (e) {
@@ -350,6 +398,17 @@ export function useRoom(session: RoomSession): RoomController {
           return { ...prev, [participantId]: lastSeen }
         })
       },
+      onRoomUpdated: (r) => applyRoomState(r),
+      onBanned: (participantId) => {
+        if (participantId === session.participantId) {
+          // The owner removed us: tear down realtime and surface a clear notice.
+          setBannedSelf(true)
+          rt.current?.stop()
+        } else {
+          nameOverrides.current.delete(participantId)
+          pushNotice("A participant was removed by the room owner")
+        }
+      },
       onRoomDeleted: () => setDeleted(true),
       onState: setConnState,
       getSince: () => sinceRef.current,
@@ -395,6 +454,47 @@ export function useRoom(session: RoomSession): RoomController {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
+
+  // ---------- cover traffic (decoy messages) ----------
+  //
+  // When enabled, periodically emit an encrypted decoy that is byte-for-byte
+  // indistinguishable from a real message to the server/observers. Recipients
+  // decrypt it, see the decoy flag, and silently drop it (see recompute). This
+  // masks *when* and *whether* real conversation is happening. Jittered timing
+  // and a short TTL keep volume modest and self-cleaning.
+  useEffect(() => {
+    if (!decoyEnabled) return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const tick = async () => {
+      if (stopped) return
+      try {
+        const id = randomId()
+        const envelope = await encodeDecoy(session, id)
+        await api.postMessage({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          message: {
+            id,
+            participantId: session.participantId,
+            envelope,
+            kind: "text",
+            ttlMs: 45000,
+          },
+        })
+      } catch {
+        /* a dropped decoy is harmless */
+      }
+      if (!stopped) timer = setTimeout(tick, 20000 + Math.random() * 40000)
+    }
+    timer = setTimeout(tick, 8000 + Math.random() * 12000)
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
+  }, [decoyEnabled, session])
+
+  const toggleDecoy = useCallback(() => setDecoyEnabled((v) => !v), [])
 
   const sendText = useCallback(
     async (text: string, opts?: SendOpts) => {
@@ -733,6 +833,63 @@ export function useRoom(session: RoomSession): RoomController {
     }
   }, [session])
 
+  // Owner-only: set (or clear with "") the encrypted room topic. The plaintext
+  // never leaves the device unencrypted; the server stores only the opaque
+  // envelope and rebroadcasts the new room state to everyone.
+  const updateTopic = useCallback(
+    async (newTopic: string) => {
+      if (!session.ownerSecret) return
+      try {
+        const trimmed = newTopic.trim().slice(0, 200)
+        const topicEnvelope = trimmed ? await encodeTopic(session, trimmed) : null
+        const res = await api.setTopic({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ownerProof: session.ownerSecret,
+          topicEnvelope,
+        })
+        applyRoomState(res.room)
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to update topic")
+      }
+    },
+    [session, applyRoomState],
+  )
+
+  // Owner-only moderation. The server verifies the owner secret independently;
+  // a non-owner calling this is rejected server-side.
+  const ownerAction = useCallback(
+    async (action: "ban" | "unban" | "clear" | "destroy", targetParticipantId?: string) => {
+      if (!session.ownerSecret) return
+      try {
+        const res = await api.ownerAction({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ownerProof: session.ownerSecret,
+          action,
+          targetParticipantId,
+        })
+        if (res.room) applyRoomState(res.room)
+        if (res.removedIds && res.removedIds.length > 0) {
+          for (const rid of res.removedIds) storedById.current.delete(rid)
+          void recompute()
+        }
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Owner action failed")
+      }
+    },
+    [session, applyRoomState, recompute],
+  )
+
+  const banMember = useCallback(
+    (participantId: string) => ownerAction("ban", participantId),
+    [ownerAction],
+  )
+  const unbanMember = useCallback(
+    (participantId: string) => ownerAction("unban", participantId),
+    [ownerAction],
+  )
+
   const notifyTyping = useCallback(() => {
     const now = Date.now()
     if (now - lastTypingSent.current < 1800) return
@@ -776,6 +933,10 @@ export function useRoom(session: RoomSession): RoomController {
       connState,
       participantCount,
       room,
+      topic,
+      isOwner,
+      bannedSelf,
+      decoyEnabled,
       typing,
       othersSeenUpTo,
       seenBy,
@@ -795,12 +956,20 @@ export function useRoom(session: RoomSession): RoomController {
       deleteRoom,
       notifyTyping,
       rename,
+      setTopic: updateTopic,
+      banMember,
+      unbanMember,
+      toggleDecoy,
     }),
     [
       messages,
       connState,
       participantCount,
       room,
+      topic,
+      isOwner,
+      bannedSelf,
+      decoyEnabled,
       typing,
       othersSeenUpTo,
       seenBy,
@@ -820,6 +989,10 @@ export function useRoom(session: RoomSession): RoomController {
       deleteRoom,
       notifyTyping,
       rename,
+      updateTopic,
+      banMember,
+      unbanMember,
+      toggleDecoy,
     ],
   )
 }
