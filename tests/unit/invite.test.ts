@@ -26,7 +26,9 @@ describe("invite keys", () => {
   it("builds and parses a browser-safe invite URL", () => {
     const invite = createInvite()
     const url = buildInviteUrl("https://vanish.example.com", invite.inviteKey)
-    expect(url).toContain("/?invite=")
+    // The invite key lives in the URL fragment so the secret is never sent to
+    // the server (fragments are not transmitted in HTTP requests).
+    expect(url).toContain("/#invite=")
     const parsed = parseInviteFromUrl(url)
     expect(parsed?.inviteKey).toBe(invite.inviteKey)
   })
