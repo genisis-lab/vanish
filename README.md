@@ -36,9 +36,10 @@ it.
 - **Room owner controls** — the room creator holds a device-only owner secret (the server keeps
   only its hash) that gates moderation: set an **encrypted room topic/name**, view the
   **member list**, **ban/unban** participants, clear the room, or destroy it entirely.
-- **Decoy / cover traffic** — an optional “Ghost” mode emits encrypted decoy messages that are
-  byte-for-byte indistinguishable from real ones (same envelope + size padding) and are
-  silently dropped by recipients, masking when you are actually talking.
+- **Decoy messages (traffic masking)** — an optional mode that sends harmless fake messages in
+  the background, byte-for-byte indistinguishable from real ones (same envelope + size padding)
+  and silently dropped by recipients, so an outside observer can't tell when you're actually
+  talking.
 - **Multi-device sync** — move a room to another device with a **PIN-locked transfer code**
   (shown as a QR or copyable string) that carries the room key, your participant identity,
   signing key, and — if you're the owner — owner rights. Nothing transits the server.
@@ -106,7 +107,7 @@ Notifications follow you across every room you've joined, not just the one on sc
   their device; the server registers only its SHA-256. Owner-gated actions (set topic, ban,
   unban, clear, destroy) present the secret as proof-of-possession, which the server checks by
   hash comparison — so merely being in the room does not grant moderation powers.
-- **Decoy traffic.** Cover messages are encrypted with the same v2 epoch envelope and size
+- **Decoy messages.** Cover messages are encrypted with the same v2 epoch envelope and size
   padding as real messages and flagged only *inside* the ciphertext, so they are
   indistinguishable on the wire and are dropped by recipients after decryption.
 - **Multi-device transfer.** A transfer code bundles the invite key, participant id, signing
@@ -321,7 +322,7 @@ What the suites cover:
   does not let someone forge messages as another participant.
 - **Owner moderation** (encrypted topic, member list, ban/unban, clear, destroy) is gated by a
   device-only owner secret; the server stores only its hash.
-- **Decoy / cover traffic** can be enabled to mask when you are actually talking; decoys are
+- **Decoy messages** can be enabled to mask when you are actually talking; decoys are
   indistinguishable from real messages on the wire.
 - **Multi-device transfer** moves a room between your own devices inside a PIN-locked code that
   never touches the server.
@@ -385,7 +386,7 @@ share an invite link out-of-band**. Being explicit about what that does and does
 - **Metadata.** Cloudflare necessarily processes transport metadata — IP addresses, timestamps,
   room IDs, request sizes, and object sizes. Vanish does not use Tor-style mix routing; it is
   not designed to hide *that* you are talking or *with whom* at the network level. Decoy
-  traffic helps obscure *timing*, but is not a substitute for a mix network.
+  messages help obscure *timing*, but are not a substitute for a mix network.
 - **Full forward secrecy against root-secret compromise.** The epoch ratchet rotates message
   keys per time window and bounds per-window exposure, but every epoch key is still derivable
   from the static invite secret. Anyone who later obtains the invite secret can re-derive past
@@ -395,7 +396,7 @@ share an invite link out-of-band**. Being explicit about what that does and does
 - **Lost keys.** The secret lives only in the invite link and your browser. Lose the link and
   the room is unrecoverable by design — there is no reset or recovery.
 - **Traffic analysis.** Presence counts and message timing are observable to the server
-  (mitigated, not eliminated, by optional decoy traffic).
+  (mitigated, not eliminated, by optional decoy messages).
 - **Legal, military, or classified use.** Vanish uses strong, modern, secure-by-default
   cryptography, but it has not been independently audited and is not intended for high-stakes
   adversarial use.
