@@ -20,6 +20,14 @@ export interface VapidKeys {
   subject: string
 }
 
+// TS 5.7+ types Uint8Array as Uint8Array<ArrayBufferLike>, whose backing buffer
+// may be a SharedArrayBuffer. WebCrypto (BufferSource) and fetch (BodyInit)
+// expect an ArrayBuffer-backed view, so we narrow with a cast at the boundary.
+// Every Uint8Array we pass here is allocated locally and ArrayBuffer-backed.
+function asBufferSource(b: Uint8Array): BufferSource {
+  return b as unknown as BufferSource
+}
+
 const NULL = new Uint8Array([0])
 const encoder = new TextEncoder()
 
@@ -51,10 +59,10 @@ function concat(...arrs: Uint8Array[]): Uint8Array {
 }
 
 async function hmac(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, [
+  const k = await crypto.subtle.importKey("raw", asBufferSource(key), { name: "HMAC", hash: "SHA-256" }, false, [
     "sign",
   ])
-  return new Uint8Array(await crypto.subtle.sign("HMAC", k, data))
+  return new Uint8Array(await crypto.subtle.sign("HMAC", k, asBufferSource(data)))
 }
 
 // Single-block HKDF (every output we need here is <= 32 bytes).
@@ -82,7 +90,7 @@ async function encryptPayload(sub: PushSubscription, plaintext: Uint8Array): Pro
 
   const uaKey = await crypto.subtle.importKey(
     "raw",
-    uaPublic,
+    asBufferSource(uaPublic),
     { name: "ECDH", namedCurve: "P-256" },
     false,
     [],
@@ -102,9 +110,9 @@ async function encryptPayload(sub: PushSubscription, plaintext: Uint8Array): Pro
 
   // Single record: plaintext followed by the 0x02 last-record delimiter.
   const record = concat(plaintext, new Uint8Array([2]))
-  const aesKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"])
+  const aesKey = await crypto.subtle.importKey("raw", asBufferSource(cek), { name: "AES-GCM" }, false, ["encrypt"])
   const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, aesKey, record),
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv: asBufferSource(nonce), tagLength: 128 }, aesKey, asBufferSource(record)),
   )
 
   // aes128gcm header: salt(16) | rs(4 BE) | idlen(1) | keyid(asPublic) | ciphertext
@@ -137,7 +145,7 @@ async function vapidAuthHeader(endpoint: string, vapid: VapidKeys): Promise<stri
   const signingInput = header + "." + payload
   const key = await importVapidKey(vapid)
   const sig = new Uint8Array(
-    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, encoder.encode(signingInput)),
+    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, asBufferSource(encoder.encode(signingInput))),
   )
   const jwt = signingInput + "." + bytesToB64url(sig)
   return "vapid t=" + jwt + ", k=" + vapid.publicKey
@@ -164,7 +172,7 @@ export async function sendWebPush(
       Urgency: "high",
       Authorization: auth,
     },
-    body,
+    body: body as unknown as BodyInit,
   })
   return res.status
 }
