@@ -63,14 +63,12 @@ export function fromBase64Url(s: string): Uint8Array {
   return out
 }
 
-// btoa/atob exist in browsers and Workers. Provide a Buffer fallback for Node.
+// btoa/atob are available in browsers, Cloudflare Workers, and Node 16+.
 function btoaShim(bin: string): string {
-  if (typeof btoa === "function") return btoa(bin)
-  return Buffer.from(bin, "binary").toString("base64")
+  return btoa(bin)
 }
 function atobShim(b64: string): string {
-  if (typeof atob === "function") return atob(b64)
-  return Buffer.from(b64, "base64").toString("binary")
+  return atob(b64)
 }
 
 // ---------- hashing ----------
