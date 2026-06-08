@@ -704,13 +704,18 @@ export function ChatRoom({
                 room.toggleDecoy()
                 toast(
                   room.decoyEnabled
-                    ? "Cover traffic off"
-                    : "Cover traffic on — sending decoy messages to mask activity",
+                    ? "Decoy messages off"
+                    : "Decoy messages on — sending fake encrypted messages to hide when you’re really talking",
                 )
               }}
             >
-              <Ghost size={16} /> Cover traffic: {room.decoyEnabled ? "on" : "off"}
+              <Ghost size={16} /> Decoy messages: {room.decoyEnabled ? "on" : "off"}
             </button>
+            <p className="hint" style={DECOY_HINT}>
+              Sends harmless fake messages in the background so an outside observer can’t tell when
+              you’re actually chatting. Recipients silently ignore them — only the timing pattern of
+              your traffic is masked.
+            </p>
             <button className="btn btn-block" onClick={exportTranscript}>
               <Download size={16} /> Export transcript (this device)
             </button>
@@ -836,6 +841,7 @@ const MB = { marginBottom: "16px" }
 const GROW = { flex: 1, border: "none", padding: 0, background: "transparent" }
 const EMPTY = { flex: "none" as const, padding: "40px 20px" }
 const EMPTYTEXT = { maxWidth: "320px", textAlign: "center" as const }
+const DECOY_HINT = { marginTop: "-4px" }
 const MEMBER_ROW = {
   display: "flex",
   alignItems: "center",
