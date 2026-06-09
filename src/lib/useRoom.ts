@@ -18,6 +18,7 @@ import {
   encodeTopic,
   reactionId as makeReactionId,
   type DecryptedMessage,
+  type PollSpec,
   type ReplyRef,
 } from "./messages"
 import { encryptAndUpload, type MediaManifestItem, type UploadStatus } from "./media"
@@ -43,6 +44,8 @@ export interface SendOpts {
   ttlMs?: number
   burn?: boolean
   replyTo?: ReplyRef
+  /** Optional encrypted poll (question + options); votes are reactions. */
+  poll?: PollSpec
 }
 
 export interface RoomController {
@@ -50,7 +53,7 @@ export interface RoomController {
   connState: ConnState
   participantCount: number
   room: PublicRoomState | null
-  /** Decrypted room topic/name ("" when unset). */
+  /** Decrypted room topic/name (\"\" when unset). */
   topic: string
   /** True when this device holds the owner secret for the room. */
   isOwner: boolean
@@ -79,7 +82,7 @@ export interface RoomController {
   deleteRoom: () => Promise<void>
   notifyTyping: () => void
   rename: (name: string) => void
-  /** Owner-only: set (or clear, with "") the encrypted room topic. */
+  /** Owner-only: set (or clear, with \"\") the encrypted room topic. */
   setTopic: (topic: string) => Promise<void>
   /** Owner-only: ban a participant by id (server-enforced). */
   banMember: (participantId: string) => Promise<void>
@@ -265,12 +268,14 @@ export function useRoom(session: RoomSession): RoomController {
   // Surface a local OS/PWA notification for an incoming message from someone
   // else while the tab is hidden. The message is decrypted on-device and only
   // the already-visible sender name + a short preview are shown; nothing extra
-  // leaves the browser. Gated on the user's pref + granted OS permission.
+  // leaves the browser. Gated on the user's pref + granted OS permission, and
+  // suppressed entirely for rooms the user muted on this device.
   const maybeNotify = useCallback(
     (m: StoredMessage) => {
       if (m.participantId === session.participantId || m.kind === "system") return
       if (typeof document !== "undefined" && document.visibilityState === "visible") return
       if (!notificationsEnabled()) return
+      if (vault.get(session.invite.roomId)?.muted) return
       void decodeMessage(session, m)
         .then((d) => {
           if (d.decoy) return
@@ -512,6 +517,7 @@ export function useRoom(session: RoomSession): RoomController {
         username: session.username,
         text: trimmed,
         replyTo: opts?.replyTo,
+        poll: opts?.poll,
         burn: opts?.burn,
         reactions: [],
         pending: true,
@@ -520,7 +526,7 @@ export function useRoom(session: RoomSession): RoomController {
       pendingById.current.set(id, optimistic)
       void recompute()
       try {
-        const envelope = await encodeText(session, id, trimmed, opts?.replyTo)
+        const envelope = await encodeText(session, id, trimmed, opts?.replyTo, opts?.poll)
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
@@ -606,6 +612,17 @@ export function useRoom(session: RoomSession): RoomController {
           )
         }
       }
+      // Keep the encrypted envelope comfortably under the server size cap: the
+      // manifest travels inside the message, and inline thumbnails are by far
+      // its largest field. If the total grows too large, drop thumbs first.
+      let manifestSize = JSON.stringify(items).length
+      for (const it of items) {
+        if (manifestSize <= 100_000) break
+        if (it.thumb) {
+          manifestSize -= it.thumb.length
+          delete it.thumb
+        }
+      }
       try {
         const envelope = await encodeMedia(session, id, caption.trim(), items, opts?.replyTo)
         const res = await api.postMessage({
@@ -655,7 +672,7 @@ export function useRoom(session: RoomSession): RoomController {
       void recompute()
       try {
         const ttlMs = p.expiresAt ? Math.max(1000, p.expiresAt - Date.now()) : undefined
-        const envelope = await encodeText(session, id, p.text, p.replyTo)
+        const envelope = await encodeText(session, id, p.text, p.replyTo, p.poll)
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
