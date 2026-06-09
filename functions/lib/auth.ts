@@ -40,11 +40,18 @@ export async function verifyUploadToken(
   token: string,
 ): Promise<boolean> {
   if (Date.now() > exp) return false
+  if (typeof token !== "string" || !token) return false
   const expected = await signUploadToken(secret, objectKey, size, exp)
   return timingSafeEqual(expected, token)
 }
 
-/** A fallback secret keeps dev environments working; production sets UPLOAD_SECRET. */
-export function uploadSecret(env: { UPLOAD_SECRET?: string }): string {
-  return env.UPLOAD_SECRET || "vanish-dev-upload-secret-change-me"
+/**
+ * Returns the configured upload secret, or null when not configured.
+ * Handlers MUST fail closed (503) when this is null. The previous hard-coded
+ * dev fallback was a publicly-known string committed to the repo, which would
+ * have let anyone forge upload tokens if UPLOAD_SECRET was ever unset in
+ * production.
+ */
+export function uploadSecret(env: { UPLOAD_SECRET?: string }): string | null {
+  return env.UPLOAD_SECRET || null
 }

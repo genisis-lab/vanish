@@ -1,6 +1,7 @@
 import type { Env } from "../../types"
 import { badRequest, forward, json, readJson } from "../../lib/do"
 import { hashAccessProof } from "../../../shared/crypto"
+import { isValidObjectKey, isValidRoomId } from "../../../shared/constants"
 import type { DownloadRequest, ValidateInviteResponse } from "../../../shared/types"
 
 // POST /api/uploads/download — stream an encrypted blob back to an authorized
@@ -9,6 +10,8 @@ import type { DownloadRequest, ValidateInviteResponse } from "../../../shared/ty
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const body = await readJson<DownloadRequest>(request)
   if (!body?.roomId || !body?.accessProof || !body?.objectKey) return badRequest("missing fields")
+  if (!isValidRoomId(body.roomId)) return badRequest("bad room id")
+  if (!isValidObjectKey(body.objectKey)) return badRequest("bad object key")
   if (!body.objectKey.startsWith(`rooms/${body.roomId}/`)) return json({ error: "forbidden" }, 403)
 
   const accessProofHash = await hashAccessProof(body.accessProof)

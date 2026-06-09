@@ -16,6 +16,28 @@ export const MAX_MESSAGES_PER_ROOM = 2000
 export const MESSAGE_RATE_LIMIT = 30
 export const MESSAGE_RATE_WINDOW_MS = 10_000
 
+// ---------- identifier validation (shared by Pages Functions + the DO) ----------
+
+/** Room ids are base64url(16 bytes) = 22 chars; accept a small range for safety. */
+export const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{10,64}$/
+
+export function isValidRoomId(id: unknown): id is string {
+  return typeof id === "string" && ROOM_ID_PATTERN.test(id)
+}
+
+/** R2 object keys minted by /api/uploads/sign: rooms/<roomId>/<32 hex chars>. */
+export const OBJECT_KEY_PATTERN = /^rooms\/[A-Za-z0-9_-]{10,64}\/[0-9a-f]{32}$/
+
+export function isValidObjectKey(key: unknown): key is string {
+  return typeof key === "string" && OBJECT_KEY_PATTERN.test(key)
+}
+
+/** Generic ceiling for client-supplied ids (message ids, participant ids). */
+export const MAX_ID_CHARS = 128
+
+/** Cap on stored Web Push registrations per room (oldest evicted beyond this). */
+export const MAX_PUSH_SUBSCRIPTIONS = 64
+
 export const TTL_PRESETS: { label: string; ms: number }[] = [
   { label: "30 seconds", ms: 30 * 1000 },
   { label: "5 minutes", ms: 5 * 60 * 1000 },
