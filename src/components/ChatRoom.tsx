@@ -6,6 +6,8 @@ import {
   BellOff,
   BookmarkPlus,
   CheckSquare,
+  ChevronDown,
+  ChevronUp,
   DoorOpen,
   Download,
   Eye,
@@ -18,6 +20,7 @@ import {
   MoreVertical,
   Pencil,
   QrCode,
+  Search,
   Share2,
   ShieldCheck,
   Sun,
@@ -25,6 +28,8 @@ import {
   Trash2,
   Type,
   Users,
+  Volume2,
+  VolumeX,
   X,
   Zap,
 } from "lucide-react"
@@ -70,6 +75,10 @@ export function ChatRoom({
   const [unread, setUnread] = useState(0)
   const [savePrompt, setSavePrompt] = useState(() => !vault.get(session.invite.roomId))
   const [notifOn, setNotifOn] = useState(() => notificationsEnabled())
+  const [muted, setMuted] = useState(() => !!vault.get(session.invite.roomId)?.muted)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState("")
+  const [matchIdx, setMatchIdx] = useState(-1)
 
   const isOwner = room.isOwner
   const topic = room.topic
@@ -105,7 +114,7 @@ export function ChatRoom({
   }, [])
 
   // Unread title badge + notification sound for messages that arrive while the
-  // tab is in the background.
+  // tab is in the background. Muted rooms stay silent (badge still updates).
   useEffect(() => {
     const msgs = room.messages
     const added = msgs.length - unreadLen.current
@@ -115,9 +124,9 @@ export function ChatRoom({
     if (incoming.length === 0) return
     if (document.visibilityState === "hidden") {
       setUnread((u) => u + incoming.length)
-      if (prefs.sound) playChime()
+      if (prefs.sound && !muted) playChime()
     }
-  }, [room.messages, prefs.sound])
+  }, [room.messages, prefs.sound, muted])
 
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) Vanish` : "Vanish"
@@ -210,6 +219,49 @@ export function ChatRoom({
     window.setTimeout(() => {
       el.style.backgroundColor = prev
     }, 1100)
+  }
+
+  // Client-side search across the decrypted conversation. Everything stays on
+  // this device — the server never sees the query (it can't search ciphertext).
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (q.length < 2) return [] as string[]
+    return room.messages
+      .filter((m) => {
+        if (m.deleted || m.kind === "system") return false
+        const text = (m.text ?? "").toLowerCase()
+        const pollQ = (m.poll?.question ?? "").toLowerCase()
+        const who = (m.username ?? "").toLowerCase()
+        return text.includes(q) || pollQ.includes(q) || who.includes(q)
+      })
+      .map((m) => m.id)
+  }, [room.messages, query])
+
+  function gotoMatch(dir: 1 | -1) {
+    if (matches.length === 0) return
+    const len = matches.length
+    const base = matchIdx < 0 && dir === -1 ? 0 : matchIdx
+    const next = ((base + dir) % len + len) % len
+    setMatchIdx(next)
+    jumpToMessage(matches[next])
+  }
+
+  function toggleSearch() {
+    setSearchOpen((v) => !v)
+    setQuery("")
+    setMatchIdx(-1)
+  }
+
+  function toggleMute() {
+    const next = !muted
+    setMuted(next)
+    vault.setMuted(session.invite.roomId, next)
+    setPanel(null)
+    toast(
+      next
+        ? "Room muted on this device — no sounds or pop-up alerts"
+        : "Room unmuted",
+    )
   }
 
   function toggleSelect(id: string) {
@@ -483,6 +535,12 @@ export function ChatRoom({
                 onClick={() => setPanel("safety")}
               />
               <IconButton
+                icon={<Search size={18} />}
+                label="Search messages"
+                onClick={toggleSearch}
+                active={searchOpen}
+              />
+              <IconButton
                 icon={<QrCode size={19} />}
                 label="Show invite QR"
                 onClick={() => setPanel("invite-qr")}
@@ -529,6 +587,48 @@ export function ChatRoom({
           </>
         )}
       </div>
+
+      {searchOpen && !selecting && (
+        <div className="search-bar" style={SEARCH_BAR}>
+          <Search size={15} style={SEARCH_ICON} />
+          <input
+            className="input"
+            style={SEARCH_INPUT}
+            placeholder="Search this conversation (stays on this device)…"
+            value={query}
+            autoFocus
+            onChange={(e) => {
+              setQuery(e.target.value)
+              setMatchIdx(-1)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                gotoMatch(e.shiftKey ? -1 : 1)
+              } else if (e.key === "Escape") {
+                toggleSearch()
+              }
+            }}
+            aria-label="Search messages"
+          />
+          {query.trim().length >= 2 && (
+            <span style={SEARCH_COUNT}>
+              {matchIdx >= 0 ? matchIdx + 1 : 0}/{matches.length}
+            </span>
+          )}
+          <IconButton
+            icon={<ChevronUp size={16} />}
+            label="Previous match"
+            onClick={() => gotoMatch(-1)}
+          />
+          <IconButton
+            icon={<ChevronDown size={16} />}
+            label="Next match"
+            onClick={() => gotoMatch(1)}
+          />
+          <IconButton icon={<X size={16} />} label="Close search" onClick={toggleSearch} />
+        </div>
+      )}
 
       {savePrompt && !selecting && (
         <div className="save-banner">
@@ -716,6 +816,10 @@ export function ChatRoom({
               you’re actually chatting. Recipients silently ignore them — only the timing pattern of
               your traffic is masked.
             </p>
+            <button className="btn btn-block" onClick={toggleMute}>
+              {muted ? <Volume2 size={16} /> : <VolumeX size={16} />}{" "}
+              {muted ? "Unmute this room" : "Mute this room (this device)"}
+            </button>
             <button className="btn btn-block" onClick={exportTranscript}>
               <Download size={16} /> Export transcript (this device)
             </button>
@@ -850,3 +954,18 @@ const MEMBER_ROW = {
   padding: "8px 0",
 }
 const MEMBER_BANNED = { opacity: 0.6, textDecoration: "line-through" as const }
+const SEARCH_BAR = {
+  display: "flex",
+  alignItems: "center",
+  gap: "6px",
+  padding: "6px 10px",
+  borderBottom: "1px solid var(--border, rgba(255,255,255,0.08))",
+} as const
+const SEARCH_ICON = { flex: "none", opacity: 0.7 } as const
+const SEARCH_INPUT = { flex: 1, minWidth: 0, padding: "6px 10px" } as const
+const SEARCH_COUNT = {
+  fontSize: "12px",
+  color: "var(--text-faint)",
+  minWidth: "34px",
+  textAlign: "center",
+} as const

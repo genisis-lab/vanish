@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import {
   ArrowRight,
   Clock,
@@ -7,10 +7,13 @@ import {
   Lock,
   LogIn,
   Moon,
+  Pin,
+  PinOff,
   Play,
   Plus,
   ServerOff,
   Shield,
+  ShieldAlert,
   Smartphone,
   Sun,
   Trash2,
@@ -38,6 +41,8 @@ const EXPIRY_OPTIONS: { id: InviteExpiryOption; label: string }[] = [
   { id: "7d", label: "7 days" },
 ]
 
+const ONBOARD_KEY = "vanish.onboarded.v1"
+
 export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
   const toast = useToast()
   const [tab, setTab] = useState<"create" | "join">("create")
@@ -49,7 +54,23 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
   const [joinKey, setJoinKey] = useState("")
   const [busy, setBusy] = useState(false)
   const [remember, setRemember] = useState(vault.isRememberEnabled())
-  const rooms = useMemo<RememberedRoom[]>(() => vault.list(), [])
+  const [rooms, setRooms] = useState<RememberedRoom[]>(() => vault.list())
+  const [onboarded, setOnboarded] = useState(() => {
+    try {
+      return localStorage.getItem(ONBOARD_KEY) === "1"
+    } catch {
+      return true
+    }
+  })
+
+  function dismissOnboarding() {
+    setOnboarded(true)
+    try {
+      localStorage.setItem(ONBOARD_KEY, "1")
+    } catch {
+      /* ignore */
+    }
+  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -113,6 +134,38 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
           profiles — your keys never leave your browser.
         </p>
       </div>
+
+      {!onboarded && (
+        <div className="card" style={ONBOARD_CARD}>
+          <h2>Welcome — three things to know</h2>
+          <ul className="privacy" style={NO_LIST}>
+            <li>
+              <KeyRound size={17} />
+              <span>
+                <strong>The link IS the key.</strong> Your invite link contains the encryption
+                secret — anyone who has it can read the room, and it never touches the server.
+              </span>
+            </li>
+            <li>
+              <Clock size={17} />
+              <span>
+                <strong>Everything vanishes.</strong> Messages and media auto-delete on the timers
+                you pick; rooms can self-destruct entirely.
+              </span>
+            </li>
+            <li>
+              <Shield size={17} />
+              <span>
+                <strong>Trust, then verify.</strong> Inside a room, tap the shield to compare safety
+                numbers and confirm no one swapped keys.
+              </span>
+            </li>
+          </ul>
+          <button className="btn btn-primary" style={MT} onClick={dismissOnboarding}>
+            Got it
+          </button>
+        </div>
+      )}
 
       <div className="grid">
         <div className="card">
@@ -256,13 +309,17 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
           {rooms.length > 0 && (
             <div className="card">
               <h2>Remembered rooms</h2>
-              <p className="sub">Stored only on this device.</p>
+              <p className="sub">Stored only on this device. Pinned rooms stay on top.</p>
               <div className="remembered">
                 {rooms.map((r) => (
                   <RememberedRow
                     key={r.roomId}
                     room={r}
                     onResume={() => onResume(r.roomId)}
+                    onPin={() => {
+                      vault.setPinned(r.roomId, !r.pinned)
+                      setRooms(vault.list())
+                    }}
                     onInvite={() => {
                       void navigator.clipboard
                         ?.writeText(r.inviteKey)
@@ -271,7 +328,7 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
                     onForget={() => {
                       vault.forget(r.roomId)
                       toast("Room forgotten")
-                      setTab(tab)
+                      setRooms(vault.list())
                     }}
                   />
                 ))}
@@ -325,9 +382,12 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
 
 // Optional device passphrase. When enabled, remembered rooms are encrypted at
 // rest with a PBKDF2-derived key so device access alone can't reveal them.
+// Optionally pairs with a duress passphrase: entering it at the unlock screen
+// silently wipes all saved rooms instead of revealing them.
 function LockCard() {
   const toast = useToast()
   const [enabled, setEnabled] = useState(vault.hasPassphrase())
+  const [duress, setDuress] = useState(vault.hasDuress())
 
   async function enable() {
     const p1 = window.prompt("Set a passphrase to encrypt your saved rooms on this device:")
@@ -351,11 +411,38 @@ function LockCard() {
     if (!p) return
     const okRemoved = await vault.removePassphrase(p)
     if (okRemoved) {
+      vault.removeDuressPassphrase()
       setEnabled(false)
+      setDuress(false)
       toast("Device passphrase removed.")
     } else {
       toast("Incorrect passphrase.")
     }
+  }
+
+  async function setupDuress() {
+    const p1 = window.prompt(
+      "Set a DURESS passphrase. Entering it at the unlock screen will silently and permanently wipe all saved rooms on this device:",
+    )
+    if (!p1) return
+    if (p1.length < 4) {
+      toast("Use at least 4 characters.")
+      return
+    }
+    const p2 = window.prompt("Confirm duress passphrase:")
+    if (p2 !== p1) {
+      toast("Passphrases did not match.")
+      return
+    }
+    await vault.setDuressPassphrase(p1)
+    setDuress(true)
+    toast("Duress passphrase set — entering it at unlock wipes saved rooms.")
+  }
+
+  function clearDuress() {
+    vault.removeDuressPassphrase()
+    setDuress(false)
+    toast("Duress passphrase removed.")
   }
 
   return (
@@ -369,6 +456,21 @@ function LockCard() {
       <button className="btn btn-block" onClick={() => void (enabled ? disable() : enable())}>
         <Lock size={16} /> {enabled ? "Remove passphrase" : "Protect with passphrase"}
       </button>
+      {enabled && (
+        <>
+          <button
+            className="btn btn-block"
+            style={MT}
+            onClick={() => void (duress ? clearDuress() : setupDuress())}
+          >
+            <ShieldAlert size={16} /> {duress ? "Remove duress passphrase" : "Add duress passphrase"}
+          </button>
+          <p className="hint" style={MT}>
+            A duress passphrase is a decoy: typed at the unlock screen, it looks like a normal
+            unlock but permanently erases every saved room on this device.
+          </p>
+        </>
+      )}
     </div>
   )
 }
@@ -416,11 +518,13 @@ function DeviceTransferCard({ onResume }: { onResume: (roomId: string) => void }
 function RememberedRow({
   room,
   onResume,
+  onPin,
   onInvite,
   onForget,
 }: {
   room: RememberedRoom
   onResume: () => void
+  onPin: () => void
   onInvite: () => void
   onForget: () => void
 }) {
@@ -436,6 +540,12 @@ function RememberedRow({
         <div className="when">Last open {formatRelative(room.lastUsed)}</div>
       </div>
       <div className="row-actions">
+        <IconButton
+          icon={room.pinned ? <PinOff size={16} /> : <Pin size={16} />}
+          label={room.pinned ? "Unpin room" : "Pin room to top"}
+          onClick={onPin}
+          active={!!room.pinned}
+        />
         <IconButton icon={<Play size={16} />} label="Resume room" onClick={onResume} />
         <IconButton icon={<KeyRound size={16} />} label="Copy invite key" onClick={onInvite} />
         <IconButton icon={<Trash2 size={16} />} label="Forget room" onClick={onForget} />
@@ -452,3 +562,4 @@ const MT = { marginTop: "4px" }
 const MB = { marginBottom: "14px" }
 const NO_LIST = { listStyle: "none", padding: 0, margin: 0 }
 const HIDDEN = { display: "none" }
+const ONBOARD_CARD = { marginBottom: "18px" }
