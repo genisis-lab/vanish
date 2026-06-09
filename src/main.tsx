@@ -1,6 +1,7 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import App from "./App"
+import { setupNativeShell } from "./lib/native"
 import "./styles/index.css"
 import "./styles/chat-refresh.css"
 import "./styles/enhancements.css"
@@ -160,28 +161,33 @@ function setupInstallPrompt() {
 }
 setupInstallPrompt()
 
-// Keep the chat locked to the *visible* viewport. iOS moves the visual viewport
-// downward when the keyboard opens; if we only shrink height and leave top at 0,
-// the composer appears at the top of the visible area. So we apply offsetTop
-// while the keyboard is clearly open, and reset it to 0 when closed to avoid the
-// old drift/floating behavior after send/blur.
-function syncViewportHeight() {
-  const vv = window.visualViewport
+// Initialize the native shell (no-op on web). Removes the iOS keyboard
+// accessory bar and enables native keyboard resize inside the Capacitor wrapper.
+void setupNativeShell()
+
+// ---------- mobile keyboard / viewport ----------
+//
+// On the web we mirror window.visualViewport exactly: the chat is pinned to the
+// visible viewport's rectangle. height = visualViewport.height and a composited
+// translateY = visualViewport.offsetTop. This tracks the keyboard precisely and
+// returns to the bottom (offsetTop 0, full height) when the keyboard closes, so
+// the composer no longer drifts to the top or fails to return to the bottom.
+//
+// In the native wrapper the keyboard plugin resizes the webview natively, so
+// visualViewport already reports the shrunken size and offsetTop stays 0 — this
+// code then simply mirrors the full height with no offset.
+function syncViewport() {
   const root = document.documentElement.style
-  const layoutHeight = Math.max(
-    window.innerHeight || 0,
-    document.documentElement.clientHeight || 0,
-  )
-  const visibleHeight = vv?.height ?? layoutHeight
-  const offsetTop = vv?.offsetTop ?? 0
-  const keyboardOpen = visibleHeight < layoutHeight - 80 || offsetTop > 20
-  const top = keyboardOpen ? Math.max(0, Math.round(offsetTop)) : 0
-
-  root.setProperty("--app-height", Math.round(visibleHeight) + "px")
-  root.setProperty("--app-top", top + "px")
-
-  // Keep the layout from accumulating page scroll after iOS keyboard animations.
-  if (!keyboardOpen && window.scrollY !== 0) window.scrollTo(0, 0)
+  const vv = window.visualViewport
+  if (!vv) {
+    root.setProperty("--app-height", (window.innerHeight || 0) + "px")
+    root.setProperty("--app-top", "0px")
+    return
+  }
+  root.setProperty("--app-height", Math.round(vv.height) + "px")
+  root.setProperty("--app-top", Math.max(0, Math.round(vv.offsetTop)) + "px")
+  // Avoid leftover layout-viewport scroll once the keyboard is fully closed.
+  if (vv.offsetTop === 0 && window.scrollY !== 0) window.scrollTo(0, 0)
 }
 
 let viewportRaf = 0
@@ -189,19 +195,20 @@ function scheduleViewportSync() {
   if (viewportRaf) cancelAnimationFrame(viewportRaf)
   viewportRaf = requestAnimationFrame(() => {
     viewportRaf = 0
-    syncViewportHeight()
+    syncViewport()
   })
 }
 
-syncViewportHeight()
+syncViewport()
 window.visualViewport?.addEventListener("resize", scheduleViewportSync)
 window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
 window.addEventListener("resize", scheduleViewportSync)
 window.addEventListener("orientationchange", scheduleViewportSync)
-window.addEventListener("focusin", scheduleViewportSync)
+// iOS sometimes omits a final resize after dismissing the keyboard; re-sync on
+// blur (with a short delay) so the layout reliably returns to the bottom.
 window.addEventListener("focusout", () => {
   scheduleViewportSync()
-  window.setTimeout(syncViewportHeight, 120)
+  window.setTimeout(syncViewport, 250)
 })
 
 createRoot(document.getElementById("root")!).render(
