@@ -160,20 +160,49 @@ function setupInstallPrompt() {
 }
 setupInstallPrompt()
 
-// Keep a CSS var in sync with the visible viewport height so the chat can
-// shrink with the iOS keyboard. Important: do NOT translate the app by
-// visualViewport.offsetTop. iOS changes offsetTop during keyboard/form-assistant
-// animations, and using it made the composer float/jump after opening a room or
-// sending a message. The chat remains pinned to top:0; only height changes.
+// Keep the chat locked to the *visible* viewport. iOS moves the visual viewport
+// downward when the keyboard opens; if we only shrink height and leave top at 0,
+// the composer appears at the top of the visible area. So we apply offsetTop
+// while the keyboard is clearly open, and reset it to 0 when closed to avoid the
+// old drift/floating behavior after send/blur.
 function syncViewportHeight() {
   const vv = window.visualViewport
-  const h = vv?.height ?? window.innerHeight
-  document.documentElement.style.setProperty("--app-height", h + "px")
+  const root = document.documentElement.style
+  const layoutHeight = Math.max(
+    window.innerHeight || 0,
+    document.documentElement.clientHeight || 0,
+  )
+  const visibleHeight = vv?.height ?? layoutHeight
+  const offsetTop = vv?.offsetTop ?? 0
+  const keyboardOpen = visibleHeight < layoutHeight - 80 || offsetTop > 20
+  const top = keyboardOpen ? Math.max(0, Math.round(offsetTop)) : 0
+
+  root.setProperty("--app-height", Math.round(visibleHeight) + "px")
+  root.setProperty("--app-top", top + "px")
+
+  // Keep the layout from accumulating page scroll after iOS keyboard animations.
+  if (!keyboardOpen && window.scrollY !== 0) window.scrollTo(0, 0)
 }
+
+let viewportRaf = 0
+function scheduleViewportSync() {
+  if (viewportRaf) cancelAnimationFrame(viewportRaf)
+  viewportRaf = requestAnimationFrame(() => {
+    viewportRaf = 0
+    syncViewportHeight()
+  })
+}
+
 syncViewportHeight()
-window.visualViewport?.addEventListener("resize", syncViewportHeight)
-window.addEventListener("resize", syncViewportHeight)
-window.addEventListener("orientationchange", syncViewportHeight)
+window.visualViewport?.addEventListener("resize", scheduleViewportSync)
+window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
+window.addEventListener("resize", scheduleViewportSync)
+window.addEventListener("orientationchange", scheduleViewportSync)
+window.addEventListener("focusin", scheduleViewportSync)
+window.addEventListener("focusout", () => {
+  scheduleViewportSync()
+  window.setTimeout(syncViewportHeight, 120)
+})
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
