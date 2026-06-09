@@ -59,7 +59,7 @@ interface Session {
 
 // A stored Web Push registration. The endpoint + keys are opaque routing data
 // for the push service; participantId lets us skip pushing to someone who is
-// already connected over a live socket.
+// already connected over a live socket or has a fresh visible-room heartbeat.
 interface PushRecord {
   sub: PushSubscription
   participantId: string
@@ -68,6 +68,7 @@ interface PushRecord {
 
 const SNAPSHOT_KEY = "snapshot"
 const PUSH_KEY = "pushSubs"
+const PUSH_FOREGROUND_SUPPRESS_MS = 30_000
 
 export class RoomDurableObject {
   private state: DurableObjectState
@@ -518,15 +519,17 @@ export class RoomDurableObject {
     return json({ ok: true })
   }
 
-  // Best-effort background fan-out. Skips the sender and anyone currently
+  // Best-effort background fan-out. Skips the sender, anyone currently
   // connected over a live socket (they already got the realtime frame), and
-  // prunes subscriptions the push service reports as gone. Payloads carry no
-  // message content — the server can't read it anyway.
+  // anyone with a fresh room heartbeat (mobile/polling fallback while visible).
+  // Payloads carry no message content — the server can't read it anyway.
   private async sendPushNotifications(message: StoredMessage): Promise<void> {
     const vapid = this.vapid()
     if (!vapid) return
     const subs = await this.getPushSubs()
     if (subs.size === 0) return
+    const now = Date.now()
+    const participants = this.core.toSnapshot().participants
     const connected = new Set<string>()
     for (const s of this.sessions) connected.add(s.participantId)
     const room = this.core.getRoom()
@@ -536,6 +539,8 @@ export class RoomDurableObject {
       Array.from(subs.values()).map(async (rec) => {
         if (rec.participantId === message.participantId) return
         if (connected.has(rec.participantId)) return
+        const lastSeen = participants[rec.participantId]
+        if (typeof lastSeen === "number" && now - lastSeen <= PUSH_FOREGROUND_SUPPRESS_MS) return
         try {
           const status = await sendWebPush(rec.sub, payload, vapid)
           if (status === 404 || status === 410) dead.push(rec.sub.endpoint)
