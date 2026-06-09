@@ -160,23 +160,18 @@ function setupInstallPrompt() {
 }
 setupInstallPrompt()
 
-// Keep a CSS var in sync with the *visible* viewport height so the chat
-// layout shrinks when the mobile keyboard opens, instead of the composer
-// being pushed below the keyboard (which forced users to scroll up).
+// Keep a CSS var in sync with the visible viewport height so the chat can
+// shrink with the iOS keyboard. Important: do NOT translate the app by
+// visualViewport.offsetTop. iOS changes offsetTop during keyboard/form-assistant
+// animations, and using it made the composer float/jump after opening a room or
+// sending a message. The chat remains pinned to top:0; only height changes.
 function syncViewportHeight() {
   const vv = window.visualViewport
   const h = vv?.height ?? window.innerHeight
-  // offsetTop is how far the keyboard has pushed the *visible* window down from
-  // the document top. We shift the app by it so the composer stays pinned to
-  // the visible area instead of leaving a gap below it.
-  const top = vv?.offsetTop ?? 0
-  const root = document.documentElement.style
-  root.setProperty("--app-height", h + "px")
-  root.setProperty("--app-top", top + "px")
+  document.documentElement.style.setProperty("--app-height", h + "px")
 }
 syncViewportHeight()
 window.visualViewport?.addEventListener("resize", syncViewportHeight)
-window.visualViewport?.addEventListener("scroll", syncViewportHeight)
 window.addEventListener("resize", syncViewportHeight)
 window.addEventListener("orientationchange", syncViewportHeight)
 
