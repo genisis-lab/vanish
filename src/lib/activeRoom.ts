@@ -1,9 +1,8 @@
 // Tracks which room (if any) is currently on-screen and answers the service
-// worker when a background push arrives. This lets the SW decide whether to
-// stay silent (you're already looking at that exact room, so the in-app UI
-// handles it) or alert you (the push is for a different room you've joined, or
-// Vanish is backgrounded) — so notifications for other rooms keep arriving even
-// while the app is open.
+// worker when a background push arrives. The service worker now uses this mostly
+// as a foreground/visibility signal: if any Vanish window is visible, it stays
+// silent so users don't get redundant system notifications while actively using
+// the app. Room id is still included for future policy/debugging.
 
 let currentRoom: string | null = null
 let wired = false
@@ -26,8 +25,8 @@ function postActive(): void {
   }
 }
 
-// Lazily attach a single listener that answers the SW's per-push room query and
-// keeps it loosely informed as focus/visibility change.
+// Lazily attach a single listener that answers the SW's per-push visibility
+// query and keeps it loosely informed as focus/visibility change.
 function ensureWired(): void {
   if (wired) return
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return

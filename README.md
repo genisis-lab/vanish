@@ -45,8 +45,9 @@ it.
   signing key, and — if you're the owner — owner rights. Nothing transits the server.
 - **Disappearing messages** — per-message timers, optional burn-after-read, and an optional
   whole-room self-destruct.
-- **Background notifications** — Web Push wakes you for new messages even when Vanish is fully
-  closed, across every room you've joined (see below).
+- **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
+  minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
+  notifications stay silent and the in-app UI handles activity (see below).
 - **Installable everywhere** — runs as an offline-capable PWA with a desktop install prompt and
   refresh-on-new-build, and ships as a native iOS/Android shell via Capacitor (see
   `docs/NATIVE.md`).
@@ -57,12 +58,14 @@ it.
 
 ### Notifications across rooms
 
-Notifications follow you across every room you've joined, not just the one on screen:
+Notifications are designed to avoid duplicate alerts while you are actively using Vanish:
 
-- A message in the room you're **currently viewing** is handled by the in-app UI — no
-  redundant system notification.
-- A message in a **different room you've joined** (or while Vanish is backgrounded or fully
-  closed) still raises a background push — even when the app is open on another room.
+- If any Vanish window is **visible in the foreground** — whether you're in the active room,
+  another room, the home screen, or the vault lock screen — system push notifications stay
+  silent. The running app handles messages with the live UI, unread counts, sounds, and jump
+  pills.
+- If Vanish is **hidden, minimized, backgrounded, or fully closed**, a message in any room
+  you've joined can raise a background push notification.
 - Push payloads are **content-free** (`{ "t": "msg", "room": <id> }`). The server can't read
   your messages, so the notification is a generic “new encrypted message” ping that opens the
   app to decrypt locally.
@@ -294,8 +297,8 @@ What the suites cover:
 7. **Smoke test** the live deploy: open the site, create a room, open the invite link in a
    second browser/profile, send a message, upload an image, record a voice note, set a room
    topic, edit and delete a message, ban/unban the second participant, prune, and delete. To
-   check push, enable notifications in two rooms and confirm a message in the room you're *not*
-   viewing raises a notification.
+   check push, enable notifications, then confirm messages stay silent while Vanish is visibly
+   open and raise a generic push only after the app is hidden or closed.
 
 ### Environment variables
 
