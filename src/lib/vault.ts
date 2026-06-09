@@ -6,6 +6,10 @@
 // encrypted at rest with an AES-GCM key derived from the passphrase (PBKDF2,
 // 210k iterations). Until unlocked in-memory, saved rooms are inaccessible — so
 // device access alone no longer exposes your rooms/keys.
+//
+// Optional duress passphrase: a second passphrase that, when entered at the
+// unlock screen, instantly wipes the saved rooms on this device and opens an
+// empty vault instead — for situations where you're forced to unlock.
 
 import { fromBase64Url, toBase64Url, utf8 } from "@shared/crypto"
 
@@ -13,6 +17,7 @@ const ROOMS_KEY = "vanish.rooms.v1" // plaintext rooms (when no passphrase)
 const REMEMBER_KEY = "vanish.remember.v1"
 const ENC_KEY = "vanish.rooms.enc.v1" // encrypted rooms blob (when passphrase set)
 const LOCK_KEY = "vanish.lock.v1" // base64url(salt); presence => passphrase enabled
+const DURESS_KEY = "vanish.duress.v1" // base64url(salt).base64url(verifier)
 
 export interface RememberedRoom {
   roomId: string
@@ -23,6 +28,10 @@ export interface RememberedRoom {
   lastUsed: number
   /** Safety number the user explicitly marked as verified, if any. */
   verifiedSafetyNumber?: string
+  /** Pinned rooms sort to the top of the home list. */
+  pinned?: boolean
+  /** Muted rooms make no sound and show no pop-up alerts on this device. */
+  muted?: boolean
 }
 
 // ---- in-memory unlocked state ----
@@ -87,6 +96,24 @@ async function deriveVaultKey(passphrase: string, salt: Uint8Array): Promise<Cry
     false,
     ["encrypt", "decrypt"],
   )
+}
+
+// PBKDF2-derived verifier for the duress passphrase. Only a salted hash is
+// stored; the passphrase itself never touches storage.
+async function duressVerifier(passphrase: string, salt: Uint8Array): Promise<string> {
+  const base = await subtle().importKey(
+    "raw",
+    utf8(passphrase) as unknown as BufferSource,
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  )
+  const bits = await subtle().deriveBits(
+    { name: "PBKDF2", salt: salt as unknown as BufferSource, iterations: 210_000, hash: "SHA-256" },
+    base,
+    256,
+  )
+  return toBase64Url(new Uint8Array(bits))
 }
 
 async function encryptRooms(key: CryptoKey, rooms: RememberedRoom[]): Promise<string> {
@@ -157,6 +184,33 @@ export const vault = {
   },
   async unlock(passphrase: string): Promise<boolean> {
     if (!hasPassphrase()) return true
+    // Duress check first: the panic passphrase wipes saved rooms and opens an
+    // empty vault, indistinguishable from a normal unlock.
+    try {
+      const duress = localStorage.getItem(DURESS_KEY)
+      if (duress) {
+        const dot = duress.indexOf(".")
+        if (dot > 0) {
+          const salt = fromBase64Url(duress.slice(0, dot))
+          const expected = duress.slice(dot + 1)
+          if ((await duressVerifier(passphrase, salt)) === expected) {
+            try {
+              localStorage.removeItem(ENC_KEY)
+              localStorage.removeItem(ROOMS_KEY)
+            } catch {
+              /* ignore */
+            }
+            const saltB64 = localStorage.getItem(LOCK_KEY)
+            vaultKey = saltB64 ? await deriveVaultKey(passphrase, fromBase64Url(saltB64)) : null
+            mem = []
+            unlocked = true
+            return true
+          }
+        }
+      }
+    } catch {
+      /* fall through to the normal unlock path */
+    }
     try {
       const saltB64 = localStorage.getItem(LOCK_KEY)
       if (!saltB64) return true
@@ -211,9 +265,37 @@ export const vault = {
     return true
   },
 
+  // ----- duress passphrase -----
+  hasDuress(): boolean {
+    try {
+      return !!localStorage.getItem(DURESS_KEY)
+    } catch {
+      return false
+    }
+  },
+  async setDuressPassphrase(passphrase: string): Promise<void> {
+    const salt = globalThis.crypto.getRandomValues(new Uint8Array(16))
+    const verifier = await duressVerifier(passphrase, salt)
+    try {
+      localStorage.setItem(DURESS_KEY, toBase64Url(salt) + "." + verifier)
+    } catch {
+      /* ignore */
+    }
+  },
+  removeDuressPassphrase(): void {
+    try {
+      localStorage.removeItem(DURESS_KEY)
+    } catch {
+      /* ignore */
+    }
+  },
+
   // ----- room records -----
   list(): RememberedRoom[] {
-    return read().sort((a, b) => b.lastUsed - a.lastUsed)
+    return read().sort(
+      (a, b) =>
+        Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.lastUsed - a.lastUsed,
+    )
   },
   get(roomId: string): RememberedRoom | undefined {
     return read().find((r) => r.roomId === roomId)
@@ -221,8 +303,15 @@ export const vault = {
   save(room: RememberedRoom): void {
     if (!this.isRememberEnabled()) return
     if (this.isLocked()) return
+    const existing = read().find((r) => r.roomId === room.roomId)
     const rooms = read().filter((r) => r.roomId !== room.roomId)
-    rooms.push(room)
+    // Preserve per-room flags (pin/mute/verified) across re-saves.
+    rooms.push({
+      pinned: existing?.pinned,
+      muted: existing?.muted,
+      verifiedSafetyNumber: existing?.verifiedSafetyNumber,
+      ...room,
+    })
     write(rooms)
   },
   touch(roomId: string): void {
@@ -238,6 +327,22 @@ export const vault = {
     const r = rooms.find((x) => x.roomId === roomId)
     if (r) {
       r.verifiedSafetyNumber = safetyNumber
+      write(rooms)
+    }
+  },
+  setPinned(roomId: string, pinned: boolean): void {
+    const rooms = read()
+    const r = rooms.find((x) => x.roomId === roomId)
+    if (r) {
+      r.pinned = pinned
+      write(rooms)
+    }
+  },
+  setMuted(roomId: string, muted: boolean): void {
+    const rooms = read()
+    const r = rooms.find((x) => x.roomId === roomId)
+    if (r) {
+      r.muted = muted
       write(rooms)
     }
   },
