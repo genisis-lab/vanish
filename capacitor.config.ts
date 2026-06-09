@@ -32,6 +32,16 @@ const config = {
     backgroundColor: "#0b0b0f",
     allowMixedContent: false,
   },
+  plugins: {
+    // Native keyboard handling. resize: "native" makes the WKWebView/WebView
+    // shrink with the keyboard (no JS viewport math needed in the shell), and
+    // we additionally hide the iOS input accessory / form-assistant bar at
+    // runtime in src/lib/native.ts via setAccessoryBarVisible(false).
+    Keyboard: {
+      resize: "native",
+      resizeOnFullScreen: true,
+    },
+  },
 }
 
 export default config

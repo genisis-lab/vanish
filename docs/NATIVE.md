@@ -15,11 +15,12 @@ working unchanged.
 npm install @capacitor/core
 npm install -D @capacitor/cli
 npm install @capacitor/ios @capacitor/android
+npm install @capacitor/keyboard
 ```
 
 `capacitor.config.ts` is already in the repo. It points the webview at the
 deployed origin (`https://vanish-6fb.pages.dev` by default — change `server.url`
-to your custom domain if you have one).
+to your custom domain if you have one) and configures the Keyboard plugin.
 
 ## 2. Add the native platforms
 
@@ -67,7 +68,38 @@ Add to `android/app/src/main/AndroidManifest.xml` inside `<manifest>`:
 
 Then build an AAB/APK from Android Studio.
 
-## 5. Updating the wrapper
+## 5. Keyboard: accessory bar + native resize (the iOS gray bar fix)
+
+Web Safari/PWA renders a gray **input accessory / form-assistant bar** above the
+keyboard (the up/down arrows + Done/check strip). It is owned by iOS and
+**cannot be removed from web Safari or an installed PWA**. The native wrapper is
+the only way to remove it.
+
+This repo already wires it up:
+
+- `capacitor.config.ts` sets:
+  ```ts
+  plugins: {
+    Keyboard: { resize: "native", resizeOnFullScreen: true },
+  }
+  ```
+  `resize: "native"` makes the WKWebView/WebView shrink with the keyboard, so
+  the composer sits naturally above it with no JS viewport math.
+- `src/lib/native.ts` runs only inside the native shell (detected at runtime via
+  the `Capacitor` global, dynamic import so the web build never depends on it)
+  and calls:
+  ```ts
+  Keyboard.setResizeMode({ mode: "native" })
+  Keyboard.setAccessoryBarVisible({ isVisible: false }) // iOS only
+  ```
+  `setAccessoryBarVisible(false)` is what removes the gray accessory bar.
+
+So after `npm install @capacitor/keyboard` and `npm run cap:sync`, the native
+iOS build has no accessory bar and the keyboard resizes natively. On the web the
+same code is a no-op and the composer is positioned by mirroring
+`window.visualViewport` (see `src/main.tsx`).
+
+## 6. Updating the wrapper
 
 Because the shell loads the live site, **most updates ship instantly** the
 moment you redeploy the PWA — no app-store review needed. Only re-release the
@@ -77,7 +109,7 @@ native build when you change `capacitor.config.ts`, icons, or native plugins:
 npm run build && npm run cap:sync
 ```
 
-## 6. Desktop install (PWA)
+## 7. Desktop install (PWA)
 
 No wrapper needed on desktop. Vanish is an installable PWA:
 

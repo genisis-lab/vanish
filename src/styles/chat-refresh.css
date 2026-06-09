@@ -147,10 +147,11 @@
 
 /* ============================================================
    Mobile viewport / keyboard handling
-   Lock the document to the visible viewport on the chat screen. Height follows
-   visualViewport.height; top follows visualViewport.offsetTop only while the
-   keyboard is open. This keeps the composer above the iOS keyboard without the
-   previous after-send drift.
+   The chat overlays the *visible* viewport rectangle. height follows
+   visualViewport.height and the app is shifted down by visualViewport.offsetTop
+   via a composited translateY (both set from JS in main.tsx). Mirroring the
+   visual viewport directly keeps the composer pinned just above the keyboard
+   and returns it to the bottom when the keyboard closes.
    ============================================================ */
 :root {
   --app-height: 100dvh;
@@ -161,12 +162,14 @@ body:has(.chat) {
 }
 .app:has(> .chat) {
   position: fixed;
-  top: var(--app-top);
+  top: 0;
   left: 0;
   right: 0;
   height: var(--app-height);
   min-height: 0;
   overflow: hidden;
+  transform: translateY(var(--app-top));
+  will-change: transform;
 }
 .chat {
   height: 100%;
