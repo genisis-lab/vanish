@@ -37,10 +37,18 @@ export interface ReplyRef {
   username: string
   preview: string
 }
+/** An encrypted poll: the question + options travel inside the message
+ * envelope; votes are ordinary encrypted reactions tagged "vote:<index>". The
+ * server never learns the question, the options, or who voted for what. */
+export interface PollSpec {
+  question: string
+  options: string[]
+}
 export interface TextPayload {
   username: string
   text: string
   replyTo?: ReplyRef
+  poll?: PollSpec
   /** signer public key (base64url) */
   spk?: string
   /** Ed25519 signature (base64url) */
@@ -88,6 +96,8 @@ export interface DecryptedMessage {
   reactions: DecryptedReaction[]
   /** quoted message this one replies to */
   replyTo?: ReplyRef
+  /** encrypted poll carried by this message, if any */
+  poll?: PollSpec
   /** read-once: server burns this after another participant reads it */
   burn?: boolean
   /** server time the author last edited this message, if ever */
@@ -107,6 +117,12 @@ export interface DecryptedMessage {
   /** set by the room controller when this participant's signing key differs
    * from the first key seen for them this session */
   keyChanged?: boolean
+}
+
+// Canonical text used for signing a poll message: binds the question and the
+// exact option list so neither can be altered without breaking the signature.
+function pollSignText(poll: PollSpec): string {
+  return "poll:" + JSON.stringify({ q: poll.question, o: poll.options })
 }
 
 // Canonical bytes that get signed/verified. Everything here is reconstructable
@@ -234,11 +250,12 @@ export async function encodeText(
   id: string,
   text: string,
   replyTo?: ReplyRef,
+  poll?: PollSpec,
 ): Promise<string> {
-  const payload: TextPayload = { username: session.username, text, replyTo }
+  const payload: TextPayload = { username: session.username, text, replyTo, poll }
   await attachSignature(session, payload, id, "text", {
     username: session.username,
-    text,
+    text: poll ? pollSignText(poll) : text,
     replyToId: replyTo?.id ?? "",
     mediaKeys: "",
   })
@@ -363,11 +380,20 @@ export async function decodeMessage(
       base.username = p.username
       base.text = p.text
       base.replyTo = p.replyTo
+      base.poll =
+        p.poll && typeof p.poll.question === "string" && Array.isArray(p.poll.options)
+          ? { question: p.poll.question, options: p.poll.options.map((o) => String(o)).slice(0, 12) }
+          : undefined
       base.signerKey = p.spk
       base.verified = await verifySignature(
         session,
         stored,
-        { username: p.username, text: p.text, replyToId: p.replyTo?.id ?? "", mediaKeys: "" },
+        {
+          username: p.username,
+          text: p.poll ? pollSignText(p.poll) : p.text,
+          replyToId: p.replyTo?.id ?? "",
+          mediaKeys: "",
+        },
         p.spk,
         p.sig,
       )
