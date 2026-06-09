@@ -46,9 +46,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Tell the service worker which room (if any) is on screen. A background push
-  // for the room you're viewing stays silent (handled in-app), while a push for
-  // a different room you've joined still alerts you — even with Vanish open.
+  // Tell the service worker which room (if any) is on screen. The current push
+  // policy suppresses system notifications whenever any Vanish window is visible
+  // in the foreground, and still alerts when the app is hidden or closed.
   useEffect(() => {
     setActiveRoom(route.name === "chat" ? route.session.invite.roomId : null)
   }, [route])

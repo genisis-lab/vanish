@@ -4,7 +4,7 @@
 // Only static, non-sensitive build assets and the navigation shell are cached.
 // Push payloads never contain message content (the server is zero-knowledge),
 // so the notification shown here is a generic "new message" ping.
-const CACHE = "vanish-shell-v6"
+const CACHE = "vanish-shell-v7"
 const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
 
 self.addEventListener("install", (event) => {
@@ -29,21 +29,35 @@ self.addEventListener("activate", (event) => {
   )
 })
 
-// The page posts this when the user accepts an update, letting the waiting
-// worker take over immediately (a controllerchange then reloads the page).
+// The page posts SKIP_WAITING when the user accepts an update, letting the
+// waiting worker take over immediately (a controllerchange then reloads the
+// page). It also posts VANISH_ACTIVE_ROOM as focus/visibility changes; we keep
+// this best-effort snapshot to make foreground notification suppression more
+// reliable across browsers.
+const ACTIVE_WINDOWS = new Map()
+
 self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting()
+  const data = event.data || {}
+  if (data.type === "SKIP_WAITING") {
+    self.skipWaiting()
+    return
+  }
+  if (data.type === "VANISH_ACTIVE_ROOM") {
+    const id = event.source && event.source.id
+    if (id) ACTIVE_WINDOWS.set(id, { room: data.room || null, visible: !!data.visible, at: Date.now() })
+  }
 })
 
 // Background Web Push: wake the app and show a content-free notification. The
 // payload carries no message text (the server can't read it); tapping opens the
 // app, which decrypts and renders the conversation.
 //
-// We only stay silent when a *visible* window is already showing THIS room —
-// then the in-app UI handles it. If the app is backgrounded, sitting on the
-// home screen, or showing a *different* room you've joined, we still alert you,
-// so notifications for your other rooms keep coming through even with Vanish
-// open.
+// Policy: if Vanish is visibly open anywhere, stay silent. The running app's
+// in-app UI handles visible activity, and users shouldn't get redundant system
+// notifications while actively using Vanish — whether they're in the same room,
+// another room, the home screen, or the vault lock screen. If every Vanish
+// window is hidden/backgrounded/minimized, or the app is fully closed, show the
+// generic push notification.
 self.addEventListener("push", (event) => {
   let data = {}
   try {
@@ -59,7 +73,7 @@ self.addEventListener("push", (event) => {
         type: "window",
         includeUncontrolled: true,
       })
-      if (await someClientViewingRoom(clients, room)) return
+      if (await someVisibleVanishWindow(clients)) return
       await self.registration.showNotification("Vanish", {
         body: "New encrypted message",
         tag,
@@ -71,15 +85,31 @@ self.addEventListener("push", (event) => {
   )
 })
 
-// Resolve true only if some *visible* window reports that it is currently
-// showing the given room. Each window is asked over a private MessageChannel;
-// if nobody answers promptly we resolve false so a push is never silently
-// dropped (worst case: a redundant alert for a room you're actually viewing).
-function someClientViewingRoom(clients, room) {
-  if (!room || !clients || clients.length === 0) return Promise.resolve(false)
-  return Promise.all(clients.map((c) => askClientRoom(c))).then((states) =>
-    states.some((s) => s && s.visible && s.room === room),
-  )
+// Resolve true if any Vanish window is currently visible/foreground. Prefer the
+// WindowClient runtime flags when available, fall back to the page's own
+// MessageChannel answer, and finally use the last focus/visibility snapshot the
+// page posted. If everything is hidden or no clients exist, pushes are allowed.
+function someVisibleVanishWindow(clients) {
+  if (!clients || clients.length === 0) return Promise.resolve(false)
+
+  // Native WindowClient properties are the fastest and work even if the page is
+  // between React states. Not all browsers expose both, so check defensively.
+  for (const c of clients) {
+    if (c.visibilityState === "visible" || c.focused === true) return Promise.resolve(true)
+  }
+
+  return Promise.all(clients.map((c) => askClientRoom(c))).then((states) => {
+    if (states.some((s) => s && s.visible)) return true
+
+    // Best-effort fallback: use recent page-posted snapshots for clients that
+    // did not answer the private channel quickly enough.
+    const now = Date.now()
+    for (const c of clients) {
+      const cached = ACTIVE_WINDOWS.get(c.id)
+      if (cached && cached.visible && now - cached.at < 30000) return true
+    }
+    return false
+  })
 }
 
 function askClientRoom(client) {
