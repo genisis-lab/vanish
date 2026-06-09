@@ -239,3 +239,74 @@ svg {
   color: var(--text-dim);
   -webkit-overflow-scrolling: touch;
 }
+
+/* ============================================================
+   Mobile composer natural keyboard fit
+   The native textarea showed iOS Safari's input accessory/form-navigation bar
+   above the keyboard. Composer now uses a contenteditable textbox, and this
+   layer tightens the mobile chrome so the pill sits naturally against the
+   keyboard instead of floating high above it.
+   ============================================================ */
+.composer-editor {
+  min-height: 44px;
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  caret-color: var(--accent);
+}
+.composer-editor[contenteditable="true"]:empty::before,
+.composer-editor[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.composer-row .composer-editor {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 2px;
+  line-height: 1.35;
+}
+.composer-row .composer-editor:focus {
+  outline: none;
+  box-shadow: none;
+}
+@media (max-width: 460px) {
+  .composer {
+    gap: 6px;
+    padding: 6px 10px max(6px, env(safe-area-inset-bottom));
+  }
+  .composer-row {
+    gap: 6px;
+    border-radius: 26px;
+    padding: 5px 5px 5px 8px;
+  }
+  .composer-row .upload-btn,
+  .composer-row .send-btn {
+    width: 42px;
+    height: 42px;
+  }
+  .composer-row .composer-editor {
+    min-height: 42px;
+    font-size: 16px;
+    padding: 7px 2px;
+  }
+  .composer-tools {
+    margin-top: 4px;
+    gap: 7px;
+    padding: 0 2px;
+  }
+  .chip-toggle {
+    padding: 4px 9px;
+  }
+}
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 460px) {
+    .composer {
+      padding-bottom: max(5px, env(safe-area-inset-bottom));
+    }
+  }
+}
