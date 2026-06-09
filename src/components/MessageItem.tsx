@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react"
 import {
   Ban,
+  BarChart3,
   Check,
   CheckCheck,
   Clock,
@@ -14,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react"
 import type { RoomSession } from "../lib/session"
-import type { DecryptedMessage } from "../lib/messages"
+import type { DecryptedMessage, DecryptedReaction, PollSpec } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
 import { formatCountdown, formatTime, hueFromString } from "../lib/format"
 import { MediaTile } from "./MediaTile"
@@ -121,6 +122,10 @@ function MessageItemInner({
   const whoStyle = { color: `hsl(${hue} 55% 60%)` }
   const ttl = formatCountdown(msg.expiresAt)
 
+  // Poll votes are stored as reactions tagged "vote:<index>" — they power the
+  // poll UI and are hidden from the normal reaction chips.
+  const visibleReactions = msg.reactions.filter((r) => !r.emoji.startsWith("vote:"))
+
   function click() {
     if (selecting) {
       onToggleSelect(msg.id)
@@ -157,9 +162,9 @@ function MessageItemInner({
     setDragX(0)
   }
 
-  // Edit is offered for my own plain-text messages; delete for any of my own
-  // messages. Both require the message to be acked (not pending/failed) and not
-  // already deleted.
+  // Edit is offered for my own plain-text messages (not polls — votes would
+  // become meaningless); delete for any of my own messages. Both require the
+  // message to be acked (not pending/failed) and not already deleted.
   const canModify = msg.mine && !msg.deleted && !msg.pending && !msg.failed
 
   const tools = !selecting && !msg.deleted && (
@@ -174,7 +179,7 @@ function MessageItemInner({
       >
         <Reply size={15} />
       </button>
-      {canModify && msg.kind === "text" && onEdit && (
+      {canModify && msg.kind === "text" && !msg.poll && onEdit && (
         <button
           className="icon-btn mini"
           aria-label="Edit message"
@@ -255,7 +260,14 @@ function MessageItemInner({
                   <span>{msg.replyTo.preview}</span>
                 </div>
               )}
-              {msg.text && <span>{msg.text}</span>}
+              {msg.text && !msg.poll && <span>{msg.text}</span>}
+              {msg.poll && (
+                <PollBlock
+                  poll={msg.poll}
+                  reactions={msg.reactions}
+                  onVote={(i) => onReact(msg.id, "vote:" + i)}
+                />
+              )}
               {msg.items && msg.items.length > 0 && (
                 <div className="media-grid">
                   {msg.items.map((it) => (
@@ -286,9 +298,9 @@ function MessageItemInner({
         </div>
       )}
 
-      {!msg.deleted && msg.reactions.length > 0 && (
+      {!msg.deleted && visibleReactions.length > 0 && (
         <div className="react-row">
-          {msg.reactions.map((r) => (
+          {visibleReactions.map((r) => (
             <button
               key={r.emoji}
               className={`chip ${r.mine ? "mine" : ""}`}
@@ -359,6 +371,53 @@ function MessageItemInner({
   )
 }
 
+// Encrypted poll rendered inside the bubble. Votes are encrypted reactions
+// ("vote:<index>"), so the server never learns the question, options, or votes.
+// Tapping an option toggles your vote (one vote per option per person).
+function PollBlock({
+  poll,
+  reactions,
+  onVote,
+}: {
+  poll: PollSpec
+  reactions: DecryptedReaction[]
+  onVote: (index: number) => void
+}) {
+  const perOption = poll.options.map((_, i) => reactions.find((r) => r.emoji === "vote:" + i))
+  const total = perOption.reduce((s, r) => s + (r?.count ?? 0), 0)
+  return (
+    <div style={POLL_WRAP}>
+      <div style={POLL_Q}>
+        <BarChart3 size={13} /> {poll.question}
+      </div>
+      {poll.options.map((opt, i) => {
+        const r = perOption[i]
+        const count = r?.count ?? 0
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0
+        return (
+          <button
+            key={i}
+            type="button"
+            style={r?.mine ? POLL_OPT_MINE : POLL_OPT}
+            title={r && r.users.length > 0 ? r.users.join(", ") : "Tap to vote"}
+            onClick={(e) => {
+              e.stopPropagation()
+              onVote(i)
+            }}
+          >
+            <span style={pollFill(pct)} aria-hidden="true" />
+            <span style={POLL_LABEL}>{opt}</span>
+            <span style={POLL_COUNT}>{count}</span>
+          </button>
+        )
+      })}
+      <span style={POLL_TOTAL}>
+        {total} {total === 1 ? "vote" : "votes"} · tap to vote, tap again to remove
+      </span>
+    </div>
+  )
+}
+
 function SendState({
   failed,
   pending,
@@ -408,5 +467,45 @@ const THREAD = {
   color: "var(--text-dim, inherit)",
   cursor: "pointer",
 } as const
+const POLL_WRAP = {
+  display: "flex",
+  flexDirection: "column" as const,
+  gap: "6px",
+  marginTop: "2px",
+  minWidth: "210px",
+}
+const POLL_Q = { display: "flex", alignItems: "center", gap: "6px", fontWeight: 600 } as const
+const POLL_OPT = {
+  position: "relative" as const,
+  display: "flex",
+  alignItems: "center",
+  gap: "8px",
+  padding: "6px 10px",
+  borderRadius: "9px",
+  border: "1px solid var(--border, rgba(255,255,255,0.16))",
+  background: "transparent",
+  color: "inherit",
+  font: "inherit",
+  fontSize: "13px",
+  cursor: "pointer",
+  overflow: "hidden",
+  textAlign: "left" as const,
+}
+const POLL_OPT_MINE = { ...POLL_OPT, border: "1px solid var(--accent)" }
+const POLL_FILL = {
+  position: "absolute" as const,
+  left: 0,
+  top: 0,
+  bottom: 0,
+  background: "color-mix(in srgb, var(--accent) 22%, transparent)",
+  pointerEvents: "none" as const,
+  transition: "width .25s ease",
+}
+function pollFill(pct: number) {
+  return { ...POLL_FILL, width: pct + "%" }
+}
+const POLL_LABEL = { position: "relative" as const, flex: 1, minWidth: 0 }
+const POLL_COUNT = { position: "relative" as const, fontSize: "12px", opacity: 0.8 }
+const POLL_TOTAL = { fontSize: "11px", color: "var(--text-faint)" } as const
 
 export const MessageItem = memo(MessageItemInner)
