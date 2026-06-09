@@ -2,6 +2,7 @@
 // it via `script_name`. The default fetch handler is a thin router used mainly
 // for health checks and direct (non-Pages) access during local development.
 
+import { isValidRoomId } from "../../shared/constants"
 import { RoomDurableObject, type RoomEnv } from "./RoomDurableObject"
 
 export { RoomDurableObject }
@@ -22,6 +23,7 @@ export default {
     const match = url.pathname.match(/^\/room\/([^/]+)\/(.+)$/)
     if (match) {
       const [, roomId, op] = match
+      if (!isValidRoomId(roomId)) return new Response("not found", { status: 404 })
       const id = env.ROOM.idFromName(roomId)
       const stub = env.ROOM.get(id)
       const target = new URL(request.url)
