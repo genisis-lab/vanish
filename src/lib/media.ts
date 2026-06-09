@@ -16,6 +16,10 @@ export interface MediaManifestItem {
   mime: string
   size: number // original (plaintext) size
   previewKind: MediaPreviewKind
+  /** Tiny inline preview (JPEG data URL). It travels INSIDE the encrypted
+   * message envelope, so the server never sees it. Lets images render
+   * instantly before the full blob is downloaded + decrypted. */
+  thumb?: string
 }
 
 function previewKindFor(mime: string): MediaPreviewKind {
@@ -77,6 +81,43 @@ async function normalizeFile(file: File): Promise<NormalizedFile> {
   }
 }
 
+// ---------- encrypted thumbnails ----------
+
+const THUMB_MAX_DIM = 320
+const THUMB_MAX_CHARS = 16_000
+
+// Build a small inline preview for still images. Returned as a JPEG data URL
+// that is embedded in the (encrypted) media manifest — never uploaded as a
+// separate object, never visible to the server. Returns undefined for
+// non-images, GIFs, or when the result would be too large.
+async function makeThumb(file: File): Promise<string | undefined> {
+  if (!file.type.startsWith("image/") || file.type === "image/gif") return undefined
+  if (typeof createImageBitmap !== "function" || typeof document === "undefined") return undefined
+  try {
+    const bitmap = await createImageBitmap(file)
+    const scale = Math.min(1, THUMB_MAX_DIM / Math.max(bitmap.width, bitmap.height, 1))
+    const w = Math.max(1, Math.round(bitmap.width * scale))
+    const h = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement("canvas")
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return undefined
+    // Dark backfill so transparent PNGs look right on the dark theme.
+    ctx.fillStyle = "#16161c"
+    ctx.fillRect(0, 0, w, h)
+    ctx.drawImage(bitmap, 0, 0, w, h)
+    bitmap.close?.()
+    for (const quality of [0.55, 0.4, 0.25]) {
+      const url = canvas.toDataURL("image/jpeg", quality)
+      if (url.length <= THUMB_MAX_CHARS) return url
+    }
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
 export interface EncryptUploadResult {
   ref: EncryptedMediaRef
   manifest: MediaManifestItem
@@ -91,6 +132,7 @@ export async function encryptAndUpload(
 ): Promise<EncryptUploadResult> {
   onStatus("encrypting")
   const norm = await normalizeFile(file)
+  const thumb = await makeThumb(file)
   const previewKind = previewKindFor(norm.mime)
   // Pad the plaintext to a size bucket before encryption (length-hiding).
   const padded = packAndPadMedia(norm.data)
@@ -116,6 +158,7 @@ export async function encryptAndUpload(
         mime: norm.mime,
         size: norm.size,
         previewKind,
+        thumb,
       },
     }
   } catch (err) {
