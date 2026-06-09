@@ -99,7 +99,7 @@ export function Composer({
   const [dragOver, setDragOver] = useState(false)
   const [recording, setRecording] = useState(false)
   const [recSecs, setRecSecs] = useState(0)
-  const taRef = useRef<HTMLTextAreaElement>(null)
+  const editorRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const recRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
@@ -114,15 +114,24 @@ export function Composer({
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined"
 
+  // Seed the contenteditable from the saved draft once, and when the room changes.
+  useEffect(() => {
+    const el = editorRef.current
+    if (el && el.textContent !== text) el.textContent = text
+    syncEditorEmpty()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId])
+
   // Persist the draft per-room so a refresh or accidental tab close keeps it.
   useEffect(() => {
     if (text) localStorage.setItem(draftKey, text)
     else localStorage.removeItem(draftKey)
+    syncEditorEmpty()
   }, [text, draftKey])
 
-  // Focus the textarea when a reply is started.
+  // Focus the editor when a reply is started.
   useEffect(() => {
-    if (replyTo) taRef.current?.focus()
+    if (replyTo) editorRef.current?.focus()
   }, [replyTo])
 
   // Tear down any in-flight recording (and release the mic) on unmount.
@@ -141,11 +150,24 @@ export function Composer({
     }
   }, [])
 
-  function autosize() {
-    const ta = taRef.current
-    if (!ta) return
-    ta.style.height = "auto"
-    ta.style.height = Math.min(ta.scrollHeight, 140) + "px"
+  function syncEditorEmpty() {
+    const el = editorRef.current
+    if (!el) return
+    const empty = (el.textContent ?? "").trim().length === 0
+    el.dataset.empty = empty ? "true" : "false"
+  }
+
+  function readEditorText(): string {
+    const raw = editorRef.current?.innerText ?? ""
+    // contenteditable often leaves a trailing newline from its final block.
+    return raw.replace(/\n$/, "")
+  }
+
+  function clearEditor() {
+    const el = editorRef.current
+    if (el) el.textContent = ""
+    setText("")
+    syncEditorEmpty()
   }
 
   // When the field is focused (the user taps to type), snap the conversation to
@@ -159,7 +181,7 @@ export function Composer({
     }
     requestAnimationFrame(toBottom)
     // Re-pin once the keyboard has finished animating in and resized the view.
-    window.setTimeout(toBottom, 250)
+    window.setTimeout(toBottom, 180)
   }
 
   function flashSent() {
@@ -237,7 +259,7 @@ export function Composer({
   }
 
   function submit() {
-    const t = text.trim()
+    const t = readEditorText().trim()
     const opts: SendOpts = {
       ttlMs: ttl.ms > 0 ? ttl.ms : undefined,
       burn: burn || undefined,
@@ -246,14 +268,13 @@ export function Composer({
     if (files.length > 0) {
       onSendMedia(files, t, opts)
       setFiles([])
-      setText("")
+      clearEditor()
       finishSend()
     } else if (t) {
       onSend(t, opts)
-      setText("")
+      clearEditor()
       finishSend()
     }
-    requestAnimationFrame(autosize)
   }
 
   function finishSend() {
@@ -263,7 +284,14 @@ export function Composer({
     flashSent()
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+  function onEditorInput() {
+    const next = readEditorText()
+    setText(next)
+    syncEditorEmpty()
+    onTyping()
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       submit()
@@ -275,13 +303,34 @@ export function Composer({
     e.target.value = ""
   }
 
-  // Paste an image straight from the clipboard (e.g. a screenshot).
-  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+  // Paste an image straight from the clipboard (e.g. a screenshot), or paste
+  // plain text only so rich clipboard HTML never enters the encrypted draft box.
+  function onPaste(e: React.ClipboardEvent<HTMLDivElement>) {
     const pasted = mediaFilesFrom(e.clipboardData?.files)
     if (pasted.length) {
       e.preventDefault()
       addFiles(pasted)
+      return
     }
+    const plain = e.clipboardData?.getData("text/plain")
+    if (plain) {
+      e.preventDefault()
+      insertPlainText(plain)
+      onEditorInput()
+    }
+  }
+
+  function insertPlainText(value: string) {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return
+    sel.deleteFromDocument()
+    const node = document.createTextNode(value)
+    const range = sel.getRangeAt(0)
+    range.insertNode(node)
+    range.setStartAfter(node)
+    range.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(range)
   }
 
   function onDragOver(e: React.DragEvent) {
@@ -412,18 +461,18 @@ export function Composer({
           aria-hidden="true"
           onChange={onPick}
         />
-        <textarea
-          ref={taRef}
-          className="textarea"
-          rows={1}
-          placeholder="Write an encrypted message…"
-          value={text}
+        <div
+          ref={editorRef}
+          className="textarea composer-editor"
+          role="textbox"
+          aria-label="Encrypted message"
+          aria-multiline="true"
+          contentEditable={!busy}
+          data-placeholder="Write an encrypted message…"
+          data-empty={text.trim().length === 0 ? "true" : "false"}
+          suppressContentEditableWarning
           onFocus={scrollChatToLatest}
-          onChange={(e) => {
-            setText(e.target.value)
-            autosize()
-            onTyping()
-          }}
+          onInput={onEditorInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />
