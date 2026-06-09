@@ -20,6 +20,7 @@ import type {
   CreateRoomRequest,
   DeleteOwnMessageRequest,
   EditMessageRequest,
+  EncryptedMediaRef,
   ListMessagesRequest,
   OwnerActionRequest,
   PostMessageRequest,
@@ -37,8 +38,12 @@ import type {
 import {
   clampRoomLifetime,
   inviteExpiryToMs,
+  isValidObjectKey,
+  isValidRoomId,
   MAX_ENVELOPE_CHARS,
+  MAX_ID_CHARS,
   MAX_MESSAGES_PER_ROOM,
+  MAX_PUSH_SUBSCRIPTIONS,
   MESSAGE_RATE_LIMIT,
   MESSAGE_RATE_WINDOW_MS,
 } from "../../shared/constants"
@@ -69,6 +74,17 @@ interface PushRecord {
 const SNAPSHOT_KEY = "snapshot"
 const PUSH_KEY = "pushSubs"
 const PUSH_FOREGROUND_SUPPRESS_MS = 30_000
+// Signalling frames (typing/seen) are cheap, so they get a more generous rate
+// limit than message sends — but they are still bounded to stop floods.
+const SIGNAL_RATE_LIMIT = MESSAGE_RATE_LIMIT * 4
+// Hard cap on a relayed WebSocket frame. Signal frames are tiny; anything
+// larger is dropped without parsing.
+const MAX_WS_FRAME_CHARS = 16_384
+// Push endpoints are URLs we POST to; keep them sane.
+const MAX_PUSH_ENDPOINT_CHARS = 2048
+const MAX_PUSH_KEY_CHARS = 512
+// A message may reference at most this many media objects.
+const MAX_MEDIA_REFS = 10
 
 export class RoomDurableObject {
   private state: DurableObjectState
@@ -175,7 +191,7 @@ export class RoomDurableObject {
   // ---------- proof gates ----------
 
   private async verifyProof(accessProof: string | undefined): Promise<boolean> {
-    if (!accessProof) return false
+    if (!accessProof || typeof accessProof !== "string") return false
     const hash = await hashAccessProof(accessProof)
     return this.core.verifyHash(hash)
   }
@@ -183,15 +199,15 @@ export class RoomDurableObject {
   // Owner proof-of-possession: the raw owner secret hashes to the stored owner
   // verifier. Distinct from the access proof so only the creator can moderate.
   private async verifyOwnerProof(ownerProof: string | undefined): Promise<boolean> {
-    if (!ownerProof) return false
+    if (!ownerProof || typeof ownerProof !== "string") return false
     const hash = await hashAccessProof(ownerProof)
     return this.core.verifyOwner(hash)
   }
 
   // Sliding-window per-participant rate limiter. Best-effort; in-memory only.
-  private allowRate(id: string, now: number): boolean {
+  private allowRate(id: string, now: number, limit = MESSAGE_RATE_LIMIT): boolean {
     const arr = (this.rate.get(id) ?? []).filter((t) => now - t < MESSAGE_RATE_WINDOW_MS)
-    if (arr.length >= MESSAGE_RATE_LIMIT) {
+    if (arr.length >= limit) {
       this.rate.set(id, arr)
       return false
     }
@@ -200,11 +216,60 @@ export class RoomDurableObject {
     return true
   }
 
+  // Generic guard for client-supplied identifier strings (message ids,
+  // participant ids). Bounded so ids can't be used to bloat storage.
+  private validId(id: unknown): id is string {
+    return typeof id === "string" && id.length > 0 && id.length <= MAX_ID_CHARS
+  }
+
+  // Media refs must point inside THIS room's R2 prefix and match the exact key
+  // pattern minted by /api/uploads/sign. Without this check a sender could
+  // attach another room's object keys to a message and have our expiry sweeps
+  // delete that other room's media (cross-room deletion).
+  private validMediaRefs(media: EncryptedMediaRef[] | undefined, roomId: string): boolean {
+    if (media === undefined || media === null) return true
+    if (!Array.isArray(media) || media.length > MAX_MEDIA_REFS) return false
+    for (const ref of media) {
+      if (!ref || typeof ref.objectKey !== "string") return false
+      if (!isValidObjectKey(ref.objectKey)) return false
+      if (!ref.objectKey.startsWith(`rooms/${roomId}/`)) return false
+    }
+    return true
+  }
+
+  // Push endpoints are URLs this object POSTs to, so they must be real https
+  // URLs — this stops the worker being used as a generic request proxy (SSRF).
+  private validPushEndpoint(endpoint: unknown): endpoint is string {
+    if (typeof endpoint !== "string" || !endpoint || endpoint.length > MAX_PUSH_ENDPOINT_CHARS) {
+      return false
+    }
+    try {
+      return new URL(endpoint).protocol === "https:"
+    } catch {
+      return false
+    }
+  }
+
   // ---------- operations ----------
 
   private async opCreate(req: CreateRoomRequest): Promise<Response> {
     const now = Date.now()
     if (!req.roomId || !req.accessProofHash) return json({ error: "missing fields" }, 400)
+    // Room ids become R2 key prefixes and DO names; reject anything that could
+    // collide with another room's prefix (e.g. ids containing "/").
+    if (!isValidRoomId(req.roomId)) return json({ error: "bad room id" }, 400)
+    if (typeof req.accessProofHash !== "string" || req.accessProofHash.length > 200) {
+      return json({ error: "bad verifier" }, 400)
+    }
+    if (
+      req.ownerKeyHash != null &&
+      (typeof req.ownerKeyHash !== "string" || req.ownerKeyHash.length > 200)
+    ) {
+      return json({ error: "bad verifier" }, 400)
+    }
+    if (req.topicEnvelope && req.topicEnvelope.length > MAX_ENVELOPE_CHARS) {
+      return json({ error: "too large" }, 413)
+    }
     this.core.createRoom({
       roomId: req.roomId,
       accessProofHash: req.accessProofHash,
@@ -230,6 +295,7 @@ export class RoomDurableObject {
 
   private async opSession(req: SessionRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return json({ error: "expired" }, 410)
@@ -329,15 +395,28 @@ export class RoomDurableObject {
 
   private async opMessage(req: PostMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!req.message) return json({ error: "bad message" }, 400)
+    if (!this.validId(req.message.id) || !this.validId(req.message.participantId)) {
+      return json({ error: "bad message" }, 400)
+    }
     if (this.core.isBanned(req.message.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now) && req.message.kind !== "system") {
       // Expired invites block new joins/sends but existing data is preserved.
       return json({ error: "expired" }, 410)
     }
-    // Abuse controls: cap envelope size and rate-limit per participant.
-    if ((req.message.envelope?.length ?? 0) > MAX_ENVELOPE_CHARS) {
+    // Abuse controls: validate shapes, cap envelope size, rate-limit per sender.
+    if (typeof req.message.envelope !== "string") return json({ error: "bad message" }, 400)
+    if (req.message.envelope.length > MAX_ENVELOPE_CHARS) {
       return json({ error: "message too large" }, 413)
+    }
+    if (typeof req.message.kind !== "string" || req.message.kind.length > 32) {
+      return json({ error: "bad message" }, 400)
+    }
+    const room = this.core.getRoom()
+    if (!room) return json({ error: "not found" }, 404)
+    if (!this.validMediaRefs(req.message.media, room.roomId)) {
+      return json({ error: "bad media ref" }, 400)
     }
     if (!this.allowRate(req.message.participantId, now)) {
       return json({ error: "rate limited" }, 429)
@@ -382,9 +461,15 @@ export class RoomDurableObject {
   // re-notifying or re-ordering.
   private async opEdit(req: EditMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
-    if ((req.envelope?.length ?? 0) > MAX_ENVELOPE_CHARS) {
+    if (typeof req.envelope !== "string" || !req.envelope) return json({ error: "bad envelope" }, 400)
+    if (req.envelope.length > MAX_ENVELOPE_CHARS) {
       return json({ error: "message too large" }, 413)
+    }
+    if (!this.allowRate(req.participantId, now)) {
+      return json({ error: "rate limited" }, 429)
     }
     const message = this.core.editMessage(
       { messageId: req.messageId, participantId: req.participantId, envelope: req.envelope },
@@ -400,6 +485,8 @@ export class RoomDurableObject {
   // backing R2 bytes. Broadcast as an "edit" frame (same in-place update path).
   private async opDeleteOwn(req: DeleteOwnMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     const result = this.core.deleteOwnMessage(
       { messageId: req.messageId, participantId: req.participantId },
@@ -414,6 +501,10 @@ export class RoomDurableObject {
 
   private async opList(req: ListMessagesRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    // Banned participants keep the access proof but lose room capabilities.
+    if (req.markReadFor && this.core.isBanned(req.markReadFor)) {
+      return json({ error: "banned" }, 403)
+    }
     const now = Date.now()
     const swept = this.core.sweep(now)
     if (swept.orphanObjectKeys.length) await this.deleteObjects(swept.orphanObjectKeys)
@@ -445,6 +536,16 @@ export class RoomDurableObject {
 
   private async opReact(req: ReactRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
+    if (req.envelope != null) {
+      if (typeof req.envelope !== "string" || req.envelope.length > MAX_ENVELOPE_CHARS) {
+        return json({ error: "bad envelope" }, 400)
+      }
+    }
+    if (!this.allowRate(req.participantId, Date.now())) {
+      return json({ error: "rate limited" }, 429)
+    }
     const m = this.core.setReaction({
       messageId: req.messageId,
       reactionId: req.reactionId,
@@ -466,6 +567,21 @@ export class RoomDurableObject {
 
   private async opBroadcast(req: BroadcastRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!req.event || !this.validId(req.event.participantId)) {
+      return json({ error: "bad event" }, 400)
+    }
+    if (this.core.isBanned(req.event.participantId)) return json({ error: "banned" }, 403)
+    if (typeof req.event.type !== "string" || req.event.type.length > 64) {
+      return json({ error: "bad event" }, 400)
+    }
+    if (req.event.envelope != null) {
+      if (typeof req.event.envelope !== "string" || req.event.envelope.length > MAX_ENVELOPE_CHARS) {
+        return json({ error: "bad event" }, 400)
+      }
+    }
+    if (!this.allowRate(`sig:${req.event.participantId}`, Date.now(), SIGNAL_RATE_LIMIT)) {
+      return json({ error: "rate limited" }, 429)
+    }
     const frame: RealtimeFrame = { t: "signal", event: req.event }
     this.broadcast(frame)
     this.recordSignal(frame)
@@ -502,11 +618,33 @@ export class RoomDurableObject {
 
   private async opPushSubscribe(req: PushSubscribeRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const s = req.subscription
     if (!s?.endpoint || !s?.keys?.p256dh || !s?.keys?.auth) {
       return json({ error: "bad subscription" }, 400)
     }
+    if (!this.validPushEndpoint(s.endpoint)) return json({ error: "bad subscription" }, 400)
+    if (typeof s.keys.p256dh !== "string" || s.keys.p256dh.length > MAX_PUSH_KEY_CHARS) {
+      return json({ error: "bad subscription" }, 400)
+    }
+    if (typeof s.keys.auth !== "string" || s.keys.auth.length > MAX_PUSH_KEY_CHARS) {
+      return json({ error: "bad subscription" }, 400)
+    }
     const subs = await this.getPushSubs()
+    // Cap stored registrations per room so push state can't grow unbounded;
+    // evict the oldest registration when full.
+    if (!subs.has(s.endpoint) && subs.size >= MAX_PUSH_SUBSCRIPTIONS) {
+      let oldestKey: string | null = null
+      let oldestAt = Infinity
+      for (const [key, rec] of subs) {
+        if (rec.at < oldestAt) {
+          oldestAt = rec.at
+          oldestKey = key
+        }
+      }
+      if (oldestKey) subs.delete(oldestKey)
+    }
     subs.set(s.endpoint, { sub: s, participantId: req.participantId, at: Date.now() })
     await this.savePushSubs()
     return json({ ok: true })
@@ -566,6 +704,7 @@ export class RoomDurableObject {
     if (!(await this.verifyProof(accessProof))) {
       return new Response("forbidden", { status: 403 })
     }
+    if (participantId.length > MAX_ID_CHARS) return new Response("bad participant", { status: 400 })
     if (this.core.isBanned(participantId)) return new Response("banned", { status: 403 })
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return new Response("expired", { status: 410 })
@@ -595,11 +734,14 @@ export class RoomDurableObject {
   }
 
   // Client frames are opaque signalling (typing/presence/seen). Content stays
-  // encrypted; we just relay envelopes between peers.
+  // encrypted; we just relay envelopes between peers. Oversized or overly
+  // frequent frames are dropped before they reach anyone.
   private onClientFrame(session: Session, raw: string | ArrayBuffer): void {
+    const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
+    if (text.length > MAX_WS_FRAME_CHARS) return
     let frame: RealtimeFrame | null = null
     try {
-      frame = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw))
+      frame = JSON.parse(text)
     } catch {
       return
     }
@@ -608,6 +750,7 @@ export class RoomDurableObject {
     const now = Date.now()
     this.core.touchParticipant(session.participantId, now)
     if (frame.t === "signal" || frame.t === "seen") {
+      if (!this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT)) return
       this.broadcast(frame, session)
       this.recordSignal(frame)
     }
