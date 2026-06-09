@@ -242,10 +242,10 @@ svg {
 
 /* ============================================================
    Mobile composer natural keyboard fit
-   The native textarea showed iOS Safari's input accessory/form-navigation bar
-   above the keyboard. Composer now uses a contenteditable textbox, and this
-   layer tightens the mobile chrome so the pill sits naturally against the
-   keyboard instead of floating high above it.
+   iOS Safari/WKWebView owns the gray input accessory / keyboard assistant bar
+   above the keyboard (the up/down/check strip). CSS and contenteditable cannot
+   reliably remove it in web Safari; native wrappers must disable it at the
+   WKWebView/keyboard-plugin layer. These styles focus on stable composer layout.
    ============================================================ */
 .composer-editor {
   min-height: 44px;

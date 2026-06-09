@@ -147,28 +147,20 @@
 
 /* ============================================================
    Mobile viewport / keyboard handling
-   Lock the document to the *visible* viewport (height set from JS via
-   visualViewport) on the chat screen. This fixes two things:
-     1. The page can no longer scroll into empty space below the composer
-        (the "huge gap / jumps to bottom on open" bug).
-     2. The on-screen keyboard shrinks the layout instead of pushing the
-        composer off-screen.
-   Also forces a 16px message field so iOS Safari doesn't auto-zoom on focus.
+   Lock the document to the visible viewport (height set from JS via
+   visualViewport) on the chat screen. The app is pinned to top:0 and only the
+   height changes; using visualViewport.offsetTop caused the composer to jump or
+   float after keyboard transitions on iOS.
    ============================================================ */
 :root {
   --app-height: 100dvh;
-  --app-top: 0px;
 }
 body:has(.chat) {
   overflow: hidden;
 }
-/* Pin the chat to the *visible* viewport. height comes from visualViewport so
-   the keyboard shrinks the layout; top follows visualViewport.offsetTop so the
-   composer never floats above an empty gap when iOS scrolls the visual
-   viewport to reveal the focused field. */
 .app:has(> .chat) {
   position: fixed;
-  top: var(--app-top);
+  top: 0;
   left: 0;
   right: 0;
   height: var(--app-height);
