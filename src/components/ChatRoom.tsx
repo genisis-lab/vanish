@@ -230,9 +230,8 @@ export function ChatRoom({
       .filter((m) => {
         if (m.deleted || m.kind === "system") return false
         const text = (m.text ?? "").toLowerCase()
-        const pollQ = (m.poll?.question ?? "").toLowerCase()
         const who = (m.username ?? "").toLowerCase()
-        return text.includes(q) || pollQ.includes(q) || who.includes(q)
+        return text.includes(q) || who.includes(q)
       })
       .map((m) => m.id)
   }, [room.messages, query])
