@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import {
   AlertCircle,
-  BarChart3,
   Check,
   CheckCircle2,
   Flame,
@@ -278,32 +277,6 @@ export function Composer({
     }
   }
 
-  // Build an encrypted poll via two quick prompts (matching the app's existing
-  // prompt-based flows). The question and options are end-to-end encrypted;
-  // votes are encrypted reactions.
-  function createPoll() {
-    const q = window.prompt("Poll question:")?.trim()
-    if (!q) return
-    const raw = window.prompt("Options — separate with commas (2 to 6):")
-    if (raw === null) return
-    const options = raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .slice(0, 6)
-    if (options.length < 2) {
-      window.alert("A poll needs at least 2 options.")
-      return
-    }
-    onSend(q, {
-      ttlMs: ttl.ms > 0 ? ttl.ms : undefined,
-      burn: burn || undefined,
-      replyTo: replyTo ?? undefined,
-      poll: { question: q, options },
-    })
-    finishSend()
-  }
-
   function finishSend() {
     setBurn(false)
     onCancelReply()
@@ -534,16 +507,6 @@ export function Composer({
           aria-pressed={burn}
         >
           <Flame size={13} /> Read once
-        </button>
-        <button
-          type="button"
-          className="chip-toggle"
-          onClick={createPoll}
-          title="Create an encrypted poll — question, options and votes stay end-to-end encrypted"
-          aria-label="Create encrypted poll"
-          disabled={recording}
-        >
-          <BarChart3 size={13} /> Poll
         </button>
         <span className="composer-hint">
           <Lock size={11} /> Encrypted in your browser
