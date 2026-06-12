@@ -184,9 +184,7 @@ function syncViewport() {
   const textEntryFocused =
     focused instanceof HTMLElement &&
     (focused.isContentEditable || focused.matches("input, textarea, [contenteditable]"))
-  const shouldTrackViewport = Boolean(chatMounted && vv && (isStandaloneDisplay() || textEntryFocused))
-
-  if (!shouldTrackViewport) {
+  if (!chatMounted || !vv || (!isStandaloneDisplay() && !textEntryFocused)) {
     root.setProperty("--app-height", "100svh")
     root.setProperty("--app-top", "0px")
     return
