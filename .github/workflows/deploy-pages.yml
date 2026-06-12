@@ -1,0 +1,28 @@
+name: Deploy Pages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: >
+          npx wrangler pages deploy dist
+          --project-name vanish
+          --branch main
+          --commit-hash "${{ github.sha }}"
+          --commit-message "${{ github.event.head_commit.message || github.sha }}"
+          --commit-dirty=false
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 3ece4993f323ece88322161931be6e72
