@@ -82,6 +82,13 @@ function promptUpdate(reg: ServiceWorkerRegistration) {
   document.body.appendChild(bar)
 }
 
+function isStandaloneDisplay() {
+  return (
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true
+  )
+}
+
 // ---------- desktop PWA install polish ----------
 //
 // Chromium desktop/Android fire `beforeinstallprompt` when the app is
@@ -91,10 +98,7 @@ function promptUpdate(reg: ServiceWorkerRegistration) {
 // touches the React tree. Does nothing on iOS Safari (no event) or when the
 // app is already running standalone.
 function setupInstallPrompt() {
-  const isStandalone =
-    window.matchMedia?.("(display-mode: standalone)").matches ||
-    (navigator as unknown as { standalone?: boolean }).standalone === true
-  if (isStandalone) return
+  if (isStandaloneDisplay()) return
 
   let deferred: (Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: string }> }) | null =
     null
@@ -167,35 +171,29 @@ void setupNativeShell()
 
 // ---------- mobile keyboard / viewport ----------
 //
-// On the web we mirror window.visualViewport exactly: the chat is pinned to the
-// visible viewport's rectangle. height = visualViewport.height and a composited
-// translateY = visualViewport.offsetTop. This tracks the keyboard precisely and
-// returns to the bottom (offsetTop 0, full height) when the keyboard closes, so
-// the composer no longer drifts to the top or fails to return to the bottom.
-//
-// In the native wrapper the keyboard plugin resizes the webview natively, so
-// visualViewport already reports the shrunken size and offsetTop stays 0 — this
-// code then simply mirrors the full height with no offset.
+// Mobile browser tabs resize visualViewport while the address/tool bars animate
+// during normal scroll. Do not mirror those scroll-driven values into app layout:
+// it creates a feedback loop where Safari/Chrome move the page and the app moves
+// in response. Keep browser-tab layout on stable svh, and only mirror the visual
+// viewport while text entry is focused, when the keyboard actually needs room.
 function syncViewport() {
   const root = document.documentElement.style
   const vv = window.visualViewport
-  // This viewport pinning + scroll-reset only applies to the chat view, whose
-  // app shell is position:fixed and tracks the on-screen keyboard. The home /
-  // landing screen scrolls normally through the document. Running this on every
-  // scroll-driven visualViewport event there forces layout each frame (stutter)
-  // and — because offsetTop is 0 while the page is merely scrolled — fires
-  // window.scrollTo(0, 0), yanking the page back to the top ("scroll up shoots
-  // up fast"). So do nothing unless the chat shell is actually mounted.
-  if (!document.querySelector(".app > .chat")) return
-  if (!vv) {
-    root.setProperty("--app-height", (window.innerHeight || 0) + "px")
+  const chatMounted = document.querySelector(".app > .chat")
+  const focused = document.activeElement
+  const textEntryFocused =
+    focused instanceof HTMLElement &&
+    (focused.isContentEditable || focused.matches("input, textarea, [contenteditable]"))
+  const shouldTrackViewport = Boolean(chatMounted && vv && (isStandaloneDisplay() || textEntryFocused))
+
+  if (!shouldTrackViewport) {
+    root.setProperty("--app-height", "100svh")
     root.setProperty("--app-top", "0px")
     return
   }
+
   root.setProperty("--app-height", Math.round(vv.height) + "px")
   root.setProperty("--app-top", Math.max(0, Math.round(vv.offsetTop)) + "px")
-  // Avoid leftover layout-viewport scroll once the keyboard is fully closed.
-  if (vv.offsetTop === 0 && window.scrollY !== 0) window.scrollTo(0, 0)
 }
 
 let viewportRaf = 0
@@ -209,9 +207,9 @@ function scheduleViewportSync() {
 
 syncViewport()
 window.visualViewport?.addEventListener("resize", scheduleViewportSync)
-window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
 window.addEventListener("resize", scheduleViewportSync)
 window.addEventListener("orientationchange", scheduleViewportSync)
+window.addEventListener("focusin", scheduleViewportSync)
 // iOS sometimes omits a final resize after dismissing the keyboard; re-sync on
 // blur (with a short delay) so the layout reliably returns to the bottom.
 window.addEventListener("focusout", () => {

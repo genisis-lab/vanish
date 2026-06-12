@@ -147,14 +147,12 @@
 
 /* ============================================================
    Mobile viewport / keyboard handling
-   The chat overlays the *visible* viewport rectangle. height follows
-   visualViewport.height and the app is shifted down by visualViewport.offsetTop
-   via a composited translateY (both set from JS in main.tsx). Mirroring the
-   visual viewport directly keeps the composer pinned just above the keyboard
-   and returns it to the bottom when the keyboard closes.
+   Browser tabs stay on stable svh so address-bar show/hide during scroll does
+   not resize the chat. JS only swaps --app-height to visualViewport pixels while
+   text entry is focused, or in standalone/PWA where there is no browser chrome.
    ============================================================ */
 :root {
-  --app-height: 100dvh;
+  --app-height: 100svh;
   --app-top: 0px;
 }
 body:has(.chat) {
@@ -162,14 +160,12 @@ body:has(.chat) {
 }
 .app:has(> .chat) {
   position: fixed;
-  top: 0;
+  top: var(--app-top);
   left: 0;
   right: 0;
   height: var(--app-height);
   min-height: 0;
   overflow: hidden;
-  transform: translateY(var(--app-top));
-  will-change: transform;
 }
 .chat {
   height: 100%;
