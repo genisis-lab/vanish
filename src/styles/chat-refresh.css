@@ -1,4 +1,4 @@
-/* Chat surface refresh \u2014 loaded after index.css to layer a coherent
+/* Chat surface refresh — loaded after index.css to layer a coherent
    visual pass over the conversation view (status, bubbles, notices,
    typing indicator). */
 
@@ -9,7 +9,7 @@
    notices, a live typing indicator, and softer message bubbles.
    ============================================================ */
 
-/* Connection status \u2014 polling is a working state, shown as healthy. */
+/* Connection status — polling is a working state, shown as healthy. */
 .dot.live,
 .dot.polling {
   background: var(--ok);
@@ -79,7 +79,9 @@
 .msg.mine .bubble {
   border-bottom-left-radius: 16px;
   border-bottom-right-radius: 6px;
-  box-shadow: 0 6px 16px -8px var(--accent);
+  /* Cheap shadow. The previous 16px-blur accent glow repainted on every
+     sent bubble while scrolling, contributing to the Safari stutter. */
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
 /* System / join-leave notices as centered chips. */
@@ -395,7 +397,7 @@ body:has(.chat) {
   margin-left: 0;
 }
 
-/* Clickable member count opens the \u201cwho\u2019s here\u201d panel. */
+/* Clickable member count opens the “who’s here” panel. */
 .members-btn {
   border: none;
   background: transparent;
