@@ -1031,6 +1031,24 @@ a {
 
 /* ---------- responsive ---------- */
 @media (max-width: 760px) {
+  body:has(.app) {
+    overflow: hidden;
+  }
+  .app {
+    position: fixed;
+    inset: 0;
+    height: 100svh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .app > .shell,
+  .app > .center-shell {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
   .grid {
     grid-template-columns: 1fr;
   }
