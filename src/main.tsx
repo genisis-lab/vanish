@@ -179,6 +179,14 @@ void setupNativeShell()
 function syncViewport() {
   const root = document.documentElement.style
   const vv = window.visualViewport
+  // This viewport pinning + scroll-reset only applies to the chat view, whose
+  // app shell is position:fixed and tracks the on-screen keyboard. The home /
+  // landing screen scrolls normally through the document. Running this on every
+  // scroll-driven visualViewport event there forces layout each frame (stutter)
+  // and — because offsetTop is 0 while the page is merely scrolled — fires
+  // window.scrollTo(0, 0), yanking the page back to the top ("scroll up shoots
+  // up fast"). So do nothing unless the chat shell is actually mounted.
+  if (!document.querySelector(".app > .chat")) return
   if (!vv) {
     root.setProperty("--app-height", (window.innerHeight || 0) + "px")
     root.setProperty("--app-top", "0px")
