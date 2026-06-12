@@ -115,15 +115,10 @@
 /* ============================================================
    iOS icon paint fix
    On iOS (especially installed PWAs) inline SVG icons inside the
-   sticky topbar could fail to paint until a reflow such as a device
-   rotation. Guaranteeing intrinsic sizing and promoting the affected
-   bars onto their own paint layer makes the icons render correctly on
-   first load.
-
-   NOTE: the topbar deliberately has no backdrop-filter. A blurred,
-   sticky bar makes Safari recomposite every scroll frame and was the
-   primary cause of scroll stutter, so the topbar uses an opaque
-   background instead (see index.css).
+   sticky, backdrop-filtered topbar could fail to paint until a
+   reflow such as a device rotation. Guaranteeing intrinsic sizing
+   and promoting the affected bars onto their own paint layer makes
+   the icons render correctly on first load.
    ============================================================ */
 svg {
   flex-shrink: 0;
@@ -137,6 +132,9 @@ svg {
   .upload-btn {
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
+  }
+  .topbar {
+    -webkit-backdrop-filter: blur(12px);
   }
 }
 
@@ -310,82 +308,5 @@ svg {
     .composer {
       padding-bottom: max(5px, env(safe-area-inset-bottom));
     }
-  }
-}
-
-/* ============================================================
-   Home / landing scroll-paint optimization
-   The landing page stuttered while scrolling in BOTH Safari and
-   Chrome (worse on Safari). It runs no JS animation loop, so the
-   cost is pure paint: heavy per-frame text shaping plus large,
-   soft card shadows being re-rasterized as tiles scroll into
-   view. These rules cut that paint cost without touching layout.
-   ============================================================ */
-body {
-  /* optimizeLegibility forces kerning/ligature shaping on every
-     paint and is a well-known scroll-jank source on text-heavy
-     pages. optimizeSpeed keeps glyphs crisp but stops the reshape. */
-  text-rendering: optimizeSpeed;
-}
-/* A 50px-blur shadow on every large rounded card is costly to
-   rasterize repeatedly during scroll. A tighter blur looks nearly
-   identical but paints far faster. The token is shared with chat
-   surfaces (sheets, toasts, popovers), which benefit too. */
-:root,
-[data-theme="dark"] {
-  --shadow: 0 12px 26px -18px rgba(0, 0, 0, 0.7);
-}
-[data-theme="light"] {
-  --shadow: 0 12px 26px -20px rgba(120, 80, 40, 0.3);
-}
-/* Let the browser skip painting landing cards that are scrolled
-   out of view. contain-intrinsic-size keeps the scrollbar stable
-   so this does not introduce position jumps. Scoped to the home
-   shell so chat surfaces are unaffected. */
-.shell .card {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 360px;
-}
-
-/* ============================================================
-   Mobile landing scroll fix (app-shell scroll model)
-   Desktop scrolls fine; phones did not, and stripping all paint
-   cost (shadows, text shaping, offscreen paint) changed nothing —
-   which rules out paint and points at the mobile browser's address
-   bar. On a document-scrolled page the toolbar collapses/expands
-   on every gesture and oscillates the layout, so the page "barely
-   scrolls." The chat view already avoids this by locking <body>
-   and scrolling an inner container; the landing page never did.
-   On small screens we apply the same model: lock the document,
-   size the app to the stable SMALL viewport (svh, which does not
-   change as the toolbar hides), and let .shell scroll internally
-   so the toolbar stays put and scrolling is smooth. Card shadows
-   are also dropped (the 1px borders still separate the cards).
-   ============================================================ */
-@media (max-width: 760px) {
-  html,
-  body {
-    overscroll-behavior-y: none;
-  }
-  body:has(.shell) {
-    overflow: hidden;
-  }
-  .app:has(> .shell) {
-    height: 100svh;
-    min-height: 0;
-    overflow: hidden;
-  }
-  .shell {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
-  }
-  .shell .card {
-    box-shadow: none;
-  }
-  .shell .seg button.active {
-    box-shadow: none;
   }
 }
