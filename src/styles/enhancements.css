@@ -115,10 +115,15 @@
 /* ============================================================
    iOS icon paint fix
    On iOS (especially installed PWAs) inline SVG icons inside the
-   sticky, backdrop-filtered topbar could fail to paint until a
-   reflow such as a device rotation. Guaranteeing intrinsic sizing
-   and promoting the affected bars onto their own paint layer makes
-   the icons render correctly on first load.
+   sticky topbar could fail to paint until a reflow such as a device
+   rotation. Guaranteeing intrinsic sizing and promoting the affected
+   bars onto their own paint layer makes the icons render correctly on
+   first load.
+
+   NOTE: the topbar deliberately has no backdrop-filter. A blurred,
+   sticky bar makes Safari recomposite every scroll frame and was the
+   primary cause of scroll stutter, so the topbar uses an opaque
+   background instead (see index.css).
    ============================================================ */
 svg {
   flex-shrink: 0;
@@ -132,9 +137,6 @@ svg {
   .upload-btn {
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
-  }
-  .topbar {
-    -webkit-backdrop-filter: blur(12px);
   }
 }
 

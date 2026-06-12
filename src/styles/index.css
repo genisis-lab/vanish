@@ -408,8 +408,10 @@ a {
   gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter: blur(12px);
+  /* Opaque, blur-free. A sticky `backdrop-filter: blur()` forces Safari to
+     recomposite the blurred backdrop on every scroll frame, which was the
+     main cause of the scroll stutter. */
+  background: var(--bg);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -467,7 +469,6 @@ a {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  scroll-behavior: smooth;
 }
 .day-sep {
   text-align: center;
