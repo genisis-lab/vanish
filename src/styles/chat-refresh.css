@@ -154,7 +154,7 @@
    and returns it to the bottom when the keyboard closes.
    ============================================================ */
 :root {
-  --app-height: 100dvh;
+  --app-height: 100svh;
   --app-top: 0px;
 }
 body:has(.chat) {
