@@ -79,9 +79,7 @@
 .msg.mine .bubble {
   border-bottom-left-radius: 16px;
   border-bottom-right-radius: 6px;
-  /* Cheap shadow. The previous 16px-blur accent glow repainted on every
-     sent bubble while scrolling, contributing to the Safari stutter. */
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 16px -8px var(--accent);
 }
 
 /* System / join-leave notices as centered chips. */
@@ -156,32 +154,22 @@
    and returns it to the bottom when the keyboard closes.
    ============================================================ */
 :root {
-  --app-height: 100svh;
+  --app-height: 100dvh;
   --app-top: 0px;
 }
 body:has(.chat) {
   overflow: hidden;
 }
 .app:has(> .chat) {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   height: var(--app-height);
   min-height: 0;
   overflow: hidden;
-}
-/* Only the installed/standalone PWA mirrors the visual viewport with a
-   composited translate (see syncViewport in main.tsx, which likewise only
-   runs when standalone). In a normal browser tab we must NOT promote the
-   whole app onto its own transform layer: a permanent will-change:transform
-   wrapping the .messages scroller pushes scrolling onto Safari's main thread
-   and causes the scroll stutter. Normal tabs keep plain height/overflow. */
-@media (display-mode: standalone) {
-  .app:has(> .chat) {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    transform: translateY(var(--app-top));
-    will-change: transform;
-  }
+  transform: translateY(var(--app-top));
+  will-change: transform;
 }
 .chat {
   height: 100%;
