@@ -163,15 +163,25 @@ body:has(.chat) {
   overflow: hidden;
 }
 .app:has(> .chat) {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
   height: var(--app-height);
   min-height: 0;
   overflow: hidden;
-  transform: translateY(var(--app-top));
-  will-change: transform;
+}
+/* Only the installed/standalone PWA mirrors the visual viewport with a
+   composited translate (see syncViewport in main.tsx, which likewise only
+   runs when standalone). In a normal browser tab we must NOT promote the
+   whole app onto its own transform layer: a permanent will-change:transform
+   wrapping the .messages scroller pushes scrolling onto Safari's main thread
+   and causes the scroll stutter. Normal tabs keep plain height/overflow. */
+@media (display-mode: standalone) {
+  .app:has(> .chat) {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    transform: translateY(var(--app-top));
+    will-change: transform;
+  }
 }
 .chat {
   height: 100%;
