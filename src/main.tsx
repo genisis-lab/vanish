@@ -167,22 +167,15 @@ void setupNativeShell()
 
 // ---------- mobile keyboard / viewport ----------
 //
-// In standalone/PWA mode we mirror window.visualViewport exactly: the chat is
-// pinned to the visible viewport's rectangle while the keyboard opens/closes.
-// Do not run this in regular mobile Safari: its address/bottom bars animate
-// during normal page scrolling and fire visualViewport changes, which makes the
-// app fight Safari and visibly stutter.
+// On the web we mirror window.visualViewport exactly: the chat is pinned to the
+// visible viewport's rectangle. height = visualViewport.height and a composited
+// translateY = visualViewport.offsetTop. This tracks the keyboard precisely and
+// returns to the bottom (offsetTop 0, full height) when the keyboard closes, so
+// the composer no longer drifts to the top or fails to return to the bottom.
 //
 // In the native wrapper the keyboard plugin resizes the webview natively, so
 // visualViewport already reports the shrunken size and offsetTop stays 0 — this
 // code then simply mirrors the full height with no offset.
-function isStandaloneDisplay(): boolean {
-  return (
-    window.matchMedia?.("(display-mode: standalone)").matches ||
-    (navigator as unknown as { standalone?: boolean }).standalone === true
-  )
-}
-
 function syncViewport() {
   const root = document.documentElement.style
   const vv = window.visualViewport
@@ -206,22 +199,17 @@ function scheduleViewportSync() {
   })
 }
 
-if (isStandaloneDisplay()) {
-  syncViewport()
-  window.visualViewport?.addEventListener("resize", scheduleViewportSync)
-  window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
-  window.addEventListener("resize", scheduleViewportSync)
-  window.addEventListener("orientationchange", scheduleViewportSync)
-  // iOS sometimes omits a final resize after dismissing the keyboard; re-sync on
-  // blur (with a short delay) so the layout reliably returns to the bottom.
-  window.addEventListener("focusout", () => {
-    scheduleViewportSync()
-    window.setTimeout(syncViewport, 250)
-  })
-} else {
-  document.documentElement.style.setProperty("--app-height", "100svh")
-  document.documentElement.style.setProperty("--app-top", "0px")
-}
+syncViewport()
+window.visualViewport?.addEventListener("resize", scheduleViewportSync)
+window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
+window.addEventListener("resize", scheduleViewportSync)
+window.addEventListener("orientationchange", scheduleViewportSync)
+// iOS sometimes omits a final resize after dismissing the keyboard; re-sync on
+// blur (with a short delay) so the layout reliably returns to the bottom.
+window.addEventListener("focusout", () => {
+  scheduleViewportSync()
+  window.setTimeout(syncViewport, 250)
+})
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
