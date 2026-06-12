@@ -346,3 +346,27 @@ body {
   content-visibility: auto;
   contain-intrinsic-size: auto 360px;
 }
+
+/* ============================================================
+   Mobile landing scroll fix
+   Desktop scrolls fine; phones did not. Two mobile-only causes:
+   (1) weaker GPUs drop frames re-rasterizing the soft card shadows
+   during a scroll gesture (feels like "it barely scrolls"), and
+   (2) on a page only slightly taller than the screen, the browser
+   address bar collapses/expands on every gesture and oscillates the
+   layout. Drop the shadow to a flat bordered card on small screens
+   (the 1px border still separates them) and stop the document from
+   rubber-banding so the toolbar transition settles cleanly.
+   ============================================================ */
+@media (max-width: 760px) {
+  html,
+  body {
+    overscroll-behavior-y: none;
+  }
+  .shell .card {
+    box-shadow: none;
+  }
+  .shell .seg button.active {
+    box-shadow: none;
+  }
+}
