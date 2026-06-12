@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowDown,
   Ban,
@@ -208,8 +208,9 @@ export function ChatRoom({
   }
 
   // Scroll to a quoted message and briefly highlight it (inline style only, so
-  // no global CSS is required).
-  function jumpToMessage(id: string) {
+  // no global CSS is required). Stable identity so it doesn't re-render every
+  // memoized MessageItem.
+  const jumpToMessage = useCallback((id: string) => {
     const el = scrollRef.current?.querySelector(`[data-mid="${id}"]`) as HTMLElement | null
     if (!el) return
     el.scrollIntoView({ behavior: "smooth", block: "center" })
@@ -219,7 +220,7 @@ export function ChatRoom({
     window.setTimeout(() => {
       el.style.backgroundColor = prev
     }, 1100)
-  }
+  }, [])
 
   // Client-side search across the decrypted conversation. Everything stays on
   // this device — the server never sees the query (it can't search ciphertext).
@@ -263,21 +264,21 @@ export function ChatRoom({
     )
   }
 
-  function toggleSelect(id: string) {
+  const toggleSelect = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
 
   function cancelSelect() {
     setSelecting(false)
     setSelected(new Set())
   }
 
-  function startReply(m: DecryptedMessage) {
+  const startReply = useCallback((m: DecryptedMessage) => {
     const preview =
       m.text && !m.text.startsWith("⚠")
         ? m.text.slice(0, 90)
@@ -285,23 +286,29 @@ export function ChatRoom({
           ? "📎 Attachment"
           : "Message"
     setReplyTo({ id: m.id, username: m.username, preview })
-  }
+  }, [])
 
-  function editMessage(m: DecryptedMessage) {
-    const next = window.prompt("Edit your message:", m.text ?? "")
-    if (next === null) return
-    const trimmed = next.trim()
-    if (trimmed && trimmed !== m.text) {
-      void room.editMessage(m.id, trimmed)
-      toast("Message edited")
-    }
-  }
+  const editMessage = useCallback(
+    (m: DecryptedMessage) => {
+      const next = window.prompt("Edit your message:", m.text ?? "")
+      if (next === null) return
+      const trimmed = next.trim()
+      if (trimmed && trimmed !== m.text) {
+        void room.editMessage(m.id, trimmed)
+        toast("Message edited")
+      }
+    },
+    [room.editMessage, toast],
+  )
 
-  function deleteMessage(m: DecryptedMessage) {
-    if (window.confirm("Delete this message for everyone in the room?")) {
-      void room.deleteMessage(m.id)
-    }
-  }
+  const deleteMessage = useCallback(
+    (m: DecryptedMessage) => {
+      if (window.confirm("Delete this message for everyone in the room?")) {
+        void room.deleteMessage(m.id)
+      }
+    },
+    [room.deleteMessage],
+  )
 
   function saveRoom() {
     if (vault.isLocked()) {
