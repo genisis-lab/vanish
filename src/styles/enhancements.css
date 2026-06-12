@@ -312,3 +312,37 @@ svg {
     }
   }
 }
+
+/* ============================================================
+   Home / landing scroll-paint optimization
+   The landing page stuttered while scrolling in BOTH Safari and
+   Chrome (worse on Safari). It runs no JS animation loop, so the
+   cost is pure paint: heavy per-frame text shaping plus large,
+   soft card shadows being re-rasterized as tiles scroll into
+   view. These rules cut that paint cost without touching layout.
+   ============================================================ */
+body {
+  /* optimizeLegibility forces kerning/ligature shaping on every
+     paint and is a well-known scroll-jank source on text-heavy
+     pages. optimizeSpeed keeps glyphs crisp but stops the reshape. */
+  text-rendering: optimizeSpeed;
+}
+/* A 50px-blur shadow on every large rounded card is costly to
+   rasterize repeatedly during scroll. A tighter blur looks nearly
+   identical but paints far faster. The token is shared with chat
+   surfaces (sheets, toasts, popovers), which benefit too. */
+:root,
+[data-theme="dark"] {
+  --shadow: 0 12px 26px -18px rgba(0, 0, 0, 0.7);
+}
+[data-theme="light"] {
+  --shadow: 0 12px 26px -20px rgba(120, 80, 40, 0.3);
+}
+/* Let the browser skip painting landing cards that are scrolled
+   out of view. contain-intrinsic-size keeps the scrollbar stable
+   so this does not introduce position jumps. Scoped to the home
+   shell so chat surfaces are unaffected. */
+.shell .card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 360px;
+}
