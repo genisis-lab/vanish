@@ -348,20 +348,39 @@ body {
 }
 
 /* ============================================================
-   Mobile landing scroll fix
-   Desktop scrolls fine; phones did not. Two mobile-only causes:
-   (1) weaker GPUs drop frames re-rasterizing the soft card shadows
-   during a scroll gesture (feels like "it barely scrolls"), and
-   (2) on a page only slightly taller than the screen, the browser
-   address bar collapses/expands on every gesture and oscillates the
-   layout. Drop the shadow to a flat bordered card on small screens
-   (the 1px border still separates them) and stop the document from
-   rubber-banding so the toolbar transition settles cleanly.
+   Mobile landing scroll fix (app-shell scroll model)
+   Desktop scrolls fine; phones did not, and stripping all paint
+   cost (shadows, text shaping, offscreen paint) changed nothing —
+   which rules out paint and points at the mobile browser's address
+   bar. On a document-scrolled page the toolbar collapses/expands
+   on every gesture and oscillates the layout, so the page "barely
+   scrolls." The chat view already avoids this by locking <body>
+   and scrolling an inner container; the landing page never did.
+   On small screens we apply the same model: lock the document,
+   size the app to the stable SMALL viewport (svh, which does not
+   change as the toolbar hides), and let .shell scroll internally
+   so the toolbar stays put and scrolling is smooth. Card shadows
+   are also dropped (the 1px borders still separate the cards).
    ============================================================ */
 @media (max-width: 760px) {
   html,
   body {
     overscroll-behavior-y: none;
+  }
+  body:has(.shell) {
+    overflow: hidden;
+  }
+  .app:has(> .shell) {
+    height: 100svh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .shell {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
   .shell .card {
     box-shadow: none;
