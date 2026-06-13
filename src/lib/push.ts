@@ -66,6 +66,7 @@ export async function subscribePush(session: RoomSession): Promise<void> {
       roomId: session.invite.roomId,
       accessProof: session.keys.accessProof,
       participantId: session.participantId,
+      participantProof: session.participantProof,
       subscription: {
         endpoint: json.endpoint,
         keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
@@ -87,6 +88,8 @@ export async function unsubscribePush(session: RoomSession): Promise<void> {
     await api.pushUnsubscribe({
       roomId: session.invite.roomId,
       accessProof: session.keys.accessProof,
+      participantId: session.participantId,
+      participantProof: session.participantProof,
       endpoint: sub.endpoint,
     })
   } catch {

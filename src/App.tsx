@@ -78,7 +78,7 @@ export default function App() {
       if (!r) return
       const invite = parseInviteKey(r.inviteKey)
       if (!invite) return
-      const session = await buildSession(invite, r.username, r.participantId)
+      const session = await buildSession(invite, r.username, r.participantId, r.participantProof)
       enterChat(session)
     },
     [enterChat],

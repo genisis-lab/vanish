@@ -9,8 +9,7 @@
 //
 // IMPORTANT: invite links carry the secret in the URL *fragment* (after `#`).
 // Browsers never transmit the fragment to the server, so the secret stays out
-// of access logs, Referer headers, and proxies. Older links used a `?invite=`
-// query parameter — we still parse those for backward compatibility.
+// of access logs, Referer headers, and proxies.
 
 import { fromBase64Url, randomBytes, toBase64Url } from "./crypto"
 
@@ -75,12 +74,7 @@ function parseInviteFromHash(hash: string): ParsedInvite | null {
 export function parseInviteFromUrl(url: string): ParsedInvite | null {
   try {
     const u = new URL(url)
-    // Prefer the fragment (never transmitted to the server)…
-    const fromHash = parseInviteFromHash(u.hash)
-    if (fromHash) return fromHash
-    // …then fall back to the legacy ?invite= query parameter.
-    const invite = u.searchParams.get("invite")
-    return invite ? parseInviteKey(invite) : null
+    return parseInviteFromHash(u.hash)
   } catch {
     return null
   }

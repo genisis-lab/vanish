@@ -73,6 +73,7 @@ export class Realtime {
       room: this.session.invite.roomId,
       p: this.session.keys.accessProof,
       u: this.session.participantId,
+      pp: this.session.participantProof,
     })
     return proto + "://" + location.host + "/api/ws?" + params.toString()
   }
@@ -169,6 +170,8 @@ export class Realtime {
         .broadcast({
           roomId: this.session.invite.roomId,
           accessProof: this.session.keys.accessProof,
+          participantId: this.session.participantId,
+          participantProof: this.session.participantProof,
           event: frame.event,
         })
         .catch(() => {})
@@ -192,6 +195,8 @@ export class Realtime {
         const res = await api.listMessages({
           roomId: this.session.invite.roomId,
           accessProof: this.session.keys.accessProof,
+          participantId: this.session.participantId,
+          participantProof: this.session.participantProof,
           since: this.handlers.getSince(),
           signalsSince: this.signalsSince,
           markReadFor: this.session.participantId,

@@ -32,4 +32,10 @@ describe("invite keys", () => {
     const parsed = parseInviteFromUrl(url)
     expect(parsed?.inviteKey).toBe(invite.inviteKey)
   })
+
+  it("does not accept invite secrets from query parameters", () => {
+    const invite = createInvite()
+    const url = "https://vanish.example.com/?invite=" + encodeURIComponent(invite.inviteKey)
+    expect(parseInviteFromUrl(url)).toBeNull()
+  })
 })

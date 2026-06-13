@@ -82,7 +82,7 @@ async function main() {
   ok("invite secret lives in fragment, not query", url.includes("#invite=") && !url.includes("?invite="))
   const legacy = "https://example.com/?invite=" + encodeURIComponent(invite.inviteKey)
   const fromLegacy = parseInviteFromUrl(legacy)
-  ok("legacy ?invite= still parses", !!fromLegacy && fromLegacy.inviteKey === invite.inviteKey)
+  ok("query invite secrets are rejected", fromLegacy === null)
   ok("url with no invite returns null", parseInviteFromUrl("https://example.com/") === null)
 
   console.log("padding")
