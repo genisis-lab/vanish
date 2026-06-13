@@ -109,13 +109,16 @@ native build when you change `capacitor.config.ts`, icons, or native plugins:
 npm run build && npm run cap:sync
 ```
 
-## 7. Desktop install (PWA)
+## 7. Browser install (PWA)
 
-No wrapper needed on desktop. Vanish is an installable PWA:
+No wrapper needed for browser installs. Vanish is an installable PWA:
 
 - **Chrome / Edge / Brave:** an **Install Vanish** bar appears automatically
   (handled in `src/main.tsx` via the `beforeinstallprompt` event), or use the
   install icon in the address bar.
+- **iPhone / iPad browsers:** the Home screen shows an install card with the
+  Share -> Add to Home Screen flow. iOS does not expose the same install prompt
+  event that Chromium does.
 - **Safari (macOS):** File → Add to Dock.
 - Once installed it runs in its own standalone window with the service worker
   providing the offline app shell.
