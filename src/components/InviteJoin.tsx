@@ -58,12 +58,18 @@ export function InviteJoin({
     if (busy) return
     setBusy(true)
     try {
-      const session = await buildSession(invite, username, remembered?.participantId)
+      const session = await buildSession(
+        invite,
+        username,
+        remembered?.participantId,
+        remembered?.participantProof,
+      )
       vault.save({
         roomId: invite.roomId,
         inviteKey: invite.inviteKey,
         username: session.username,
         participantId: session.participantId,
+        participantProof: session.participantProof,
         lastUsed: Date.now(),
         verifiedSafetyNumber: remembered?.verifiedSafetyNumber,
       })

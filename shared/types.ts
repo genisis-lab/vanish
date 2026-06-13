@@ -74,6 +74,8 @@ export interface SessionRequest {
   roomId: string
   accessProof: string
   participantId: string
+  /** Per-device proof binding this participant id to the caller. */
+  participantProof: string
 }
 
 export interface ValidateInviteRequest {
@@ -89,6 +91,8 @@ export interface ValidateInviteResponse {
 export interface UpdateInviteRequest {
   roomId: string
   accessProof: string
+  /** Owner proof-of-possession; changing room policy is owner-gated. */
+  ownerProof: string
   inviteExpiry?: InviteExpiryOption
   ttlMs?: number
   burnAfterRead?: boolean
@@ -121,6 +125,7 @@ export interface OwnerActionRequest {
 export interface PostMessageRequest {
   roomId: string
   accessProof: string
+  participantProof: string
   message: {
     id: string
     participantId: string
@@ -136,6 +141,7 @@ export interface PostMessageRequest {
 export interface EditMessageRequest {
   roomId: string
   accessProof: string
+  participantProof: string
   messageId: string
   participantId: string
   /** New opaque AES-GCM envelope (re-signed by the author). */
@@ -146,6 +152,7 @@ export interface EditMessageRequest {
 export interface DeleteOwnMessageRequest {
   roomId: string
   accessProof: string
+  participantProof: string
   messageId: string
   participantId: string
 }
@@ -153,6 +160,8 @@ export interface DeleteOwnMessageRequest {
 export interface ListMessagesRequest {
   roomId: string
   accessProof: string
+  participantId: string
+  participantProof: string
   since?: number
   markReadFor?: string
   /** Return buffered signalling frames (typing/seen) newer than this server time. */
@@ -190,6 +199,11 @@ export interface DownloadRequest {
 export interface PruneRequest {
   roomId: string
   accessProof: string
+  /** Required for member pruning; only messages authored by this participant are removed. */
+  participantId?: string
+  participantProof?: string
+  /** Required when all=true or when an owner removes arbitrary message ids. */
+  ownerProof?: string
   /** specific message ids; omit with all=true to prune everything. */
   messageIds?: string[]
   all?: boolean
@@ -198,6 +212,8 @@ export interface PruneRequest {
 export interface BroadcastRequest {
   roomId: string
   accessProof: string
+  participantId: string
+  participantProof: string
   /** Encrypted signalling envelope (typing/presence/reaction), opaque to server. */
   event: { type: string; envelope?: string; participantId: string }
 }
@@ -205,6 +221,7 @@ export interface BroadcastRequest {
 export interface ReactRequest {
   roomId: string
   accessProof: string
+  participantProof: string
   messageId: string
   reactionId: string
   participantId: string
@@ -223,12 +240,15 @@ export interface PushSubscribeRequest {
   roomId: string
   accessProof: string
   participantId: string
+  participantProof: string
   subscription: WebPushSubscriptionJSON
 }
 
 export interface PushUnsubscribeRequest {
   roomId: string
   accessProof: string
+  participantId: string
+  participantProof: string
   endpoint: string
 }
 

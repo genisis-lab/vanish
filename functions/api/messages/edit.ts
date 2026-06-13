@@ -6,7 +6,9 @@ import type { EditMessageRequest } from "../../../shared/types"
 // The new envelope is opaque (re-signed in the browser); the server just swaps it.
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const body = await readJson<EditMessageRequest>(request)
-  if (!body?.roomId || !body?.accessProof) return badRequest("missing roomId/accessProof")
+  if (!body?.roomId || !body?.accessProof || !body?.participantProof) {
+    return badRequest("missing roomId/accessProof/participantProof")
+  }
   if (!body.messageId || !body.participantId || !body.envelope) return badRequest("missing fields")
   return forward(env, body.roomId, "edit", body)
 }

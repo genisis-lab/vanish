@@ -48,9 +48,10 @@ import { MessageItem } from "./MessageItem"
 import { Composer } from "./Composer"
 import { InvitePanel } from "./InvitePanel"
 import { SafetyPanel } from "./SafetyPanel"
+import { SecurityTransparency } from "./SecurityTransparency"
 import { MediaViewer } from "./MediaViewer"
 
-type Panel = "invite" | "invite-qr" | "safety" | "actions" | "members" | null
+type Panel = "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | null
 
 export function ChatRoom({
   session,
@@ -264,14 +265,22 @@ export function ChatRoom({
     )
   }
 
-  const toggleSelect = useCallback((id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }, [])
+  const toggleSelect = useCallback(
+    (id: string) => {
+      const msg = room.messages.find((m) => m.id === id)
+      if (msg && !msg.mine) {
+        toast("You can prune only your own messages")
+        return
+      }
+      setSelected((prev) => {
+        const next = new Set(prev)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+    },
+    [room.messages, toast],
+  )
 
   function cancelSelect() {
     setSelecting(false)
@@ -322,6 +331,7 @@ export function ChatRoom({
       inviteKey: session.invite.inviteKey,
       username: session.username,
       participantId: session.participantId,
+      participantProof: session.participantProof,
       lastUsed: Date.now(),
     })
     setSavePrompt(false)
@@ -406,7 +416,7 @@ export function ChatRoom({
   }
 
   function panic() {
-    void room.pruneAll()
+    room.wipeLocal()
     setPanel(null)
     onLeave()
   }
@@ -743,6 +753,7 @@ export function ChatRoom({
       {panel === "safety" && (
         <SafetyPanel session={session} prefs={prefs} onClose={() => setPanel(null)} />
       )}
+      {panel === "security" && <SecurityTransparency onClose={() => setPanel(null)} />}
       {panel === "members" && (
         <Sheet title="Who’s here" icon={<Users size={18} />} onClose={() => setPanel(null)}>
           <div className="stack">
@@ -799,6 +810,9 @@ export function ChatRoom({
             <button className="btn btn-block" onClick={changeNickname}>
               <Pencil size={16} /> Change your nickname
             </button>
+            <button className="btn btn-block" onClick={() => setPanel("security")}>
+              <ShieldCheck size={16} /> Security transparency
+            </button>
             {isOwner && (
               <button className="btn btn-block" onClick={editTopic}>
                 <Tag size={16} /> {topic ? "Change room topic" : "Set room topic"}
@@ -838,32 +852,38 @@ export function ChatRoom({
             >
               <CheckSquare size={16} /> Select messages to prune
             </button>
-            <button
-              className="btn btn-block"
-              onClick={() => {
-                void room.pruneAll()
-                setPanel(null)
-                toast("Cleared all messages")
-              }}
-            >
-              <Trash2 size={16} /> Clear all visible messages
-            </button>
+            {isOwner && (
+              <button
+                className="btn btn-block"
+                onClick={() => {
+                  void room.pruneAll()
+                  setPanel(null)
+                  toast("Cleared all messages")
+                }}
+              >
+                <Trash2 size={16} /> Clear all visible messages
+              </button>
+            )}
             <button className="btn btn-danger btn-block" onClick={panic}>
               <Zap size={16} /> Panic — wipe view & leave
             </button>
-            {confirmDelete ? (
-              <button className="btn btn-danger btn-block" onClick={doDelete}>
-                <Trash2 size={16} /> Confirm — delete room & all data
-              </button>
-            ) : (
-              <button className="btn btn-danger btn-block" onClick={() => setConfirmDelete(true)}>
-                <Trash2 size={16} /> Delete room & encrypted data
-              </button>
+            {isOwner && (
+              <>
+                {confirmDelete ? (
+                  <button className="btn btn-danger btn-block" onClick={doDelete}>
+                    <Trash2 size={16} /> Confirm — delete room & all data
+                  </button>
+                ) : (
+                  <button className="btn btn-danger btn-block" onClick={() => setConfirmDelete(true)}>
+                    <Trash2 size={16} /> Delete room & encrypted data
+                  </button>
+                )}
+                <p className="hint">
+                  Deleting removes every encrypted message and media object from the server for all
+                  participants. This cannot be undone.
+                </p>
+              </>
             )}
-            <p className="hint">
-              Deleting removes every encrypted message and media object from the server for all
-              participants. This cannot be undone.
-            </p>
           </div>
         </Sheet>
       )}

@@ -42,6 +42,7 @@ import {
   isValidRoomId,
   MAX_ENVELOPE_CHARS,
   MAX_ID_CHARS,
+  MAX_MEDIA_BYTES,
   MAX_MESSAGES_PER_ROOM,
   MAX_PUSH_SUBSCRIPTIONS,
   MESSAGE_RATE_LIMIT,
@@ -179,7 +180,7 @@ export class RoomDurableObject {
         case "push-unsubscribe":
           return this.opPushUnsubscribe(body as unknown as PushUnsubscribeRequest)
         case "delete":
-          return this.opDelete(body as { accessProof: string })
+          return this.opDelete(body as { accessProof: string; ownerProof?: string })
         default:
           return json({ error: "unknown op" }, 404)
       }
@@ -202,6 +203,35 @@ export class RoomDurableObject {
     if (!ownerProof || typeof ownerProof !== "string") return false
     const hash = await hashAccessProof(ownerProof)
     return this.core.verifyOwner(hash)
+  }
+
+  private async hashPresentedProof(proof: string | undefined): Promise<string | null> {
+    if (!proof || typeof proof !== "string" || proof.length > 200) return null
+    try {
+      return await hashAccessProof(proof)
+    } catch {
+      return null
+    }
+  }
+
+  private async registerParticipantProof(req: {
+    participantId?: string
+    participantProof?: string
+  }): Promise<boolean> {
+    if (!this.validId(req.participantId)) return false
+    const proofHash = await this.hashPresentedProof(req.participantProof)
+    if (!proofHash) return false
+    return this.core.registerParticipant(req.participantId, Date.now(), proofHash)
+  }
+
+  private async verifyParticipantProof(req: {
+    participantId?: string
+    participantProof?: string
+  }): Promise<boolean> {
+    if (!this.validId(req.participantId)) return false
+    const proofHash = await this.hashPresentedProof(req.participantProof)
+    if (!proofHash) return false
+    return this.core.verifyParticipant(req.participantId, proofHash)
   }
 
   // Sliding-window per-participant rate limiter. Best-effort; in-memory only.
@@ -233,6 +263,10 @@ export class RoomDurableObject {
       if (!ref || typeof ref.objectKey !== "string") return false
       if (!isValidObjectKey(ref.objectKey)) return false
       if (!ref.objectKey.startsWith(`rooms/${roomId}/`)) return false
+      if (!Number.isInteger(ref.size) || ref.size <= 0 || ref.size > MAX_MEDIA_BYTES) {
+        return false
+      }
+      if (!["image", "video", "audio"].includes(ref.previewKind)) return false
     }
     return true
   }
@@ -299,7 +333,9 @@ export class RoomDurableObject {
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return json({ error: "expired" }, 410)
-    this.core.touchParticipant(req.participantId, now)
+    if (!(await this.registerParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     await this.persist()
     this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
     return json({ room: this.core.publicState(now) })
@@ -307,6 +343,7 @@ export class RoomDurableObject {
 
   private async opUpdate(req: UpdateInviteRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
     const now = Date.now()
     let destroyAt: number | null | undefined
     if (req.roomLifetimeMs !== undefined) {
@@ -399,6 +436,14 @@ export class RoomDurableObject {
     if (!this.validId(req.message.id) || !this.validId(req.message.participantId)) {
       return json({ error: "bad message" }, 400)
     }
+    if (
+      !(await this.verifyParticipantProof({
+        participantId: req.message.participantId,
+        participantProof: req.participantProof,
+      }))
+    ) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     if (this.core.isBanned(req.message.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now) && req.message.kind !== "system") {
@@ -462,6 +507,9 @@ export class RoomDurableObject {
   private async opEdit(req: EditMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (typeof req.envelope !== "string" || !req.envelope) return json({ error: "bad envelope" }, 400)
@@ -486,6 +534,9 @@ export class RoomDurableObject {
   private async opDeleteOwn(req: DeleteOwnMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     const result = this.core.deleteOwnMessage(
@@ -501,8 +552,15 @@ export class RoomDurableObject {
 
   private async opList(req: ListMessagesRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (req.markReadFor && req.markReadFor !== req.participantId) {
+      return json({ error: "bad reader" }, 400)
+    }
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     // Banned participants keep the access proof but lose room capabilities.
-    if (req.markReadFor && this.core.isBanned(req.markReadFor)) {
+    if (this.core.isBanned(req.participantId)) {
       return json({ error: "banned" }, 403)
     }
     const now = Date.now()
@@ -527,7 +585,20 @@ export class RoomDurableObject {
 
   private async opPrune(req: PruneRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
-    const result = req.all ? this.core.pruneAll() : this.core.prune(req.messageIds ?? [])
+    let result: { removedIds: string[]; orphanObjectKeys: string[] }
+    if (req.all) {
+      if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
+      result = this.core.pruneAll()
+    } else if (req.ownerProof && (await this.verifyOwnerProof(req.ownerProof))) {
+      result = this.core.prune(req.messageIds ?? [])
+    } else {
+      if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+      if (!(await this.verifyParticipantProof(req))) {
+        return json({ error: "bad participant proof" }, 403)
+      }
+      if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
+      result = this.core.pruneOwn(req.messageIds ?? [], req.participantId)
+    }
     await this.persist()
     if (result.orphanObjectKeys.length) await this.deleteObjects(result.orphanObjectKeys)
     this.broadcast({ t: "prune", messageIds: result.removedIds, all: req.all })
@@ -537,6 +608,10 @@ export class RoomDurableObject {
   private async opReact(req: ReactRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!this.validId(req.reactionId)) return json({ error: "bad reaction" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     if (req.envelope != null) {
       if (typeof req.envelope !== "string" || req.envelope.length > MAX_ENVELOPE_CHARS) {
@@ -567,10 +642,14 @@ export class RoomDurableObject {
 
   private async opBroadcast(req: BroadcastRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
-    if (!req.event || !this.validId(req.event.participantId)) {
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
+    if (!req.event) {
       return json({ error: "bad event" }, 400)
     }
-    if (this.core.isBanned(req.event.participantId)) return json({ error: "banned" }, 403)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     if (typeof req.event.type !== "string" || req.event.type.length > 64) {
       return json({ error: "bad event" }, 400)
     }
@@ -579,17 +658,21 @@ export class RoomDurableObject {
         return json({ error: "bad event" }, 400)
       }
     }
-    if (!this.allowRate(`sig:${req.event.participantId}`, Date.now(), SIGNAL_RATE_LIMIT)) {
+    if (!this.allowRate(`sig:${req.participantId}`, Date.now(), SIGNAL_RATE_LIMIT)) {
       return json({ error: "rate limited" }, 429)
     }
-    const frame: RealtimeFrame = { t: "signal", event: req.event }
+    const frame: RealtimeFrame = {
+      t: "signal",
+      event: { ...req.event, participantId: req.participantId },
+    }
     this.broadcast(frame)
     this.recordSignal(frame)
     return json({ ok: true })
   }
 
-  private async opDelete(req: { accessProof: string }): Promise<Response> {
+  private async opDelete(req: { accessProof: string; ownerProof?: string }): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
     const now = Date.now()
     await this.destroyRoom(now)
     return json({ ok: true })
@@ -619,6 +702,9 @@ export class RoomDurableObject {
   private async opPushSubscribe(req: PushSubscribeRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const s = req.subscription
     if (!s?.endpoint || !s?.keys?.p256dh || !s?.keys?.auth) {
@@ -652,8 +738,13 @@ export class RoomDurableObject {
 
   private async opPushUnsubscribe(req: PushUnsubscribeRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
     const subs = await this.getPushSubs()
-    if (req.endpoint && subs.delete(req.endpoint)) await this.savePushSubs()
+    const rec = req.endpoint ? subs.get(req.endpoint) : null
+    if (rec?.participantId === req.participantId && subs.delete(req.endpoint)) await this.savePushSubs()
     return json({ ok: true })
   }
 
@@ -667,7 +758,6 @@ export class RoomDurableObject {
     const subs = await this.getPushSubs()
     if (subs.size === 0) return
     const now = Date.now()
-    const participants = this.core.toSnapshot().participants
     const connected = new Set<string>()
     for (const s of this.sessions) connected.add(s.participantId)
     const room = this.core.getRoom()
@@ -677,7 +767,7 @@ export class RoomDurableObject {
       Array.from(subs.values()).map(async (rec) => {
         if (rec.participantId === message.participantId) return
         if (connected.has(rec.participantId)) return
-        const lastSeen = participants[rec.participantId]
+        const lastSeen = this.core.participantLastSeen(rec.participantId)
         if (typeof lastSeen === "number" && now - lastSeen <= PUSH_FOREGROUND_SUPPRESS_MS) return
         try {
           const status = await sendWebPush(rec.sub, payload, vapid)
@@ -701,10 +791,14 @@ export class RoomDurableObject {
     }
     const accessProof = url.searchParams.get("p") ?? ""
     const participantId = url.searchParams.get("u") ?? "anon"
+    const participantProof = url.searchParams.get("pp") ?? ""
     if (!(await this.verifyProof(accessProof))) {
       return new Response("forbidden", { status: 403 })
     }
-    if (participantId.length > MAX_ID_CHARS) return new Response("bad participant", { status: 400 })
+    if (!this.validId(participantId)) return new Response("bad participant", { status: 400 })
+    if (!(await this.verifyParticipantProof({ participantId, participantProof }))) {
+      return new Response("bad participant proof", { status: 403 })
+    }
     if (this.core.isBanned(participantId)) return new Response("banned", { status: 403 })
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return new Response("expired", { status: 410 })
@@ -749,10 +843,25 @@ export class RoomDurableObject {
     if (this.core.isBanned(session.participantId)) return
     const now = Date.now()
     this.core.touchParticipant(session.participantId, now)
-    if (frame.t === "signal" || frame.t === "seen") {
+    if (frame.t === "signal") {
+      if (!frame.event || typeof frame.event.type !== "string") return
       if (!this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT)) return
-      this.broadcast(frame, session)
-      this.recordSignal(frame)
+      const safeFrame: RealtimeFrame = {
+        t: "signal",
+        event: { ...frame.event, participantId: session.participantId },
+      }
+      this.broadcast(safeFrame, session)
+      this.recordSignal(safeFrame)
+    } else if (frame.t === "seen") {
+      if (typeof frame.lastSeen !== "number") return
+      if (!this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT)) return
+      const safeFrame: RealtimeFrame = {
+        t: "seen",
+        participantId: session.participantId,
+        lastSeen: frame.lastSeen,
+      }
+      this.broadcast(safeFrame, session)
+      this.recordSignal(safeFrame)
     }
   }
 

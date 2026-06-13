@@ -64,6 +64,7 @@ export function SafetyPanel({
           inviteKey: session.invite.inviteKey,
           username: session.username,
           participantId: session.participantId,
+          participantProof: session.participantProof,
           ownerSecret: session.ownerSecret,
           signing: signing ?? undefined,
         },

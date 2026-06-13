@@ -90,6 +90,7 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
         inviteKey: session.invite.inviteKey,
         username: session.username,
         participantId: session.participantId,
+        participantProof: session.participantProof,
         lastUsed: Date.now(),
       })
       onCreated(session)

@@ -29,10 +29,16 @@ export interface RoomRecord {
   banned: string[]
 }
 
+export interface ParticipantRecord {
+  lastSeen: number
+  /** SHA-256(participantProof); absent only for pre-upgrade legacy presence rows. */
+  proofHash?: string
+}
+
 export interface RoomSnapshot {
   room: RoomRecord | null
   messages: StoredMessage[]
-  participants: Record<string, number> // participantId -> lastSeen
+  participants: Record<string, number | ParticipantRecord> // legacy number => lastSeen
 }
 
 export interface AddMessageInput {
@@ -55,7 +61,7 @@ export interface SweepResult {
 export class RoomCore {
   private room: RoomRecord | null
   private messages: Map<string, StoredMessage>
-  private participants: Map<string, number>
+  private participants: Map<string, ParticipantRecord>
 
   constructor(snapshot?: Partial<RoomSnapshot>) {
     this.room = snapshot?.room ?? null
@@ -67,7 +73,12 @@ export class RoomCore {
       if (this.room.banned === undefined) this.room.banned = []
     }
     this.messages = new Map((snapshot?.messages ?? []).map((m) => [m.id, m]))
-    this.participants = new Map(Object.entries(snapshot?.participants ?? {}))
+    this.participants = new Map(
+      Object.entries(snapshot?.participants ?? {}).map(([id, value]) => [
+        id,
+        typeof value === "number" ? { lastSeen: value } : value,
+      ]),
+    )
   }
 
   // ---------- room lifecycle ----------
@@ -204,12 +215,36 @@ export class RoomCore {
   // ---------- participants ----------
 
   touchParticipant(participantId: string, now: number): void {
-    this.participants.set(participantId, now)
+    const prev = this.participants.get(participantId)
+    this.participants.set(participantId, { ...prev, lastSeen: now })
+  }
+
+  /**
+   * Bind a participant id to a device-local proof hash. Existing legacy
+   * participants without a proof are upgraded on first successful session.
+   */
+  registerParticipant(participantId: string, now: number, proofHash: string): boolean {
+    if (!participantId || !proofHash) return false
+    const prev = this.participants.get(participantId)
+    if (prev?.proofHash && !timingSafeEqual(prev.proofHash, proofHash)) return false
+    this.participants.set(participantId, { lastSeen: now, proofHash })
+    return true
+  }
+
+  verifyParticipant(participantId: string, proofHash: string | undefined): boolean {
+    if (!participantId || !proofHash) return false
+    const prev = this.participants.get(participantId)
+    if (!prev?.proofHash) return false
+    return timingSafeEqual(prev.proofHash, proofHash)
+  }
+
+  participantLastSeen(participantId: string): number | null {
+    return this.participants.get(participantId)?.lastSeen ?? null
   }
 
   participantCount(now: number, windowMs = 45 * 1000): number {
     let count = 0
-    for (const lastSeen of this.participants.values()) {
+    for (const { lastSeen } of this.participants.values()) {
       if (now - lastSeen <= windowMs) count++
     }
     return count
@@ -334,6 +369,14 @@ export class RoomCore {
       removedIds.push(id)
     }
     return { removedIds, orphanObjectKeys }
+  }
+
+  pruneOwn(
+    messageIds: string[],
+    participantId: string,
+  ): { removedIds: string[]; orphanObjectKeys: string[] } {
+    const ownIds = messageIds.filter((id) => this.messages.get(id)?.participantId === participantId)
+    return this.prune(ownIds)
   }
 
   pruneAll(): { removedIds: string[]; orphanObjectKeys: string[] } {

@@ -24,6 +24,8 @@ export interface RememberedRoom {
   inviteKey: string
   username: string
   participantId: string
+  /** Per-device proof for this participant id; never sent except as proof-of-possession. */
+  participantProof?: string
   label?: string
   lastUsed: number
   /** Safety number the user explicitly marked as verified, if any. */
@@ -32,6 +34,8 @@ export interface RememberedRoom {
   pinned?: boolean
   /** Muted rooms make no sound and show no pop-up alerts on this device. */
   muted?: boolean
+  /** Local preference: emit cover-traffic decoy messages in this room. */
+  decoyEnabled?: boolean
 }
 
 // ---- in-memory unlocked state ----
@@ -309,6 +313,7 @@ export const vault = {
     rooms.push({
       pinned: existing?.pinned,
       muted: existing?.muted,
+      decoyEnabled: existing?.decoyEnabled,
       verifiedSafetyNumber: existing?.verifiedSafetyNumber,
       ...room,
     })
@@ -343,6 +348,14 @@ export const vault = {
     const r = rooms.find((x) => x.roomId === roomId)
     if (r) {
       r.muted = muted
+      write(rooms)
+    }
+  },
+  setDecoyEnabled(roomId: string, decoyEnabled: boolean): void {
+    const rooms = read()
+    const r = rooms.find((x) => x.roomId === roomId)
+    if (r) {
+      r.decoyEnabled = decoyEnabled
       write(rooms)
     }
   },
