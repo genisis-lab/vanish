@@ -48,8 +48,8 @@ it.
 - **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
   minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
   notifications stay silent and the in-app UI handles activity (see below).
-- **Installable everywhere** — runs as an offline-capable PWA with a desktop install prompt and
-  refresh-on-new-build, and ships as a native iOS/Android shell via Capacitor (see
+- **Installable everywhere** — runs as an offline-capable PWA with browser install prompts,
+  mobile Home Screen guidance, refresh-on-new-build, and a native iOS/Android shell via Capacitor (see
   `docs/NATIVE.md`).
 - **Privacy guards** — a privacy blur veils the conversation when you switch away, plus a
   one-tap “panic” wipe-and-leave.
