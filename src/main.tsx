@@ -212,8 +212,25 @@ function syncViewport() {
   }
 }
 
+// The real cause of "composer jumps to the top on the 2nd/3rd tap": the chat
+// shell is position:fixed, and iOS Safari scrolls the *window* to bring the
+// focused caret into view — even though body has overflow:hidden, which iOS
+// ignores for focus scrolling. That window scroll shifts the fixed panel up by
+// ~the keyboard height, flinging the composer toward the top with a gap down to
+// the keyboard. While the chat is mounted the window must never scroll (all
+// scrolling happens inside .messages), so we force it straight back to 0.
+function lockWindowScroll() {
+  if (!document.querySelector(".app > .chat")) return
+  if (window.scrollX !== 0 || window.scrollY !== 0) {
+    window.scrollTo(0, 0)
+  }
+}
+
 let viewportRaf = 0
 function scheduleViewportSync() {
+  // Undo any involuntary window scroll synchronously (before paint) so the
+  // panel never visibly jumps, then recompute sizing on the next frame.
+  lockWindowScroll()
   if (viewportRaf) cancelAnimationFrame(viewportRaf)
   viewportRaf = requestAnimationFrame(() => {
     viewportRaf = 0
@@ -226,7 +243,18 @@ window.visualViewport?.addEventListener("resize", scheduleViewportSync)
 window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
 window.addEventListener("resize", scheduleViewportSync)
 window.addEventListener("orientationchange", scheduleViewportSync)
-window.addEventListener("focusin", scheduleViewportSync)
+window.addEventListener("focusin", () => {
+  // iOS performs its caret-reveal scroll a beat after focus; pin the window
+  // immediately and again over the next few hundred ms to absorb it.
+  lockWindowScroll()
+  scheduleViewportSync()
+  window.setTimeout(lockWindowScroll, 50)
+  window.setTimeout(lockWindowScroll, 150)
+  window.setTimeout(lockWindowScroll, 300)
+})
+// Keep the window pinned to the top whenever iOS tries to scroll it while the
+// chat shell is mounted (the caret-reveal scroll fires as a window scroll).
+window.addEventListener("scroll", lockWindowScroll, { passive: true })
 // iOS sometimes omits a final resize after dismissing the keyboard; re-sync on
 // blur (with a short delay) so the layout reliably returns to the bottom.
 window.addEventListener("focusout", () => {
