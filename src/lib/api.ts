@@ -94,7 +94,12 @@ export const api = {
       body,
     )
   },
-  session(body: { roomId: string; accessProof: string; participantId: string }) {
+  session(body: {
+    roomId: string
+    accessProof: string
+    participantId: string
+    participantProof: string
+  }) {
     return post<{ room: PublicRoomState }>("/api/session", body)
   },
   postMessage(body: PostMessageRequest) {
@@ -130,11 +135,11 @@ export const api = {
   signUpload(body: SignUploadRequest) {
     return post<SignUploadResponse>("/api/uploads/sign", body)
   },
-  async deleteRoom(roomId: string, accessProof: string) {
+  async deleteRoom(roomId: string, accessProof: string, ownerProof: string) {
     const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
       method: "DELETE",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ accessProof }),
+      body: JSON.stringify({ accessProof, ownerProof }),
     })
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string }

@@ -184,14 +184,21 @@ function syncViewport() {
   const textEntryFocused =
     focused instanceof HTMLElement &&
     (focused.isContentEditable || focused.matches("input, textarea, [contenteditable]"))
+  const standalone = isStandaloneDisplay()
   if (!chatMounted || !vv || (!isStandaloneDisplay() && !textEntryFocused)) {
     root.setProperty("--app-height", "100svh")
     root.setProperty("--app-top", "0px")
+    root.setProperty("--keyboard-inset", "0px")
     return
   }
 
+  const keyboardInset = textEntryFocused
+    ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
+    : 0
   root.setProperty("--app-height", Math.round(vv.height) + "px")
-  root.setProperty("--app-top", Math.max(0, Math.round(vv.offsetTop)) + "px")
+  root.setProperty("--app-top", standalone ? Math.max(0, Math.round(vv.offsetTop)) + "px" : "0px")
+  root.setProperty("--keyboard-inset", keyboardInset + "px")
+  if (textEntryFocused) window.scrollTo(0, 0)
 }
 
 let viewportRaf = 0

@@ -15,6 +15,7 @@ export interface MediaManifestItem {
   filename: string
   mime: string
   size: number // original (plaintext) size
+  encryptedSize?: number // server-stored ciphertext size from the message media ref
   previewKind: MediaPreviewKind
   /** Tiny inline preview (JPEG data URL). It travels INSIDE the encrypted
    * message envelope, so the server never sees it. Lets images render
@@ -157,6 +158,7 @@ export async function encryptAndUpload(
         filename: norm.filename,
         mime: norm.mime,
         size: norm.size,
+        encryptedSize: cipher.byteLength,
         previewKind,
         thumb,
       },

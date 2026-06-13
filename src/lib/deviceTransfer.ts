@@ -1,8 +1,8 @@
 // Multi-device sync via a PIN-encrypted "device transfer" code.
 //
 // A room's identity lives only on the device that created/joined it: the invite
-// secret, the stable participant id, the per-room Ed25519 signing keypair and
-// (for owners) the owner secret. To use the same room on a second device we
+// secret, the stable participant id + proof, the per-room Ed25519 signing
+// keypair and (for owners) the owner secret. To use the same room on a second device we
 // bundle all of that, encrypt it under a short PIN (PBKDF2-SHA-256 -> AES-GCM)
 // and render it as a QR / copyable code. Nothing here ever touches the server;
 // the transfer is device-to-device (scan or paste). The PIN gates decryption
@@ -27,6 +27,7 @@ export interface DeviceBundle {
   inviteKey: string
   username: string
   participantId: string
+  participantProof: string
   /** present only when transferring owner rights */
   ownerSecret?: string
   /** exported per-room signing keypair (priv PKCS#8 + raw pub), base64url */
@@ -131,6 +132,7 @@ export function applyDeviceBundle(bundle: DeviceBundle): { roomId: string } {
     inviteKey: bundle.inviteKey,
     username: bundle.username || "anon",
     participantId: bundle.participantId,
+    participantProof: bundle.participantProof,
     lastUsed: Date.now(),
   })
   return { roomId }

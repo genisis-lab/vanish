@@ -91,7 +91,7 @@ export function Composer({
   onTyping,
 }: ComposerProps) {
   const draftKey = `vanish.draft.${roomId}`
-  const [text, setText] = useState(() => localStorage.getItem(`vanish.draft.${roomId}`) ?? "")
+  const [text, setText] = useState("")
   const [files, setFiles] = useState<File[]>([])
   const [ttlIdx, setTtlIdx] = useState(0)
   const [burn, setBurn] = useState(false)
@@ -114,20 +114,25 @@ export function Composer({
     !!navigator.mediaDevices?.getUserMedia &&
     typeof MediaRecorder !== "undefined"
 
-  // Seed the contenteditable from the saved draft once, and when the room changes.
+  // Seed/reset the contenteditable when the room changes and clear legacy
+  // plaintext drafts that older builds may have left in localStorage.
   useEffect(() => {
+    try {
+      localStorage.removeItem(draftKey)
+    } catch {
+      /* storage may be unavailable */
+    }
+    setText("")
     const el = editorRef.current
-    if (el && el.textContent !== text) el.textContent = text
+    if (el) el.textContent = ""
     syncEditorEmpty()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId])
 
-  // Persist the draft per-room so a refresh or accidental tab close keeps it.
+  // Keep the placeholder state in sync without persisting plaintext drafts.
   useEffect(() => {
-    if (text) localStorage.setItem(draftKey, text)
-    else localStorage.removeItem(draftKey)
     syncEditorEmpty()
-  }, [text, draftKey])
+  }, [text])
 
   // Focus the editor when a reply is started.
   useEffect(() => {
@@ -224,7 +229,12 @@ export function Composer({
         const type = rec.mimeType || mime || "audio/webm"
         const blob = new Blob(chunksRef.current, { type })
         const file = new File([blob], `voice-note-${Date.now()}.${extFor(type)}`, { type })
-        addFiles([file])
+        onSendMedia([file], "", {
+          ttlMs: ttl.ms > 0 ? ttl.ms : undefined,
+          burn: burn || undefined,
+          replyTo: replyTo ?? undefined,
+        })
+        finishSend()
       }
       recRef.current = rec
       rec.start()
@@ -423,7 +433,7 @@ export function Composer({
             <X size={15} />
           </button>
           <button className="btn btn-primary" onClick={stopRecording}>
-            <Square size={14} /> Stop & attach
+            <Square size={14} /> Stop & send
           </button>
         </div>
       )}

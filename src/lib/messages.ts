@@ -336,9 +336,13 @@ export async function decodeMessage(
       base.text = p.text
     } else if (stored.kind === "media") {
       const p = await decryptMsgJson<MediaPayload>(session, stored.envelope, aad(session, "msg"))
+      const refs = new Map((stored.media ?? []).map((ref) => [ref.objectKey, ref.size]))
       base.username = p.username
       base.text = p.caption
-      base.items = p.items
+      base.items = (p.items ?? []).map((item) => ({
+        ...item,
+        encryptedSize: refs.get(item.objectKey) ?? Number.MAX_SAFE_INTEGER,
+      }))
       base.replyTo = p.replyTo
       base.signerKey = p.spk
       base.verified = await verifySignature(

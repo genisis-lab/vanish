@@ -5,8 +5,8 @@ import type { SessionRequest } from "../../shared/types"
 // POST /api/session — register/refresh a participant's presence in a room.
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const body = await readJson<SessionRequest>(request)
-  if (!body?.roomId || !body?.accessProof || !body?.participantId) {
-    return badRequest("missing roomId/accessProof/participantId")
+  if (!body?.roomId || !body?.accessProof || !body?.participantId || !body?.participantProof) {
+    return badRequest("missing roomId/accessProof/participantId/participantProof")
   }
   return forward(env, body.roomId, "session", body)
 }

@@ -5,6 +5,8 @@ import type { UpdateInviteRequest } from "../../../shared/types"
 // POST /api/invites/update — change invite expiry / default TTL / burn settings.
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const body = await readJson<UpdateInviteRequest>(request)
-  if (!body?.roomId || !body?.accessProof) return badRequest("missing roomId/accessProof")
+  if (!body?.roomId || !body?.accessProof || !body?.ownerProof) {
+    return badRequest("missing roomId/accessProof/ownerProof")
+  }
   return forward(env, body.roomId, "update", body)
 }

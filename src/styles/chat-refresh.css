@@ -154,9 +154,18 @@
 :root {
   --app-height: 100svh;
   --app-top: 0px;
+  --keyboard-inset: 0px;
+}
+html:has(.chat),
+body:has(.chat) {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 body:has(.chat) {
-  overflow: hidden;
+  position: fixed;
+  inset: 0;
+  width: 100%;
 }
 .app:has(> .chat) {
   position: fixed;
@@ -170,6 +179,14 @@ body:has(.chat) {
 .chat {
   height: 100%;
   overscroll-behavior: none;
+}
+.topbar,
+.composer {
+  flex: 0 0 auto;
+}
+.chat-body,
+.messages {
+  min-height: 0;
 }
 .messages {
   overscroll-behavior: contain;
@@ -234,6 +251,7 @@ body:has(.chat) {
   margin-top: 7px;
   padding: 0 4px;
   flex-wrap: wrap;
+  flex: 0 0 auto;
 }
 .chip-toggle {
   display: inline-flex;
