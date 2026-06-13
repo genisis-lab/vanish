@@ -171,11 +171,17 @@ void setupNativeShell()
 
 // ---------- mobile keyboard / viewport ----------
 //
-// Mobile browser tabs resize visualViewport while the address/tool bars animate
-// during normal scroll. Do not mirror those scroll-driven values into app layout:
-// it creates a feedback loop where Safari/Chrome move the page and the app moves
-// in response. Keep browser-tab layout on stable svh, and only mirror the visual
-// viewport while text entry is focused, when the keyboard actually needs room.
+// The chat shell is a fixed, full-height surface. We size it to the LAYOUT
+// viewport (documentElement.clientHeight), which — unlike visualViewport.height
+// — does not shrink when the on-screen keyboard overlays the page. The keyboard
+// is handled purely as bottom padding (--kb): the slice of the layout viewport
+// the keyboard currently covers. This is deliberate. Previously we mirrored
+// visualViewport.height into the shell's height and visualViewport.offsetTop
+// into its `top`, but iOS fires noisy resize/scroll events when you refocus the
+// composer while the keyboard is already open (the 2nd/3rd tap), and a single
+// bad reading would collapse or shove the whole composer to the top of the
+// screen. Driving only the padding means a stray reading can at most nudge the
+// gap for one frame; the shell itself never moves.
 function syncViewport() {
   const root = document.documentElement.style
   const vv = window.visualViewport
@@ -184,25 +190,47 @@ function syncViewport() {
   const textEntryFocused =
     focused instanceof HTMLElement &&
     (focused.isContentEditable || focused.matches("input, textarea, [contenteditable]"))
-  const standalone = isStandaloneDisplay()
-  if (!chatMounted || !vv || (!isStandaloneDisplay() && !textEntryFocused)) {
-    root.setProperty("--app-height", "100svh")
-    root.setProperty("--app-top", "0px")
-    root.setProperty("--keyboard-inset", "0px")
+
+  if (!chatMounted || !vv) {
+    root.setProperty("--app-vh", "100svh")
+    root.setProperty("--kb", "0px")
     return
   }
 
-  const keyboardInset = textEntryFocused
-    ? Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop))
-    : 0
-  root.setProperty("--app-height", Math.round(vv.height) + "px")
-  root.setProperty("--app-top", standalone ? Math.max(0, Math.round(vv.offsetTop)) + "px" : "0px")
-  root.setProperty("--keyboard-inset", keyboardInset + "px")
-  if (textEntryFocused) window.scrollTo(0, 0)
+  // Stable full-height shell, pinned to the top of the layout viewport. The
+  // layout viewport does not shrink under the keyboard, so this never collapses.
+  const layoutH = document.documentElement.clientHeight
+  root.setProperty("--app-vh", layoutH + "px")
+
+  // Only reserve room for the keyboard while a text field is focused (or in a
+  // standalone PWA, which has no browser chrome to confuse the math).
+  if (isStandaloneDisplay() || textEntryFocused) {
+    const keyboard = Math.max(0, Math.round(layoutH - vv.height - vv.offsetTop))
+    root.setProperty("--kb", keyboard + "px")
+  } else {
+    root.setProperty("--kb", "0px")
+  }
+}
+
+// The real cause of "composer jumps to the top on the 2nd/3rd tap": the chat
+// shell is position:fixed, and iOS Safari scrolls the *window* to bring the
+// focused caret into view — even though body has overflow:hidden, which iOS
+// ignores for focus scrolling. That window scroll shifts the fixed panel up by
+// ~the keyboard height, flinging the composer toward the top with a gap down to
+// the keyboard. While the chat is mounted the window must never scroll (all
+// scrolling happens inside .messages), so we force it straight back to 0.
+function lockWindowScroll() {
+  if (!document.querySelector(".app > .chat")) return
+  if (window.scrollX !== 0 || window.scrollY !== 0) {
+    window.scrollTo(0, 0)
+  }
 }
 
 let viewportRaf = 0
 function scheduleViewportSync() {
+  // Undo any involuntary window scroll synchronously (before paint) so the
+  // panel never visibly jumps, then recompute sizing on the next frame.
+  lockWindowScroll()
   if (viewportRaf) cancelAnimationFrame(viewportRaf)
   viewportRaf = requestAnimationFrame(() => {
     viewportRaf = 0
@@ -212,9 +240,21 @@ function scheduleViewportSync() {
 
 syncViewport()
 window.visualViewport?.addEventListener("resize", scheduleViewportSync)
+window.visualViewport?.addEventListener("scroll", scheduleViewportSync)
 window.addEventListener("resize", scheduleViewportSync)
 window.addEventListener("orientationchange", scheduleViewportSync)
-window.addEventListener("focusin", scheduleViewportSync)
+window.addEventListener("focusin", () => {
+  // iOS performs its caret-reveal scroll a beat after focus; pin the window
+  // immediately and again over the next few hundred ms to absorb it.
+  lockWindowScroll()
+  scheduleViewportSync()
+  window.setTimeout(lockWindowScroll, 50)
+  window.setTimeout(lockWindowScroll, 150)
+  window.setTimeout(lockWindowScroll, 300)
+})
+// Keep the window pinned to the top whenever iOS tries to scroll it while the
+// chat shell is mounted (the caret-reveal scroll fires as a window scroll).
+window.addEventListener("scroll", lockWindowScroll, { passive: true })
 // iOS sometimes omits a final resize after dismissing the keyboard; re-sync on
 // blur (with a short delay) so the layout reliably returns to the bottom.
 window.addEventListener("focusout", () => {
