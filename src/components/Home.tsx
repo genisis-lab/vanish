@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import {
   ArrowRight,
   Clock,
@@ -42,6 +42,7 @@ const EXPIRY_OPTIONS: { id: InviteExpiryOption; label: string }[] = [
 ]
 
 const ONBOARD_KEY = "vanish.onboarded.v1"
+const INSTALL_DISMISS_KEY = "vanish.pwa-install.dismissed.v1"
 
 export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
   const toast = useToast()
@@ -307,6 +308,8 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
         </div>
 
         <div className="stack">
+          <MobileInstallCard />
+
           {rooms.length > 0 && (
             <div className="card">
               <h2>Remembered rooms</h2>
@@ -378,6 +381,88 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
         </div>
       </div>
     </div>
+  )
+}
+
+function MobileInstallCard() {
+  const [platform, setPlatform] = useState<"ios" | "android" | null>(null)
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(INSTALL_DISMISS_KEY) === "1"
+    } catch {
+      return true
+    }
+  })
+
+  useEffect(() => {
+    const update = () => setPlatform(detectMobileInstallPlatform())
+    update()
+
+    const standaloneQuery = window.matchMedia?.("(display-mode: standalone)")
+    standaloneQuery?.addEventListener?.("change", update)
+    window.addEventListener("appinstalled", update)
+    window.addEventListener("resize", update)
+    return () => {
+      standaloneQuery?.removeEventListener?.("change", update)
+      window.removeEventListener("appinstalled", update)
+      window.removeEventListener("resize", update)
+    }
+  }, [])
+
+  if (dismissed || !platform) return null
+
+  const steps =
+    platform === "ios"
+      ? ["Tap Share in the browser bar.", "Choose Add to Home Screen.", "Open Vanish from the new icon."]
+      : ["Open the browser menu.", "Choose Install app or Add to Home screen.", "Open Vanish from the new icon."]
+
+  function dismiss() {
+    setDismissed(true)
+    try {
+      localStorage.setItem(INSTALL_DISMISS_KEY, "1")
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2>Install Vanish</h2>
+      <p className="sub">Keep it on your Home Screen for a steadier mobile chat window.</p>
+      <ol className="steps" style={INSTALL_STEPS}>
+        {steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <button className="btn btn-block" onClick={dismiss}>
+        <Smartphone size={16} /> Done
+      </button>
+      <button className="btn btn-ghost btn-block" style={MT} onClick={dismiss}>
+        Not now
+      </button>
+    </div>
+  )
+}
+
+function detectMobileInstallPlatform(): "ios" | "android" | null {
+  if (isStandaloneDisplay()) return null
+
+  const ua = navigator.userAgent
+  const iPadOS = navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1
+  const ios = /iPad|iPhone|iPod/i.test(ua) || iPadOS
+  const android = /Android/i.test(ua)
+  const coarseMobile =
+    window.matchMedia?.("(pointer: coarse)").matches && Math.min(window.innerWidth, window.innerHeight) < 900
+
+  if (ios) return "ios"
+  if (android || coarseMobile) return "android"
+  return null
+}
+
+function isStandaloneDisplay() {
+  return (
+    window.matchMedia?.("(display-mode: standalone)").matches ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true
   )
 }
 
@@ -562,5 +647,6 @@ const STRONG = { color: "var(--text)" }
 const MT = { marginTop: "4px" }
 const MB = { marginBottom: "14px" }
 const NO_LIST = { listStyle: "none", padding: 0, margin: 0 }
+const INSTALL_STEPS = { marginTop: 0, marginBottom: "14px" }
 const HIDDEN = { display: "none" }
 const ONBOARD_CARD = { marginBottom: "18px" }
