@@ -6,6 +6,10 @@ import type { PruneRequest } from "../../shared/types"
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const body = await readJson<PruneRequest>(request)
   if (!body?.roomId || !body?.accessProof) return badRequest("missing roomId/accessProof")
+  if (body.all && !body.ownerProof) return badRequest("missing ownerProof")
+  if (!body.all && (!body.participantId || !body.participantProof)) {
+    return badRequest("missing participantId/participantProof")
+  }
   if (!body.all && (!body.messageIds || body.messageIds.length === 0)) {
     return badRequest("nothing to prune")
   }

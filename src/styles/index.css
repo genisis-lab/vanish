@@ -649,11 +649,16 @@ a {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 0 0 auto;
+  min-height: 0;
+  position: relative;
+  z-index: 15;
 }
 .composer-row {
   display: flex;
   align-items: flex-end;
   gap: 8px;
+  flex: 0 0 auto;
 }
 .composer .textarea {
   max-height: 140px;
@@ -892,6 +897,13 @@ a {
 .callout.warn {
   border-color: color-mix(in srgb, #fbbf24 40%, var(--line));
   background: color-mix(in srgb, #fbbf24 8%, var(--bg-soft));
+}
+.transparency-grid {
+  display: grid;
+  gap: 10px;
+}
+.transparency-grid .callout {
+  align-items: flex-start;
 }
 .badge-verified {
   display: inline-flex;

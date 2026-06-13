@@ -10,6 +10,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     !body?.roomId ||
     !body?.accessProof ||
     !body?.participantId ||
+    !body?.participantProof ||
     !body?.subscription?.endpoint
   ) {
     return badRequest("missing push subscription fields")

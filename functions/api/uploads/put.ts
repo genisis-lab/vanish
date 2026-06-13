@@ -26,6 +26,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   const buf = await request.arrayBuffer()
   if (buf.byteLength !== size) return badRequest("size mismatch")
+  if (await env.MEDIA.head(objectKey)) {
+    return json({ error: "object already exists" }, 409)
+  }
   await env.MEDIA.put(objectKey, buf, {
     httpMetadata: { contentType: "application/octet-stream" },
   })

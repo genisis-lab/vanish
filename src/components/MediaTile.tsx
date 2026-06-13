@@ -18,6 +18,8 @@ export function MediaTile({
   const [failed, setFailed] = useState(false)
   const alive = useRef(true)
   const isAudio = item.previewKind === "audio"
+  const autoDecryptAudio =
+    isAudio && (item.encryptedSize ?? Number.MAX_SAFE_INTEGER) <= AUTO_DECRYPT_AUDIO_BYTES
 
   useEffect(() => {
     alive.current = true
@@ -40,12 +42,12 @@ export function MediaTile({
     }
   }
 
-  // Voice notes auto-decrypt in the background (they're small), so a single
-  // tap on the play button starts playback immediately.
+  // Small voice notes auto-decrypt in the background, but large/suspicious
+  // audio requires a tap so another member cannot force big downloads on render.
   useEffect(() => {
-    if (isAudio && !url && !loading && !failed) void decrypt()
+    if (autoDecryptAudio && !url && !loading && !failed) void decrypt()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAudio])
+  }, [autoDecryptAudio])
 
   if (isAudio) {
     return (
@@ -56,6 +58,10 @@ export function MediaTile({
         ) : failed ? (
           <button type="button" className="btn" style={AUDIO_RETRY} onClick={decrypt}>
             Failed — tap to retry
+          </button>
+        ) : !autoDecryptAudio ? (
+          <button type="button" className="btn" style={AUDIO_RETRY} onClick={decrypt}>
+            Tap to decrypt · {formatBytes(item.size)}
           </button>
         ) : (
           <span style={AUDIO_LOADING}>
@@ -115,6 +121,8 @@ export function MediaTile({
     </button>
   )
 }
+
+const AUTO_DECRYPT_AUDIO_BYTES = 2 * 1024 * 1024
 
 // Minimal one-tap voice player: play/pause button, draggable progress bar and
 // a time readout. Replaces the old two-step flow (tap to decrypt, then tap the

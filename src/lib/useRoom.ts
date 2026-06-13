@@ -76,6 +76,7 @@ export interface RoomController {
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
   pruneAll: () => Promise<void>
+  wipeLocal: () => void
   deleteRoom: () => Promise<void>
   notifyTyping: () => void
   rename: (name: string) => void
@@ -89,6 +90,13 @@ export interface RoomController {
   toggleDecoy: () => void
 }
 
+function participantAuth(session: RoomSession) {
+  return {
+    participantId: session.participantId,
+    participantProof: session.participantProof,
+  }
+}
+
 export function useRoom(session: RoomSession): RoomController {
   const [messages, setMessages] = useState<DecryptedMessage[]>([])
   const [connState, setConnState] = useState<ConnState>("connecting")
@@ -96,7 +104,9 @@ export function useRoom(session: RoomSession): RoomController {
   const [room, setRoom] = useState<PublicRoomState | null>(null)
   const [topic, setTopicState] = useState("")
   const [bannedSelf, setBannedSelf] = useState(false)
-  const [decoyEnabled, setDecoyEnabled] = useState(false)
+  const [decoyEnabled, setDecoyEnabled] = useState(
+    () => !!vault.get(session.invite.roomId)?.decoyEnabled,
+  )
   const [typing, setTyping] = useState<TypingUser[]>([])
   const [othersSeenUpTo, setOthersSeenUpTo] = useState(0)
   const [seenBy, setSeenBy] = useState<Record<string, number>>({})
@@ -299,11 +309,12 @@ export function useRoom(session: RoomSession): RoomController {
         await api.session({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
-          participantId: session.participantId,
+          ...participantAuth(session),
         })
         const res = await api.listMessages({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          ...participantAuth(session),
           markReadFor: session.participantId,
         })
         if (cancelled) return
@@ -439,7 +450,7 @@ export function useRoom(session: RoomSession): RoomController {
         .session({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
-          participantId: session.participantId,
+          ...participantAuth(session),
         })
         .catch(() => {})
     }, 20000)
@@ -476,6 +487,7 @@ export function useRoom(session: RoomSession): RoomController {
         await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           message: {
             id,
             participantId: session.participantId,
@@ -496,7 +508,13 @@ export function useRoom(session: RoomSession): RoomController {
     }
   }, [decoyEnabled, session])
 
-  const toggleDecoy = useCallback(() => setDecoyEnabled((v) => !v), [])
+  const toggleDecoy = useCallback(() => {
+    setDecoyEnabled((v) => {
+      const next = !v
+      vault.setDecoyEnabled(session.invite.roomId, next)
+      return next
+    })
+  }, [session.invite.roomId])
 
   const sendText = useCallback(
     async (text: string, opts?: SendOpts) => {
@@ -526,6 +544,7 @@ export function useRoom(session: RoomSession): RoomController {
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           message: {
             id,
             participantId: session.participantId,
@@ -624,6 +643,7 @@ export function useRoom(session: RoomSession): RoomController {
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           message: {
             id,
             participantId: session.participantId,
@@ -672,6 +692,7 @@ export function useRoom(session: RoomSession): RoomController {
         const res = await api.postMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           message: {
             id,
             participantId: session.participantId,
@@ -716,6 +737,7 @@ export function useRoom(session: RoomSession): RoomController {
         const res = await api.editMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           messageId: id,
           participantId: session.participantId,
           envelope,
@@ -756,6 +778,7 @@ export function useRoom(session: RoomSession): RoomController {
         const res = await api.deleteOwnMessage({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           messageId: id,
           participantId: session.participantId,
         })
@@ -789,6 +812,7 @@ export function useRoom(session: RoomSession): RoomController {
         await api.react({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          participantProof: session.participantProof,
           messageId,
           reactionId: rid,
           participantId: session.participantId,
@@ -811,14 +835,15 @@ export function useRoom(session: RoomSession): RoomController {
   const prune = useCallback(
     async (ids: string[]) => {
       if (ids.length === 0) return
-      for (const id of ids) storedById.current.delete(id)
-      void recompute()
       try {
-        await api.prune({
+        const res = await api.prune({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
+          ...participantAuth(session),
           messageIds: ids,
         })
+        for (const id of res.removedIds) storedById.current.delete(id)
+        void recompute()
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to prune")
       }
@@ -827,18 +852,42 @@ export function useRoom(session: RoomSession): RoomController {
   )
 
   const pruneAll = useCallback(async () => {
-    storedById.current.clear()
-    void recompute()
+    if (!session.ownerSecret) {
+      setError("Only the room owner can clear the whole room")
+      return
+    }
     try {
-      await api.prune({ roomId: session.invite.roomId, accessProof: session.keys.accessProof, all: true })
+      const res = await api.prune({
+        roomId: session.invite.roomId,
+        accessProof: session.keys.accessProof,
+        ownerProof: session.ownerSecret,
+        all: true,
+      })
+      for (const id of res.removedIds) storedById.current.delete(id)
+      void recompute()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to prune")
     }
   }, [session, recompute])
 
+  const wipeLocal = useCallback(() => {
+    storedById.current.clear()
+    pendingById.current.clear()
+    pendingMediaById.current.clear()
+    decodeCache.current.clear()
+    noticesRef.current = []
+    rt.current?.stop()
+    vault.forget(session.invite.roomId)
+    setMessages([])
+  }, [session.invite.roomId])
+
   const deleteRoom = useCallback(async () => {
+    if (!session.ownerSecret) {
+      setError("Only the room owner can delete the room")
+      return
+    }
     try {
-      await api.deleteRoom(session.invite.roomId, session.keys.accessProof)
+      await api.deleteRoom(session.invite.roomId, session.keys.accessProof, session.ownerSecret)
       vault.forget(session.invite.roomId)
       setDeleted(true)
     } catch (e) {
@@ -966,6 +1015,7 @@ export function useRoom(session: RoomSession): RoomController {
       toggleReaction,
       prune,
       pruneAll,
+      wipeLocal,
       deleteRoom,
       notifyTyping,
       rename,
@@ -999,6 +1049,7 @@ export function useRoom(session: RoomSession): RoomController {
       toggleReaction,
       prune,
       pruneAll,
+      wipeLocal,
       deleteRoom,
       notifyTyping,
       rename,
