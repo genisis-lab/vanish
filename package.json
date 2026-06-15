@@ -39,7 +39,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "happy-dom": "^20.10.2",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.0",
+    "typescript": "^6.0.3",
     "vite": "^6.0.0",
     "vitest": "^4.1.8",
     "wrangler": "^4.0.0"
