@@ -171,45 +171,43 @@ void setupNativeShell()
 
 // ---------- mobile keyboard / viewport ----------
 //
-// The chat shell is a fixed, full-height surface. We size it to the LAYOUT
-// viewport (documentElement.clientHeight), which — unlike visualViewport.height
-// — does not shrink when the on-screen keyboard overlays the page. The keyboard
-// is handled purely as bottom padding (--kb): the slice of the layout viewport
-// the keyboard currently covers. This is deliberate. Previously we mirrored
-// visualViewport.height into the shell's height and visualViewport.offsetTop
-// into its `top`, but iOS fires noisy resize/scroll events when you refocus the
-// composer while the keyboard is already open (the 2nd/3rd tap), and a single
-// bad reading would collapse or shove the whole composer to the top of the
-// screen. Driving only the padding means a stray reading can at most nudge the
-// gap for one frame; the shell itself never moves.
+// The chat shell is a position:fixed surface. To keep it glued to what the user
+// can actually see, we size it to the *visual* viewport (visualViewport.height)
+// and pin it to the visual viewport's top offset (visualViewport.offsetTop),
+// republished as the CSS vars --app-vh and --vv-top. iOS shrinks and/or offsets
+// the visual viewport when the on-screen keyboard opens; a shell that instead
+// spans the full (unshrinking) layout viewport gets its top slid off-screen,
+// flinging the composer to the top with empty space below it — the bug this
+// replaces. A rAF debounce (scheduleViewportSync) plus a sanity floor on the
+// height reading absorb the noisy resize/scroll events iOS fires on refocus.
 function syncViewport() {
   const root = document.documentElement.style
   const vv = window.visualViewport
   const chatMounted = document.querySelector(".app > .chat")
-  const focused = document.activeElement
-  const textEntryFocused =
-    focused instanceof HTMLElement &&
-    (focused.isContentEditable || focused.matches("input, textarea, [contenteditable]"))
 
   if (!chatMounted || !vv) {
     root.setProperty("--app-vh", "100svh")
     root.setProperty("--kb", "0px")
+    root.setProperty("--vv-top", "0px")
     return
   }
 
-  // Stable full-height shell, pinned to the top of the layout viewport. The
-  // layout viewport does not shrink under the keyboard, so this never collapses.
+  // Size the shell to the *visual* viewport (the slice still visible above the
+  // keyboard) and pin it to that viewport's top offset, so the fixed panel
+  // always overlays exactly what the user can see and the composer stays parked
+  // just above the keyboard. Tracking visualViewport.offsetTop is the key fix:
+  // when the chat body can't scroll, iOS reveals the caret by shifting the
+  // visual viewport (not window.scrollY), which a full-layout-height shell
+  // cannot follow, so its top slid off-screen and flung the composer upward.
   const layoutH = document.documentElement.clientHeight
-  root.setProperty("--app-vh", layoutH + "px")
-
-  // Only reserve room for the keyboard while a text field is focused (or in a
-  // standalone PWA, which has no browser chrome to confuse the math).
-  if (isStandaloneDisplay() || textEntryFocused) {
-    const keyboard = Math.max(0, Math.round(layoutH - vv.height - vv.offsetTop))
-    root.setProperty("--kb", keyboard + "px")
-  } else {
-    root.setProperty("--kb", "0px")
+  const visibleH = Math.round(vv.height)
+  // Ignore transient near-zero readings iOS fires mid keyboard-animation, which
+  // would otherwise collapse the shell for a frame.
+  if (visibleH > 0 && visibleH >= layoutH * 0.25) {
+    root.setProperty("--app-vh", visibleH + "px")
+    root.setProperty("--vv-top", Math.max(0, Math.round(vv.offsetTop)) + "px")
   }
+  root.setProperty("--kb", "0px")
 }
 
 // The real cause of "composer jumps to the top on the 2nd/3rd tap": the chat
