@@ -147,17 +147,17 @@
 
 /* ============================================================
    Mobile viewport / keyboard handling
-   The chat shell is a fixed, full-height surface pinned to the top of the
-   layout viewport. Crucially it is sized to documentElement.clientHeight (the
-   LAYOUT viewport), which does not shrink when the mobile keyboard overlays the
-   page — so the shell can never collapse or get flung around by the noisy
-   resize/scroll events iOS fires when you refocus the composer. The on-screen
-   keyboard is accounted for purely as bottom padding (--kb), which lifts the
-   composer above the keyboard without moving the shell itself.
+   The chat shell is a fixed surface pinned to the visual viewport. It is sized
+   to visualViewport.height and offset by visualViewport.offsetTop (republished
+   by syncViewport as --app-vh and --vv-top), so it always overlays exactly the
+   area the user can see above the on-screen keyboard. Pinning to --vv-top is
+   what keeps the composer just above the keyboard instead of being flung to the
+   top of the screen when iOS shifts the visual viewport to reveal the caret.
    ============================================================ */
 :root {
   --app-vh: 100svh;
   --kb: 0px;
+  --vv-top: 0px;
 }
 html:has(.chat),
 body:has(.chat) {
@@ -172,7 +172,7 @@ body:has(.chat) {
 }
 .app:has(> .chat) {
   position: fixed;
-  top: 0;
+  top: var(--vv-top);
   left: 0;
   right: 0;
   height: var(--app-vh);
