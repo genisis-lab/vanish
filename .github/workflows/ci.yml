@@ -13,6 +13,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Security audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
