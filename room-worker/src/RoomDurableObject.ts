@@ -23,8 +23,6 @@ import type {
   EncryptedMediaRef,
   ListMessagesRequest,
   OwnerActionRequest,
-  OwnerQueryParticipant,
-  OwnerQueryRequest,
   PostMessageRequest,
   PruneRequest,
   PushSubscribeRequest,
@@ -63,9 +61,11 @@ export interface RoomEnv {
 interface Session {
   ws: WebSocket
   participantId: string
-  ip: string | null
 }
 
+// A stored Web Push registration. The endpoint + keys are opaque routing data
+// for the push service; participantId lets us skip pushing to someone who is
+// already connected over a live socket or has a fresh visible-room heartbeat.
 interface PushRecord {
   sub: PushSubscription
   participantId: string
@@ -75,10 +75,16 @@ interface PushRecord {
 const SNAPSHOT_KEY = "snapshot"
 const PUSH_KEY = "pushSubs"
 const PUSH_FOREGROUND_SUPPRESS_MS = 30_000
+// Signalling frames (typing/seen) are cheap, so they get a more generous rate
+// limit than message sends — but they are still bounded to stop floods.
 const SIGNAL_RATE_LIMIT = MESSAGE_RATE_LIMIT * 4
+// Hard cap on a relayed WebSocket frame. Signal frames are tiny; anything
+// larger is dropped without parsing.
 const MAX_WS_FRAME_CHARS = 16_384
+// Push endpoints are URLs we POST to; keep them sane.
 const MAX_PUSH_ENDPOINT_CHARS = 2048
 const MAX_PUSH_KEY_CHARS = 512
+// A message may reference at most this many media objects.
 const MAX_MEDIA_REFS = 10
 
 export class RoomDurableObject {
@@ -86,8 +92,13 @@ export class RoomDurableObject {
   private env: RoomEnv
   private core: RoomCore
   private sessions = new Set<Session>()
+  // Short-lived signalling frames (typing/seen) buffered so clients on the
+  // polling fallback can receive them via the list response. In-memory only.
   private recentSignals: Array<{ at: number; frame: RealtimeFrame }> = []
+  // Per-participant send timestamps for rate limiting. In-memory only.
   private rate = new Map<string, number[]>()
+  // Lazily-loaded Web Push registrations, keyed by endpoint. Persisted so they
+  // survive hibernation; null until first read.
   private pushSubs: Map<string, PushRecord> | null = null
   private loaded = false
 
@@ -110,8 +121,12 @@ export class RoomDurableObject {
     if (!this.loaded) await this.state.blockConcurrencyWhile(async () => {})
   }
 
+  // ---------- routing ----------
+
   async fetch(request: Request): Promise<Response> {
     await this.ensureLoaded()
+    // Enforce room self-destruct before handling any op, so an expired room
+    // behaves as deleted even if the alarm has not fired yet.
     if (await this.enforceLifetime(Date.now())) {
       const url = new URL(request.url)
       if (url.pathname.replace(/^\//, "") === "ws") {
@@ -146,8 +161,6 @@ export class RoomDurableObject {
           return this.opSetTopic(body as unknown as SetTopicRequest)
         case "owner-action":
           return this.opOwnerAction(body as unknown as OwnerActionRequest)
-        case "owner-query":
-          return this.opOwnerQuery(body as unknown as OwnerQueryRequest)
         case "message":
           return this.opMessage(body as unknown as PostMessageRequest)
         case "edit":
@@ -176,12 +189,16 @@ export class RoomDurableObject {
     }
   }
 
+  // ---------- proof gates ----------
+
   private async verifyProof(accessProof: string | undefined): Promise<boolean> {
     if (!accessProof || typeof accessProof !== "string") return false
     const hash = await hashAccessProof(accessProof)
     return this.core.verifyHash(hash)
   }
 
+  // Owner proof-of-possession: the raw owner secret hashes to the stored owner
+  // verifier. Distinct from the access proof so only the creator can moderate.
   private async verifyOwnerProof(ownerProof: string | undefined): Promise<boolean> {
     if (!ownerProof || typeof ownerProof !== "string") return false
     const hash = await hashAccessProof(ownerProof)
@@ -217,6 +234,7 @@ export class RoomDurableObject {
     return this.core.verifyParticipant(req.participantId, proofHash)
   }
 
+  // Sliding-window per-participant rate limiter. Best-effort; in-memory only.
   private allowRate(id: string, now: number, limit = MESSAGE_RATE_LIMIT): boolean {
     const arr = (this.rate.get(id) ?? []).filter((t) => now - t < MESSAGE_RATE_WINDOW_MS)
     if (arr.length >= limit) {
@@ -228,10 +246,16 @@ export class RoomDurableObject {
     return true
   }
 
+  // Generic guard for client-supplied identifier strings (message ids,
+  // participant ids). Bounded so ids can't be used to bloat storage.
   private validId(id: unknown): id is string {
     return typeof id === "string" && id.length > 0 && id.length <= MAX_ID_CHARS
   }
 
+  // Media refs must point inside THIS room's R2 prefix and match the exact key
+  // pattern minted by /api/uploads/sign. Without this check a sender could
+  // attach another room's object keys to a message and have our expiry sweeps
+  // delete that other room's media (cross-room deletion).
   private validMediaRefs(media: EncryptedMediaRef[] | undefined, roomId: string): boolean {
     if (media === undefined || media === null) return true
     if (!Array.isArray(media) || media.length > MAX_MEDIA_REFS) return false
@@ -247,6 +271,8 @@ export class RoomDurableObject {
     return true
   }
 
+  // Push endpoints are URLs this object POSTs to, so they must be real https
+  // URLs — this stops the worker being used as a generic request proxy (SSRF).
   private validPushEndpoint(endpoint: unknown): endpoint is string {
     if (typeof endpoint !== "string" || !endpoint || endpoint.length > MAX_PUSH_ENDPOINT_CHARS) {
       return false
@@ -258,14 +284,13 @@ export class RoomDurableObject {
     }
   }
 
-  private extractClientIp(headers: Headers, fallback?: string | null): string | null {
-    const forwarded = headers.get("cf-connecting-ip") ?? headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    return (forwarded || fallback || null) as string | null
-  }
+  // ---------- operations ----------
 
   private async opCreate(req: CreateRoomRequest): Promise<Response> {
     const now = Date.now()
     if (!req.roomId || !req.accessProofHash) return json({ error: "missing fields" }, 400)
+    // Room ids become R2 key prefixes and DO names; reject anything that could
+    // collide with another room's prefix (e.g. ids containing "/").
     if (!isValidRoomId(req.roomId)) return json({ error: "bad room id" }, 400)
     if (typeof req.accessProofHash !== "string" || req.accessProofHash.length > 200) {
       return json({ error: "bad verifier" }, 400)
@@ -291,6 +316,7 @@ export class RoomDurableObject {
       now,
     })
     await this.persist()
+    // A room with a lifetime needs an alarm even if no message is ever sent.
     await this.scheduleSweep()
     return json({ room: this.core.publicState(now) })
   }
@@ -305,14 +331,11 @@ export class RoomDurableObject {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
-    const clientIp = typeof req.clientIp === "string" ? req.clientIp : null
-    if (clientIp && this.core.isIpBanned(clientIp)) return json({ error: "forbidden" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return json({ error: "expired" }, 410)
     if (!(await this.registerParticipantProof(req))) {
       return json({ error: "bad participant proof" }, 403)
     }
-    if (clientIp) this.core.recordParticipantIp(req.participantId, clientIp)
     await this.persist()
     this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
     return json({ room: this.core.publicState(now) })
@@ -340,6 +363,7 @@ export class RoomDurableObject {
     return json({ room: this.core.publicState(now) })
   }
 
+  // Owner-gated: set or clear the opaque encrypted room topic, then notify peers.
   private async opSetTopic(req: SetTopicRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
@@ -354,6 +378,8 @@ export class RoomDurableObject {
     return json({ room: state })
   }
 
+  // Owner-gated moderation: ban/unban a participant, clear all messages, or
+  // destroy the whole room.
   private async opOwnerAction(req: OwnerActionRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
@@ -363,12 +389,15 @@ export class RoomDurableObject {
         if (!req.targetParticipantId) return json({ error: "missing target" }, 400)
         this.core.banParticipant(req.targetParticipantId)
         await this.persist()
+        // Notify the banned device, then drop its live sockets.
         this.broadcast({ t: "banned", participantId: req.targetParticipantId })
         for (const s of this.sessions) {
           if (s.participantId === req.targetParticipantId) {
             try {
               s.ws.close(1008, "banned")
-            } catch {}
+            } catch {
+              /* ignore */
+            }
             this.sessions.delete(s)
           }
         }
@@ -385,31 +414,6 @@ export class RoomDurableObject {
         if (state) this.broadcast({ t: "room-updated", room: state })
         return json({ room: state })
       }
-      case "ip-ban": {
-        if (!req.targetIp || typeof req.targetIp !== "string") {
-          return json({ error: "missing targetIp" }, 400)
-        }
-        this.core.banIp(req.targetIp)
-        await this.persist()
-        for (const s of this.sessions) {
-          if (s.ip === req.targetIp) {
-            try {
-              s.ws.close(1008, "banned")
-            } catch {}
-            this.sessions.delete(s)
-          }
-        }
-        this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
-        return json({ ok: true })
-      }
-      case "ip-unban": {
-        if (!req.targetIp || typeof req.targetIp !== "string") {
-          return json({ error: "missing targetIp" }, 400)
-        }
-        this.core.unbanIp(req.targetIp)
-        await this.persist()
-        return json({ ok: true })
-      }
       case "clear": {
         const result = this.core.pruneAll()
         await this.persist()
@@ -424,28 +428,6 @@ export class RoomDurableObject {
       default:
         return json({ error: "unknown action" }, 400)
     }
-  }
-
-  private async opOwnerQuery(req: OwnerQueryRequest): Promise<Response> {
-    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
-    if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
-    const room = this.core.getRoom()
-    const bannedSet = new Set(room?.banned ?? [])
-    const ipBanned = this.core.getIpBannedList()
-    const ipBannedSet = new Set(ipBanned)
-    let participants: OwnerQueryParticipant[] = this.core.getParticipantIps().map((p) => ({
-      participantId: p.participantId,
-      ip: p.ip,
-      lastSeen: p.lastSeen,
-      banned: bannedSet.has(p.participantId),
-      ipBanned: p.ip !== null && ipBannedSet.has(p.ip),
-    }))
-    if (req.searchIp) {
-      const q = req.searchIp.trim().toLowerCase()
-      if (q) participants = participants.filter((p) => p.ip?.toLowerCase().includes(q) ?? false)
-    }
-    participants.sort((a, b) => b.lastSeen - a.lastSeen)
-    return json({ participants, ipBanned })
   }
 
   private async opMessage(req: PostMessageRequest): Promise<Response> {
@@ -465,8 +447,10 @@ export class RoomDurableObject {
     if (this.core.isBanned(req.message.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
     if (this.core.isInviteExpired(now) && req.message.kind !== "system") {
+      // Expired invites block new joins/sends but existing data is preserved.
       return json({ error: "expired" }, 410)
     }
+    // Abuse controls: validate shapes, cap envelope size, rate-limit per sender.
     if (typeof req.message.envelope !== "string") return json({ error: "bad message" }, 400)
     if (req.message.envelope.length > MAX_ENVELOPE_CHARS) {
       return json({ error: "message too large" }, 413)
@@ -495,8 +479,15 @@ export class RoomDurableObject {
       },
       now,
     )
+    // Deliver to connected peers immediately, before the storage round-trips
+    // (persist + alarm scheduling), so realtime delivery feels instant.
+    // Durability follows right after; a crash in the gap at worst drops a
+    // single just-sent message, which the sender can resend.
     this.broadcast({ t: "message", message })
+    // Wake background/closed devices via Web Push. Fire-and-forget so it never
+    // blocks the send; only real content triggers it.
     if (req.message.kind !== "system") void this.sendPushNotifications(message)
+    // Rolling per-room cap: prune the oldest messages beyond the ceiling.
     const all = this.core.list(now)
     if (all.length > MAX_MESSAGES_PER_ROOM) {
       const overflow = all.slice(0, all.length - MAX_MESSAGES_PER_ROOM).map((m) => m.id)
@@ -509,6 +500,10 @@ export class RoomDurableObject {
     return json({ message })
   }
 
+  // Replace the caller's own message envelope (edit-your-own). The plaintext is
+  // re-encrypted + re-signed client-side; we only swap one opaque envelope for
+  // another. Broadcast a dedicated "edit" frame so peers update in place without
+  // re-notifying or re-ordering.
   private async opEdit(req: EditMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
@@ -534,6 +529,8 @@ export class RoomDurableObject {
     return json({ message })
   }
 
+  // Soft-delete the caller's own message, leaving a tombstone and freeing any
+  // backing R2 bytes. Broadcast as an "edit" frame (same in-place update path).
   private async opDeleteOwn(req: DeleteOwnMessageRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
@@ -562,6 +559,7 @@ export class RoomDurableObject {
     if (!(await this.verifyParticipantProof(req))) {
       return json({ error: "bad participant proof" }, 403)
     }
+    // Banned participants keep the access proof but lose room capabilities.
     if (this.core.isBanned(req.participantId)) {
       return json({ error: "banned" }, 403)
     }
@@ -571,6 +569,7 @@ export class RoomDurableObject {
     let messages = this.core.list(now)
     if (typeof req.since === "number") messages = messages.filter((m) => m.createdAt > req.since!)
 
+    // burn-after-read: mark read for this reader (removes others' burn msgs)
     if (req.markReadFor) {
       const { burnedIds, orphanObjectKeys } = this.core.markRead(req.markReadFor, now)
       if (burnedIds.length) {
@@ -629,6 +628,7 @@ export class RoomDurableObject {
       envelope: req.envelope,
     })
     if (!m) return json({ error: "not found" }, 404)
+    // Broadcast first for snappy delivery; persist the updated state after.
     this.broadcast({
       t: "react",
       messageId: req.messageId,
@@ -678,6 +678,8 @@ export class RoomDurableObject {
     return json({ ok: true })
   }
 
+  // ---------- web push ----------
+
   private async getPushSubs(): Promise<Map<string, PushRecord>> {
     if (this.pushSubs) return this.pushSubs
     const obj = (await this.state.storage.get<Record<string, PushRecord>>(PUSH_KEY)) ?? {}
@@ -716,6 +718,8 @@ export class RoomDurableObject {
       return json({ error: "bad subscription" }, 400)
     }
     const subs = await this.getPushSubs()
+    // Cap stored registrations per room so push state can't grow unbounded;
+    // evict the oldest registration when full.
     if (!subs.has(s.endpoint) && subs.size >= MAX_PUSH_SUBSCRIPTIONS) {
       let oldestKey: string | null = null
       let oldestAt = Infinity
@@ -744,6 +748,10 @@ export class RoomDurableObject {
     return json({ ok: true })
   }
 
+  // Best-effort background fan-out. Skips the sender, anyone currently
+  // connected over a live socket (they already got the realtime frame), and
+  // anyone with a fresh room heartbeat (mobile/polling fallback while visible).
+  // Payloads carry no message content — the server can't read it anyway.
   private async sendPushNotifications(message: StoredMessage): Promise<void> {
     const vapid = this.vapid()
     if (!vapid) return
@@ -764,7 +772,9 @@ export class RoomDurableObject {
         try {
           const status = await sendWebPush(rec.sub, payload, vapid)
           if (status === 404 || status === 410) dead.push(rec.sub.endpoint)
-        } catch {}
+        } catch {
+          /* best effort */
+        }
       }),
     )
     if (dead.length) {
@@ -773,10 +783,19 @@ export class RoomDurableObject {
     }
   }
 
+  // ---------- realtime ----------
+
   private async handleWebSocket(request: Request, url: URL): Promise<Response> {
     if (request.headers.get("Upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 })
     }
+    // Proofs arrive in the WebSocket subprotocol (the Sec-WebSocket-Protocol
+    // header) so they never appear in request URLs, CDN logs, or Referer
+    // headers. Token order is positional:
+    //   [0] "vanish.v1" marker, [1] accessProof, [2] participantId, [3] participantProof
+    // Values are encodeURIComponent'd by the client; decode defensively. Older
+    // clients that still put the proofs in the query string keep working via
+    // the fallback below.
     const offered = (request.headers.get("Sec-WebSocket-Protocol") ?? "")
       .split(",")
       .map((s) => s.trim())
@@ -795,8 +814,6 @@ export class RoomDurableObject {
       ? dec(offered[2]) || "anon"
       : (url.searchParams.get("u") ?? "anon")
     const participantProof = usedSubprotocol ? dec(offered[3]) : (url.searchParams.get("pp") ?? "")
-    const clientIp = this.extractClientIp(request.headers)
-
     if (!(await this.verifyProof(accessProof))) {
       return new Response("forbidden", { status: 403 })
     }
@@ -805,7 +822,6 @@ export class RoomDurableObject {
       return new Response("bad participant proof", { status: 403 })
     }
     if (this.core.isBanned(participantId)) return new Response("banned", { status: 403 })
-    if (clientIp && this.core.isIpBanned(clientIp)) return new Response("forbidden", { status: 403 })
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return new Response("expired", { status: 410 })
 
@@ -813,10 +829,9 @@ export class RoomDurableObject {
     const client = pair[0]
     const server = pair[1]
     server.accept()
-    const session: Session = { ws: server, participantId, ip: clientIp }
+    const session: Session = { ws: server, participantId }
     this.sessions.add(session)
     this.core.touchParticipant(participantId, now)
-    if (clientIp) this.core.recordParticipantIp(participantId, clientIp)
 
     server.addEventListener("message", (event: MessageEvent) => {
       this.onClientFrame(session, event.data)
@@ -831,10 +846,15 @@ export class RoomDurableObject {
     this.send(session, { t: "hello", serverTime: now, participantCount: this.core.participantCount(now) })
     this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
 
+    // Echo the negotiated subprotocol NAME only (never the proof tokens) so the
+    // browser completes the handshake. Legacy query-param clients get no header.
     const wsHeaders = usedSubprotocol ? { "Sec-WebSocket-Protocol": "vanish.v1" } : undefined
     return new Response(null, { status: 101, webSocket: client, headers: wsHeaders })
   }
 
+  // Client frames are opaque signalling (typing/presence/seen). Content stays
+  // encrypted; we just relay envelopes between peers. Oversized or overly
+  // frequent frames are dropped before they reach anyone.
   private onClientFrame(session: Session, raw: string | ArrayBuffer): void {
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     if (text.length > MAX_WS_FRAME_CHARS) return
@@ -870,6 +890,8 @@ export class RoomDurableObject {
     }
   }
 
+  // Buffer a signalling frame for polling clients; ephemeral, capped, and
+  // pruned to the last 15s so stale typing never replays.
   private recordSignal(frame: RealtimeFrame): void {
     const at = Date.now()
     this.recentSignals.push({ at, frame })
@@ -897,6 +919,8 @@ export class RoomDurableObject {
     }
   }
 
+  // ---------- expiry alarm ----------
+
   private async scheduleSweep(): Promise<void> {
     const next = this.core.nextExpiry()
     if (next === null) return
@@ -909,6 +933,7 @@ export class RoomDurableObject {
   async alarm(): Promise<void> {
     await this.ensureLoaded()
     const now = Date.now()
+    // Whole-room self-destruct takes priority over per-message sweeps.
     if (await this.enforceLifetime(now)) return
     const swept = this.core.sweep(now)
     if (swept.removedIds.length) {
@@ -919,33 +944,42 @@ export class RoomDurableObject {
     await this.scheduleSweep()
   }
 
+  /** If the room has passed its self-destruct time, wipe it. Returns true if so. */
   private async enforceLifetime(now: number): Promise<boolean> {
     if (!this.core.isRoomDestroyed(now)) return false
     await this.destroyRoom(now)
     return true
   }
 
+  /** Tear down the room: clear data, delete R2 objects, notify and drop clients. */
   private async destroyRoom(now: number): Promise<void> {
     const keys = this.core.deleteRoom(now)
     await this.persist()
     await this.deleteAllRoomObjects()
     if (keys.length) await this.deleteObjects(keys)
+    // Drop any push registrations along with the room data.
     this.pushSubs = new Map()
     await this.state.storage.delete(PUSH_KEY)
     this.broadcast({ t: "room-deleted" })
     for (const s of this.sessions) {
       try {
         s.ws.close(1000, "room closed")
-      } catch {}
+      } catch {
+        /* ignore */
+      }
     }
     this.sessions.clear()
   }
+
+  // ---------- R2 cleanup ----------
 
   private async deleteObjects(keys: string[]): Promise<void> {
     if (!keys.length || !this.env.MEDIA) return
     try {
       await this.env.MEDIA.delete(keys)
-    } catch {}
+    } catch {
+      /* best effort */
+    }
   }
 
   private async deleteAllRoomObjects(): Promise<void> {
@@ -960,7 +994,9 @@ export class RoomDurableObject {
         if (keys.length) await this.env.MEDIA.delete(keys)
         cursor = listed.truncated ? listed.cursor : undefined
       } while (cursor)
-    } catch {}
+    } catch {
+      /* best effort */
+    }
   }
 }
 
