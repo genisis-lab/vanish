@@ -27,16 +27,12 @@ export interface RoomRecord {
   topicEnvelope: string | null
   /** Participant ids the owner has banned from the room. */
   banned: string[]
-  /** IP addresses the owner has banned from the room. */
-  ipBanned: string[]
 }
 
 export interface ParticipantRecord {
   lastSeen: number
   /** SHA-256(participantProof); absent only for pre-upgrade legacy presence rows. */
   proofHash?: string
-  /** Last recorded connecting IP address for this participant. */
-  ip?: string
 }
 
 export interface RoomSnapshot {
@@ -75,7 +71,6 @@ export class RoomCore {
       if (this.room.ownerKeyHash === undefined) this.room.ownerKeyHash = null
       if (this.room.topicEnvelope === undefined) this.room.topicEnvelope = null
       if (this.room.banned === undefined) this.room.banned = []
-      if (this.room.ipBanned === undefined) this.room.ipBanned = []
     }
     this.messages = new Map((snapshot?.messages ?? []).map((m) => [m.id, m]))
     this.participants = new Map(
@@ -124,7 +119,6 @@ export class RoomCore {
       ownerKeyHash: input.ownerKeyHash ?? null,
       topicEnvelope: input.topicEnvelope ?? null,
       banned: [],
-      ipBanned: [],
     }
     this.messages.clear()
     this.participants.clear()
@@ -210,27 +204,6 @@ export class RoomCore {
     return !!this.room && this.room.banned.includes(participantId)
   }
 
-  // ---------- IP bans ----------
-
-  banIp(ip: string): void {
-    if (!this.room || this.room.deletedAt !== null || !ip) return
-    if (!this.room.ipBanned.includes(ip)) this.room.ipBanned.push(ip)
-  }
-
-  unbanIp(ip: string): void {
-    if (!this.room || this.room.deletedAt !== null) return
-    this.room.ipBanned = this.room.ipBanned.filter((b) => b !== ip)
-  }
-
-  isIpBanned(ip: string | null | undefined): boolean {
-    if (!ip || !this.room || this.room.deletedAt !== null) return false
-    return this.room.ipBanned.includes(ip)
-  }
-
-  getIpBannedList(): string[] {
-    return [...(this.room?.ipBanned ?? [])]
-  }
-
   deleteRoom(now: number): string[] {
     const orphanKeys = this.allObjectKeys()
     if (this.room) this.room.deletedAt = now
@@ -254,7 +227,7 @@ export class RoomCore {
     if (!participantId || !proofHash) return false
     const prev = this.participants.get(participantId)
     if (prev?.proofHash && !timingSafeEqual(prev.proofHash, proofHash)) return false
-    this.participants.set(participantId, { ...prev, lastSeen: now, proofHash })
+    this.participants.set(participantId, { lastSeen: now, proofHash })
     return true
   }
 
@@ -275,20 +248,6 @@ export class RoomCore {
       if (now - lastSeen <= windowMs) count++
     }
     return count
-  }
-
-  recordParticipantIp(participantId: string, ip: string): void {
-    const prev = this.participants.get(participantId)
-    if (!prev) return
-    this.participants.set(participantId, { ...prev, ip })
-  }
-
-  getParticipantIps(): Array<{ participantId: string; ip: string | null; lastSeen: number }> {
-    return Array.from(this.participants.entries()).map(([participantId, rec]) => ({
-      participantId,
-      ip: rec.ip ?? null,
-      lastSeen: rec.lastSeen,
-    }))
   }
 
   // ---------- messages ----------
