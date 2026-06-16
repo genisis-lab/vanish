@@ -50,8 +50,9 @@ import { InvitePanel } from "./InvitePanel"
 import { SafetyPanel } from "./SafetyPanel"
 import { SecurityTransparency } from "./SecurityTransparency"
 import { MediaViewer } from "./MediaViewer"
+import { OwnerPanel } from "./OwnerPanel"
 
-type Panel = "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | null
+type Panel = "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | "owner" | null
 
 export function ChatRoom({
   session,
@@ -91,8 +92,6 @@ export function ChatRoom({
 
   useEffect(() => () => revokeAllObjectUrls(), [])
 
-  // Privacy veil: blur the conversation whenever the tab loses focus, so a
-  // glance over your shoulder (or an app switcher preview) reveals nothing.
   useEffect(() => {
     const onVis = () => {
       const away = document.visibilityState === "hidden"
@@ -114,8 +113,6 @@ export function ChatRoom({
     }
   }, [])
 
-  // Unread title badge + notification sound for messages that arrive while the
-  // tab is in the background. Muted rooms stay silent (badge still updates).
   useEffect(() => {
     const msgs = room.messages
     const added = msgs.length - unreadLen.current
@@ -133,8 +130,6 @@ export function ChatRoom({
     document.title = unread > 0 ? `(${unread}) Vanish` : "Vanish"
   }, [unread])
 
-  // When the visible viewport shrinks (mobile keyboard opening), keep the
-  // latest messages in view if the user was already at the bottom.
   useEffect(() => {
     const vv = window.visualViewport
     if (!vv) return
@@ -159,7 +154,6 @@ export function ChatRoom({
     }
   }, [room.deleted, toast])
 
-  // Auto-scroll only when the user is near the bottom; otherwise surface a pill.
   useEffect(() => {
     const grew = room.messages.length > lastCount.current
     lastCount.current = room.messages.length
@@ -173,8 +167,6 @@ export function ChatRoom({
     }
   }, [room.messages.length])
 
-  // Tell peers how far we've read so they get per-person read receipts. Fires
-  // when new messages arrive (while visible) and when the tab regains focus.
   useEffect(() => {
     const markIfVisible = () => {
       if (document.visibilityState === "hidden") return
@@ -208,9 +200,6 @@ export function ChatRoom({
     setShowJump(false)
   }
 
-  // Scroll to a quoted message and briefly highlight it (inline style only, so
-  // no global CSS is required). Stable identity so it doesn't re-render every
-  // memoized MessageItem.
   const jumpToMessage = useCallback((id: string) => {
     const el = scrollRef.current?.querySelector(`[data-mid="${id}"]`) as HTMLElement | null
     if (!el) return
@@ -223,8 +212,6 @@ export function ChatRoom({
     }, 1100)
   }, [])
 
-  // Client-side search across the decrypted conversation. Everything stays on
-  // this device — the server never sees the query (it can't search ciphertext).
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (q.length < 2) return [] as string[]
@@ -438,8 +425,6 @@ export function ChatRoom({
     return "Several people are typing…"
   }, [room.typing])
 
-  // Id of my most recent (non-deleted) message — the only one we annotate with
-  // per-person read receipts, to avoid cluttering every bubble.
   const lastMineId = useMemo(() => {
     for (let i = room.messages.length - 1; i >= 0; i--) {
       const m = room.messages[i]
@@ -448,8 +433,6 @@ export function ChatRoom({
     return null
   }, [room.messages])
 
-  // Reply-thread indicators: how many messages reply to each message, and the
-  // first reply's id for the jump-to-thread chip.
   const replyInfo = useMemo(() => {
     const counts = new Map<string, number>()
     const firstReply = new Map<string, string>()
@@ -462,9 +445,6 @@ export function ChatRoom({
     return { counts, firstReply }
   }, [room.messages])
 
-  // Known participants for the member sheet: anyone we have a name for, plus
-  // ourselves and anyone currently banned. Participants are anonymous, so this
-  // is necessarily limited to people who have spoken (or been banned).
   const participants = useMemo(() => {
     const banned = new Set(room.room?.banned ?? [])
     const map = new Map<string, { pid: string; name: string; banned: boolean }>()
@@ -754,6 +734,9 @@ export function ChatRoom({
         <SafetyPanel session={session} prefs={prefs} onClose={() => setPanel(null)} />
       )}
       {panel === "security" && <SecurityTransparency onClose={() => setPanel(null)} />}
+      {panel === "owner" && (
+        <OwnerPanel session={session} names={room.names} onClose={() => setPanel(null)} />
+      )}
       {panel === "members" && (
         <Sheet title="Who’s here" icon={<Users size={18} />} onClose={() => setPanel(null)}>
           <div className="stack">
@@ -813,6 +796,11 @@ export function ChatRoom({
             <button className="btn btn-block" onClick={() => setPanel("security")}>
               <ShieldCheck size={16} /> Security transparency
             </button>
+            {isOwner && (
+              <button className="btn btn-block" onClick={() => setPanel("owner")}>
+                <ShieldCheck size={16} /> Owner IP tools
+              </button>
+            )}
             {isOwner && (
               <button className="btn btn-block" onClick={editTopic}>
                 <Tag size={16} /> {topic ? "Change room topic" : "Set room topic"}
@@ -912,7 +900,6 @@ function MemberDots({ count, onClick }: { count: number; onClick?: () => void })
   )
 }
 
-// Ticks once a second to show how long until the whole room self-destructs.
 function RoomTimer({ destroyAt }: { destroyAt: number | null }) {
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -978,7 +965,7 @@ const MEMBER_ROW = {
   justifyContent: "space-between",
   gap: "10px",
   padding: "8px 0",
-}
+} as const
 const MEMBER_BANNED = { opacity: 0.6, textDecoration: "line-through" as const }
 const SEARCH_BAR = {
   display: "flex",
