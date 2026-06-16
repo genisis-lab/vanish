@@ -1,9 +1,10 @@
 import type { Env } from "../types"
 import { roomStub } from "../lib/do"
 
-// GET /api/ws?room=<roomId>&p=<accessProof>&u=<participantId> — upgrade to a
-// WebSocket and hand the connection to the room's Durable Object. The DO
-// verifies the access proof before accepting the socket.
+// GET /api/ws?room=<roomId> — upgrade to a WebSocket and hand the connection to
+// the room's Durable Object. The access/participant proofs travel in the
+// WebSocket subprotocol (the Sec-WebSocket-Protocol header), which is copied
+// through to the DO below; the DO verifies them before accepting the socket.
 export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
   const upgrade = request.headers.get("Upgrade") || ""
   if (upgrade.toLowerCase() !== "websocket") {
