@@ -68,14 +68,25 @@ export class Realtime {
 
   private wsUrl(): string {
     // Built from runtime location (not a literal) so it works on any origin.
+    // Only the (non-secret) room id rides in the URL now; the proofs go in the
+    // WebSocket subprotocol so they never land in CDN/proxy/access logs.
     const proto = location.protocol === "https:" ? "wss" : "ws"
-    const params = new URLSearchParams({
-      room: this.session.invite.roomId,
-      p: this.session.keys.accessProof,
-      u: this.session.participantId,
-      pp: this.session.participantProof,
-    })
+    const params = new URLSearchParams({ room: this.session.invite.roomId })
     return proto + "://" + location.host + "/api/ws?" + params.toString()
+  }
+
+  // Proofs are sent as WebSocket subprotocol tokens (carried in a request
+  // header) instead of query params. Order is positional; the server reads by
+  // index and echoes "vanish.v1" back to complete the handshake. base64url
+  // values are already token-safe, but we encode defensively and decode
+  // symmetrically on the server.
+  private wsProtocols(): string[] {
+    return [
+      "vanish.v1",
+      encodeURIComponent(this.session.keys.accessProof),
+      encodeURIComponent(this.session.participantId),
+      encodeURIComponent(this.session.participantProof),
+    ]
   }
 
   private connect(): void {
@@ -83,7 +94,7 @@ export class Realtime {
     this.setState(this.attempts === 0 ? "connecting" : this.state)
     let ws: WebSocket
     try {
-      ws = new WebSocket(this.wsUrl())
+      ws = new WebSocket(this.wsUrl(), this.wsProtocols())
     } catch {
       this.fallbackToPolling()
       return
