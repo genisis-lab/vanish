@@ -310,3 +310,18 @@ svg {
     }
   }
 }
+
+/* ============================================================
+   Mobile keyboard topbar drift fix
+   The chat shell (.app:has(> .chat)) was a SECOND position:fixed
+   layer stacked on the already-fixed body. During the iOS
+   keyboard-open animation the transient visualViewport offset made
+   the shell drift downward (dark gap above the topbar) and then snap
+   back once the keyboard settled. Anchoring the shell to the fixed
+   body via position:absolute removes the redundant fixed layer and
+   the transient drift. Steady state (offset 0) is identical, so the
+   earlier keyboard fit fix is preserved.
+   ============================================================ */
+.app:has(> .chat) {
+  position: absolute;
+}
