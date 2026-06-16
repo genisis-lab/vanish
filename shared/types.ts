@@ -76,8 +76,6 @@ export interface SessionRequest {
   participantId: string
   /** Per-device proof binding this participant id to the caller. */
   participantProof: string
-  /** Real client IP forwarded by the Pages Function from CF-Connecting-IP. */
-  clientIp?: string
 }
 
 export interface ValidateInviteRequest {
@@ -112,7 +110,7 @@ export interface SetTopicRequest {
   topicEnvelope: string | null
 }
 
-export type OwnerActionType = "ban" | "unban" | "clear" | "destroy" | "ip-ban" | "ip-unban"
+export type OwnerActionType = "ban" | "unban" | "clear" | "destroy"
 
 /** Owner-gated moderation actions. */
 export interface OwnerActionRequest {
@@ -122,8 +120,6 @@ export interface OwnerActionRequest {
   action: OwnerActionType
   /** Target participant id for ban/unban. */
   targetParticipantId?: string
-  /** Target IP address for ip-ban / ip-unban. */
-  targetIp?: string
 }
 
 export interface PostMessageRequest {
@@ -258,35 +254,6 @@ export interface PushUnsubscribeRequest {
 
 export interface ApiError {
   error: string
-}
-
-// ---------- owner IP query ----------
-
-/** Owner-gated: list participant IPs and the IP ban list for the room. */
-export interface OwnerQueryRequest {
-  roomId: string
-  accessProof: string
-  ownerProof: string
-  /** Optional substring to filter participants by IP. */
-  searchIp?: string
-}
-
-export interface OwnerQueryParticipant {
-  participantId: string
-  /** Last recorded connecting IP, or null if never recorded. */
-  ip: string | null
-  /** Server timestamp of last activity. */
-  lastSeen: number
-  /** True if this participant is on the participant ban list. */
-  banned: boolean
-  /** True if this participant's IP is on the IP ban list. */
-  ipBanned: boolean
-}
-
-export interface OwnerQueryResponse {
-  participants: OwnerQueryParticipant[]
-  /** All IP addresses currently on the ban list. */
-  ipBanned: string[]
 }
 
 // ---------- realtime frames (sent over the WebSocket / broadcast) ----------
