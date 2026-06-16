@@ -8,5 +8,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (!body?.roomId || !body?.accessProof || !body?.participantId || !body?.participantProof) {
     return badRequest("missing roomId/accessProof/participantId/participantProof")
   }
-  return forward(env, body.roomId, "session", body)
+  const clientIp =
+    request.headers.get("cf-connecting-ip") ??
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    undefined
+  return forward(env, body.roomId, "session", { ...body, clientIp })
 }
