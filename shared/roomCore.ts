@@ -273,6 +273,17 @@ export class RoomCore {
     return message
   }
 
+  hasMessage(messageId: string): boolean {
+    return this.messages.has(messageId)
+  }
+
+  hasObjectKey(objectKey: string): boolean {
+    for (const message of this.messages.values()) {
+      if ((message.media ?? []).some((ref) => ref.objectKey === objectKey)) return true
+    }
+    return false
+  }
+
   /**
    * Replace the encrypted envelope of a message the caller authored. Used for
    * "edit your own message". The server never sees the plaintext; it only swaps
@@ -415,6 +426,14 @@ export class RoomCore {
       for (const ref of m.media ?? []) keys.push(ref.objectKey)
     }
     return keys
+  }
+
+  totalMediaBytes(): number {
+    let total = 0
+    for (const message of this.messages.values()) {
+      for (const ref of message.media ?? []) total += ref.size
+    }
+    return total
   }
 
   // ---------- serialization ----------

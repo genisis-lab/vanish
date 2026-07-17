@@ -78,7 +78,17 @@ export default function App() {
       if (!r) return
       const invite = parseInviteKey(r.inviteKey)
       if (!invite) return
-      const session = await buildSession(invite, r.username, r.participantId, r.participantProof)
+      const session = await buildSession(invite, r.username, r.participantId, r.participantProof, {
+        ownerSecret: r.ownerSecret,
+        signing: r.signing,
+      })
+      vault.save({
+        ...r,
+        participantProof: session.participantProof,
+        ownerSecret: session.ownerSecret,
+        signing: session.signingExport,
+        lastUsed: Date.now(),
+      })
       enterChat(session)
     },
     [enterChat],

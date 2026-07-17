@@ -29,10 +29,10 @@ test("no plaintext is ever sent to the server", async ({ page }) => {
   await page.goto("/")
   await page.getByRole("tab", { name: /create/i }).click().catch(() => {})
   await page.getByLabel(/display name/i).fill(SECRETS.username)
-  await page.getByRole("button", { name: /create room/i }).click()
+  await page.getByRole("button", { name: /create encrypted room/i }).click()
   await expect(page.locator(".chat")).toBeVisible()
 
-  await page.getByPlaceholder(/message/i).fill(SECRETS.message)
+  await page.getByRole("textbox", { name: "Encrypted message" }).fill(SECRETS.message)
   await page.keyboard.press("Enter")
   await expect(page.getByText(SECRETS.message)).toBeVisible()
 
@@ -40,4 +40,22 @@ test("no plaintext is ever sent to the server", async ({ page }) => {
   await page.waitForTimeout(1500)
 
   expect(offenders, offenders.join("\n")).toHaveLength(0)
+})
+
+test("malformed API JSON and invalid room ids fail at the edge", async ({ request }) => {
+  const malformed = await request.post("/api/rooms", {
+    data: "{not-json",
+    headers: { "content-type": "application/json" },
+  })
+  expect(malformed.status()).toBe(400)
+
+  const invalid = await request.post("/api/session", {
+    data: {
+      roomId: "../../invalid",
+      accessProof: "proof",
+      participantId: "participant",
+      participantProof: "participant-proof",
+    },
+  })
+  expect(invalid.status()).toBe(400)
 })

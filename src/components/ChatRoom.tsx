@@ -332,6 +332,8 @@ export function ChatRoom({
       username: session.username,
       participantId: session.participantId,
       participantProof: session.participantProof,
+      ownerSecret: session.ownerSecret,
+      signing: session.signingExport,
       lastUsed: Date.now(),
     })
     setSavePrompt(false)

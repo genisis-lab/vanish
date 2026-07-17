@@ -144,6 +144,8 @@ export async function encryptAndUpload(
     const sign = await api.signUpload({
       roomId: session.invite.roomId,
       accessProof: session.keys.accessProof,
+      participantId: session.participantId,
+      participantProof: session.participantProof,
       size: cipher.byteLength,
       previewKind,
     })

@@ -1,29 +1,33 @@
-import { test, expect, type Page, type BrowserContext } from "@playwright/test"
+import { test, expect, type Page } from "@playwright/test"
 import path from "node:path"
 import fs from "node:fs"
 import os from "node:os"
 
-// End-to-end happy path across two independent browser contexts (two anonymous
-// participants) exercising create, join, live text, media, prune, and delete.
+// End-to-end happy path across two isolated origins (independent browser
+// storage) exercising create, join, live text, media, prune, and delete.
 
 async function createRoom(page: Page, username: string): Promise<string> {
   await page.goto("/")
   await page.getByRole("tab", { name: /create/i }).click().catch(() => {})
   await page.getByLabel(/display name/i).fill(username)
-  await page.getByRole("button", { name: /create room/i }).click()
+  await page.getByRole("button", { name: /create encrypted room/i }).click()
   // Land in the chat room.
   await expect(page.locator(".chat")).toBeVisible()
   // Grab the invite link from the Invite panel.
-  await page.getByRole("button", { name: "Invite" }).click()
+  await page.getByRole("button", { name: "Invite", exact: true }).click()
   const link = await page.locator(".copy-field .box").first().innerText()
   await page.keyboard.press("Escape")
-  expect(link).toContain("?invite=")
+  expect(link).toContain("#invite=")
   return link
 }
 
-async function joinRoom(ctx: BrowserContext, inviteUrl: string, username: string): Promise<Page> {
-  const page = await ctx.newPage()
-  await page.goto(inviteUrl)
+async function joinRoom(page: Page, inviteUrl: string, username: string): Promise<Page> {
+  // The creator's active session is already in memory; clear shared persistence
+  // so this preloaded second page behaves as a fresh anonymous device.
+  await page.evaluate(() => window.localStorage.clear())
+  await page.getByRole("tab", { name: /join with key/i }).click()
+  await page.getByLabel(/invite key or link/i).fill(inviteUrl)
+  await page.getByRole("button", { name: /continue/i }).click()
   await expect(page.getByText(/valid invite|join room/i)).toBeVisible()
   await page.getByLabel(/display name/i).fill(username)
   await page.getByRole("button", { name: /join room/i }).click()
@@ -32,20 +36,21 @@ async function joinRoom(ctx: BrowserContext, inviteUrl: string, username: string
 }
 
 test("two anonymous users chat, share media, prune, and delete", async ({ browser }) => {
-  const ctxA = await browser.newContext()
-  const ctxB = await browser.newContext()
-  const alice = await ctxA.newPage()
+  const ctx = await browser.newContext({ serviceWorkers: "block" })
+  const alice = await ctx.newPage()
+  const bobPage = await ctx.newPage()
+  await Promise.all([alice.goto("/"), bobPage.goto("/")])
 
   const inviteUrl = await createRoom(alice, "Ash")
-  const bob = await joinRoom(ctxB, inviteUrl, "Ember")
+  const bob = await joinRoom(bobPage, inviteUrl, "Ember")
 
   // Live text from Ash arrives for Ember.
-  await alice.getByPlaceholder(/message/i).fill("hello from ash")
+  await alice.getByRole("textbox", { name: "Encrypted message" }).fill("hello from ash")
   await alice.keyboard.press("Enter")
   await expect(bob.getByText("hello from ash")).toBeVisible()
 
   // Live text back from Ember arrives for Ash.
-  await bob.getByPlaceholder(/message/i).fill("hi ember here")
+  await bob.getByRole("textbox", { name: "Encrypted message" }).fill("hi ember here")
   await bob.keyboard.press("Enter")
   await expect(alice.getByText("hi ember here")).toBeVisible()
 
@@ -60,7 +65,13 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
     ),
   )
   await alice.locator('input[type="file"]').setInputFiles(tmp)
-  await expect(alice.getByText(/done/i)).toBeVisible({ timeout: 20_000 })
+  const signed = alice.waitForResponse((response) => response.url().includes("/api/uploads/sign"))
+  const uploaded = alice.waitForResponse((response) => response.url().includes("/api/uploads/put"))
+  await alice.getByRole("button", { name: "Send message" }).click()
+  const signResponse = await signed
+  expect(signResponse.ok(), await signResponse.text()).toBe(true)
+  const uploadResponse = await uploaded
+  expect(uploadResponse.ok(), await uploadResponse.text()).toBe(true)
   const tile = bob.locator(".media-tile").first()
   await expect(tile).toBeVisible({ timeout: 20_000 })
   await tile.click() // decrypt
@@ -78,11 +89,14 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await alice.getByRole("button", { name: /confirm/i }).click()
   await expect(bob.getByText(/room deleted/i)).toBeVisible({ timeout: 10_000 })
 
-  await ctxA.close()
-  await ctxB.close()
+  await ctx.close()
 })
 
 test("an invalid invite is rejected", async ({ page }) => {
-  await page.goto("/?invite=" + encodeURIComponent("anonchat:v1:bogus.bogus"))
+  const unknown = `anonchat:v1:${"A".repeat(22)}.${"A".repeat(43)}`
+  await page.goto("/")
+  await page.getByRole("tab", { name: /join with key/i }).click()
+  await page.getByLabel(/invite key or link/i).fill(unknown)
+  await page.getByRole("button", { name: /continue/i }).click()
   await expect(page.getByText(/invalid|couldn.t|not valid/i)).toBeVisible()
 })

@@ -1,5 +1,6 @@
 // Helpers for forwarding Pages Function requests to the room's Durable Object.
 import type { Env } from "../types"
+import { isValidRoomId } from "../../shared/constants"
 
 export function roomStub(env: Env, roomId: string): DurableObjectStub {
   const id = env.ROOM.idFromName(roomId)
@@ -21,6 +22,7 @@ export async function forward(
   op: string,
   body: unknown,
 ): Promise<Response> {
+  if (!isValidRoomId(roomId)) return badRequest("bad room id")
   const stub = roomStub(env, roomId)
   return stub.fetch(internalUrl(op), {
     method: "POST",
@@ -36,8 +38,12 @@ export function json(body: unknown, status = 200): Response {
   })
 }
 
-export async function readJson<T>(request: Request): Promise<T> {
-  return (await request.json()) as T
+export async function readJson<T>(request: Request): Promise<T | null> {
+  try {
+    return (await request.json()) as T
+  } catch {
+    return null
+  }
 }
 
 export function badRequest(message: string): Response {

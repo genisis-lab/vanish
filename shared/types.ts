@@ -170,6 +170,8 @@ export interface ListMessagesRequest {
 
 export interface ListMessagesResponse {
   messages: StoredMessage[]
+  /** Complete current id set so polling clients can reconcile prunes/deletes. */
+  currentMessageIds?: string[]
   room: PublicRoomState
   serverTime: number
   /** Recent signalling frames (typing/seen) for clients on the polling fallback. */
@@ -179,8 +181,25 @@ export interface ListMessagesResponse {
 export interface SignUploadRequest {
   roomId: string
   accessProof: string
+  participantId: string
+  participantProof: string
   size: number
   previewKind: "image" | "video" | "audio"
+}
+
+export interface ReserveUploadRequest {
+  roomId: string
+  accessProof: string
+  participantId: string
+  participantProof: string
+  objectKey: string
+  size: number
+  expiresAt: number
+}
+
+export interface ClaimUploadRequest {
+  objectKey: string
+  size: number
 }
 
 export interface SignUploadResponse {

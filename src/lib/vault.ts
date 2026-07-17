@@ -26,6 +26,10 @@ export interface RememberedRoom {
   participantId: string
   /** Per-device proof for this participant id; never sent except as proof-of-possession. */
   participantProof?: string
+  /** Owner capability, encrypted with the rest of the vault when locked. */
+  ownerSecret?: string
+  /** Exported Ed25519 identity, encrypted with the rest of the vault when locked. */
+  signing?: { priv: string; pub: string }
   label?: string
   lastUsed: number
   /** Safety number the user explicitly marked as verified, if any. */
