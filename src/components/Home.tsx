@@ -92,6 +92,8 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
         username: session.username,
         participantId: session.participantId,
         participantProof: session.participantProof,
+        ownerSecret: session.ownerSecret,
+        signing: session.signingExport,
         lastUsed: Date.now(),
       })
       onCreated(session)
@@ -561,7 +563,7 @@ function LockCard() {
   )
 }
 
-// Import a room from another device using a PIN-locked transfer code (generated
+// Import a room from another device using a short-lived transfer code (generated
 // in that device's "Verify encryption" panel). Brings over the room key,
 // participant identity, signing key and — if present — owner rights.
 function DeviceTransferCard({ onResume }: { onResume: (roomId: string) => void }) {
@@ -572,7 +574,7 @@ function DeviceTransferCard({ onResume }: { onResume: (roomId: string) => void }
     if (busy) return
     const code = window.prompt("Paste the device-transfer code from your other device:")
     if (!code) return
-    const pin = window.prompt("Enter the transfer PIN shown on your other device:")
+    const pin = window.prompt("Enter the pairing secret shown on your other device:")
     if (!pin) return
     setBusy(true)
     try {
@@ -592,7 +594,7 @@ function DeviceTransferCard({ onResume }: { onResume: (roomId: string) => void }
       <h2>Add from another device</h2>
       <p className="sub">
         Already in this room on another device? Move it here — keys, owner rights and identity travel
-        inside a PIN-locked code.
+        inside a short-lived code protected by a high-entropy pairing secret.
       </p>
       <button className="btn btn-block" disabled={busy} onClick={() => void importFromDevice()}>
         <Smartphone size={16} /> Import device transfer

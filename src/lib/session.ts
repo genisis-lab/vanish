@@ -9,7 +9,12 @@ import {
 } from "@shared/crypto"
 import type { ParsedInvite } from "@shared/invite"
 import { importAesKey, randomId } from "./clientCrypto"
-import { loadOwnerSecret } from "./owner"
+import { clearOwnerSecret, loadOwnerSecret } from "./owner"
+
+export interface StoredSessionCredentials {
+  ownerSecret?: string
+  signing?: { priv: string; pub: string }
+}
 
 export interface RoomSession {
   invite: ParsedInvite
@@ -25,18 +30,17 @@ export interface RoomSession {
    * rejoins. Undefined when the runtime lacks WebCrypto Ed25519, in which case
    * messages are sent unsigned (and peers simply show no verification state). */
   signing?: SigningKeyPair
+  /** Serializable copy kept inside the encrypted room vault. */
+  signingExport?: { priv: string; pub: string }
   /** Owner secret (proof-of-possession) when this device created the room or
    * imported owner rights via multi-device sync. Present => owner controls. */
   ownerSecret?: string
 }
 
-// Per-room signing identity is persisted locally so a participant who rejoins
-// (same participantId) keeps the SAME Ed25519 signing key. Without this the key
-// would be regenerated on every load while participantId stays stable, and
-// peers' trust-on-first-use pinning would incorrectly flag every rejoin as a
-// "key changed" event. The private key is stored only in this browser and is
-// never sent anywhere; it is far less sensitive than the room secret, which
-// already lives in local storage.
+// A participant who rejoins with the same participantId must keep the SAME
+// Ed25519 signing key or peers' trust-on-first-use pinning would flag a key
+// change. Current credentials live in the remembered-room vault; these legacy
+// keys are read once for migration and then removed from raw localStorage.
 const SIGNING_STORE_PREFIX = "vanish.sign.v1:"
 const PARTICIPANT_PROOF_STORE_PREFIX = "vanish.participant.v1:"
 
@@ -56,7 +60,7 @@ function loadOrCreateParticipantProof(
   const storeKey = participantProofStoreKey(roomId, participantId)
   if (supplied) {
     try {
-      localStorage.setItem(storeKey, supplied)
+      localStorage.removeItem(storeKey)
     } catch {
       /* storage is best-effort */
     }
@@ -64,47 +68,44 @@ function loadOrCreateParticipantProof(
   }
   try {
     const saved = localStorage.getItem(storeKey)
-    if (saved) return saved
+    if (saved) {
+      localStorage.removeItem(storeKey)
+      return saved
+    }
   } catch {
     /* fall through and generate */
   }
   const generated = randomId(32)
-  try {
-    localStorage.setItem(storeKey, generated)
-  } catch {
-    /* storage is best-effort */
-  }
   return generated
 }
 
 async function loadOrCreateSigning(
   roomId: string,
   participantId: string,
-): Promise<SigningKeyPair | undefined> {
+  supplied?: { priv: string; pub: string },
+): Promise<{ pair?: SigningKeyPair; exported?: { priv: string; pub: string } }> {
   const canStore = typeof localStorage !== "undefined"
   const storeKey = signingStoreKey(roomId, participantId)
+  if (supplied) {
+    const imported = await importSigningKeyPair(supplied.priv, supplied.pub)
+    if (imported) return { pair: imported, exported: supplied }
+  }
   if (canStore) {
     try {
       const raw = localStorage.getItem(storeKey)
       if (raw) {
         const saved = JSON.parse(raw) as { priv: string; pub: string }
         const imported = await importSigningKeyPair(saved.priv, saved.pub)
-        if (imported) return imported
+        localStorage.removeItem(storeKey)
+        if (imported) return { pair: imported, exported: saved }
       }
     } catch {
       /* fall through and regenerate */
     }
   }
   const generated = (await generateSigningKeyPair()) ?? undefined
-  if (generated && canStore) {
-    try {
-      const exported = await exportSigningKeyPair(generated)
-      if (exported) localStorage.setItem(storeKey, JSON.stringify(exported))
-    } catch {
-      /* persistence is best-effort */
-    }
-  }
-  return generated
+  const exported = generated ? (await exportSigningKeyPair(generated)) ?? undefined : undefined
+  return { pair: generated, exported }
 }
 
 export async function buildSession(
@@ -112,12 +113,15 @@ export async function buildSession(
   username: string,
   participantId?: string,
   participantProof?: string,
+  credentials: StoredSessionCredentials = {},
 ): Promise<RoomSession> {
   const keys = await deriveKeys(invite.secret, invite.roomId)
   const channelKey = await importAesKey(keys.channelKey)
   const pid = participantId || randomId(9)
   const proof = loadOrCreateParticipantProof(invite.roomId, pid, participantProof)
-  const signing = await loadOrCreateSigning(invite.roomId, pid)
+  const signing = await loadOrCreateSigning(invite.roomId, pid, credentials.signing)
+  const ownerSecret = credentials.ownerSecret ?? loadOwnerSecret(invite.roomId)
+  clearOwnerSecret(invite.roomId)
   return {
     invite,
     keys,
@@ -125,8 +129,9 @@ export async function buildSession(
     participantId: pid,
     participantProof: proof,
     username: username.trim() || "anon",
-    signing,
-    ownerSecret: loadOwnerSecret(invite.roomId),
+    signing: signing.pair,
+    signingExport: signing.exported,
+    ownerSecret,
   }
 }
 

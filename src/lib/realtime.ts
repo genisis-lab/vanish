@@ -3,7 +3,7 @@
 // are opaque to the server; signalling payloads are encrypted with the channel
 // key before they are sent.
 import type { PublicRoomState, RealtimeFrame, StoredMessage } from "@shared/types"
-import { api } from "./api"
+import { api, ApiError } from "./api"
 import type { RoomSession } from "./session"
 
 export type ConnState = "connecting" | "live" | "polling" | "closed"
@@ -12,6 +12,7 @@ export interface RealtimeHandlers {
   onMessage: (m: StoredMessage) => void
   onEdit: (m: StoredMessage) => void
   onPrune: (ids: string[], all?: boolean) => void
+  onSnapshot: (ids: string[]) => void
   onReact: (f: Extract<RealtimeFrame, { t: "react" }>) => void
   onPresence: (count: number) => void
   onSignal: (f: Extract<RealtimeFrame, { t: "signal" }>) => void
@@ -30,6 +31,7 @@ export class Realtime {
   private ws: WebSocket | null = null
   private pollTimer: number | null = null
   private reconnectTimer: number | null = null
+  private handshakeTimer: number | null = null
   private attempts = 0
   private stopped = false
   private state: ConnState = "connecting"
@@ -100,8 +102,13 @@ export class Realtime {
       return
     }
     this.ws = ws
+    this.handshakeTimer = setTimeout(() => {
+      this.handshakeTimer = null
+      if (ws.readyState !== WebSocket.OPEN) ws.close()
+    }, 5_000) as unknown as number
 
     ws.onopen = () => {
+      this.clearHandshakeTimer()
       this.attempts = 0
       this.stopPolling()
       this.setState("live")
@@ -116,6 +123,7 @@ export class Realtime {
       this.dispatch(frame)
     }
     ws.onclose = () => {
+      this.clearHandshakeTimer()
       this.ws = null
       if (!this.stopped) this.fallbackToPolling()
     }
@@ -213,13 +221,17 @@ export class Realtime {
           markReadFor: this.session.participantId,
         })
         for (const m of res.messages) this.handlers.onMessage(m)
+        if (res.currentMessageIds) this.handlers.onSnapshot(res.currentMessageIds)
         // Deliver buffered signalling frames (typing/seen) that arrived while we
         // were polling instead of holding a live socket.
         if (res.signals) for (const f of res.signals) this.dispatch(f)
         this.signalsSince = res.serverTime
         this.handlers.onPresence(res.room.participantCount)
-      } catch {
-        /* keep trying */
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 410) {
+          this.handlers.onRoomDeleted()
+          this.stop()
+        }
       }
     }
     // 1s cadence keeps fallback delivery snappy when the socket is unavailable.
@@ -246,9 +258,17 @@ export class Realtime {
 
   private clearTimers(): void {
     this.stopPolling()
+    this.clearHandshakeTimer()
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
+    }
+  }
+
+  private clearHandshakeTimer(): void {
+    if (this.handshakeTimer !== null) {
+      clearTimeout(this.handshakeTimer)
+      this.handshakeTimer = null
     }
   }
 }

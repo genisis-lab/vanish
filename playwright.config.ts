@@ -14,16 +14,30 @@ export default defineConfig({
   reporter: process.env.CI ? "github" : "list",
   use: {
     baseURL: BASE,
+    serviceWorkers: "block",
     trace: "on-first-retry",
     video: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: process.env.E2E_BASE_URL
     ? undefined
-    : {
-        command: `npm run build && npx wrangler pages dev dist --port ${PORT} --compatibility-date=2024-11-06`,
-        url: BASE,
-        timeout: 180_000,
-        reuseExistingServer: !process.env.CI,
-      },
+    : [
+        {
+          command: "npm run worker:dev -- --port 8787",
+          url: "http://localhost:8787/health",
+          timeout: 180_000,
+          reuseExistingServer: !process.env.CI,
+        },
+        {
+          command: `npm run build && npx wrangler pages dev dist --port ${PORT} --binding E2E_MODE=1 --binding UPLOAD_SECRET=e2e-only-upload-secret`,
+          url: BASE,
+          timeout: 180_000,
+          reuseExistingServer: !process.env.CI,
+          env: {
+            UPLOAD_SECRET: process.env.UPLOAD_SECRET ?? "e2e-only-upload-secret",
+            E2E_MODE: "1",
+            VITE_DISABLE_SW: "1",
+          },
+        },
+      ],
 })

@@ -87,6 +87,25 @@ describe("RoomCore participant proof binding", () => {
 })
 
 describe("RoomCore pruning + expiry + delete", () => {
+  it("tracks media bytes and rejects duplicate ids/objects at the API boundary", async () => {
+    const { core, now } = await freshRoom()
+    core.addMessage(
+      {
+        id: "media-1",
+        participantId: "p1",
+        envelope: "e",
+        kind: "media",
+        media: [{ objectKey: "rooms/r/object", size: 1234, previewKind: "image" }],
+      },
+      now,
+    )
+    expect(core.totalMediaBytes()).toBe(1234)
+    expect(core.hasMessage("media-1")).toBe(true)
+    expect(core.hasObjectKey("rooms/r/object")).toBe(true)
+    core.prune(["media-1"])
+    expect(core.totalMediaBytes()).toBe(0)
+  })
+
   it("auto-expires messages by ttl", async () => {
     const { core, now } = await freshRoom({ ttlMs: 60_000 })
     core.addMessage({ id: "m1", participantId: "p1", envelope: "e", kind: "text" }, now)

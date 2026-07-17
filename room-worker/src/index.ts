@@ -4,11 +4,13 @@
 
 import { isValidRoomId } from "../../shared/constants"
 import { RoomDurableObject, type RoomEnv } from "./RoomDurableObject"
+import { AbuseDurableObject } from "./AbuseDurableObject"
 
-export { RoomDurableObject }
+export { AbuseDurableObject, RoomDurableObject }
 
 export interface Env extends RoomEnv {
   ROOM: DurableObjectNamespace
+  ABUSE: DurableObjectNamespace
 }
 
 export default {

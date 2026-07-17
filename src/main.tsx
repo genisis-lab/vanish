@@ -8,7 +8,7 @@ import "./styles/enhancements.css"
 
 // Register the service worker for PWA/offline shell (best-effort), and surface a
 // gentle refresh prompt when a newer build has been deployed.
-if ("serviceWorker" in navigator && import.meta.env.PROD) {
+if ("serviceWorker" in navigator && import.meta.env.PROD && import.meta.env.VITE_DISABLE_SW !== "1") {
   window.addEventListener("load", () => {
     navigator.serviceWorker
       // updateViaCache:"none" makes the browser bypass its HTTP cache when

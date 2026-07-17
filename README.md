@@ -18,7 +18,7 @@ it.
 - **End-to-end encryption** — message text, usernames, captions, filenames, and media are
   encrypted in your browser before they touch the network (AES-GCM-256, keys derived with
   HKDF-SHA-256).
-- **Forward-secret key ratchet** — message keys rotate on an hourly **epoch** ratchet derived
+- **Epoch key separation** — message keys rotate hourly and are independently derived
   from the room secret, so each time window uses an independent key. New (v2) and older (v1)
   envelopes are both decodable, so history never breaks across the upgrade.
 - **Per-sender signatures** — every message is signed with an ephemeral Ed25519 key, with
@@ -27,6 +27,8 @@ it.
 - **Encrypted media & voice notes** — share images, video, and recorded voice notes; bytes,
   filenames, and captions are encrypted client-side and stored as opaque R2 blobs.
   Drag-and-drop, clipboard paste, and an in-composer microphone recorder are supported.
+- **Bounded media storage** — uploads require a participant-bound, one-use reservation and each
+  room has a 250 MB encrypted-media quota; unattached reservations are swept automatically.
 - **Replies, threading & reactions** — quote any message, follow reply chains, and react with
   emoji; replies and reactions are encrypted too.
 - **Edit & delete your own messages** — revise or retract anything you sent; edits and
@@ -40,7 +42,7 @@ it.
   the background, byte-for-byte indistinguishable from real ones (same envelope + size padding)
   and silently dropped by recipients, so an outside observer can't tell when you're actually
   talking.
-- **Multi-device sync** — move a room to another device with a **PIN-locked transfer code**
+- **Multi-device sync** — move a room to another device with a short-lived transfer code
   (shown as a QR or copyable string) that carries the room key, your participant identity,
   signing key, and — if you're the owner — owner rights. Nothing transits the server.
 - **Disappearing messages** — per-message timers, optional burn-after-read, and an optional
@@ -89,7 +91,7 @@ Notifications are designed to avoid duplicate alerts while you are actively usin
   - `accessProof` / `accessProofHash` — a proof the server can verify to gate access **without**
     being able to derive the secret or decrypt anything
   - `safetyNumber` — a human-verifiable fingerprint of the room key
-- **Epoch key ratchet (forward secrecy).** Text and media payloads are sealed with a
+- **Epoch key separation.** Text and media payloads are sealed with a
   per-**epoch** key derived from the room secret via HKDF (`…:msg:epoch:<n>`), where the epoch
   advances every hour. Each window therefore uses an independent AES-GCM key, so compromising
   one epoch's derived key does not expose other windows. Epoch envelopes use the v2 layout
@@ -114,7 +116,7 @@ Notifications are designed to avoid duplicate alerts while you are actively usin
   padding as real messages and flagged only *inside* the ciphertext, so they are
   indistinguishable on the wire and are dropped by recipients after decryption.
 - **Multi-device transfer.** A transfer code bundles the invite key, participant id, signing
-  keypair, and (for owners) the owner secret, then encrypts it under a short PIN
+  keypair, and (for owners) the owner secret, then encrypts it under a 128-bit pairing secret
   (PBKDF2-SHA-256 → AES-GCM, layout `[salt(16)][iv(12)][ciphertext]`). It is exchanged
   device-to-device by QR or copy/paste and never touches the server.
 - Plaintext is padded to coarse size buckets before encryption (messages to 256-byte buckets,
@@ -327,8 +329,8 @@ What the suites cover:
   device-only owner secret; the server stores only its hash.
 - **Decoy messages** can be enabled to mask when you are actually talking; decoys are
   indistinguishable from real messages on the wire.
-- **Multi-device transfer** moves a room between your own devices inside a PIN-locked code that
-  never touches the server.
+- **Multi-device transfer** moves a room between your own devices inside a ten-minute code
+  protected by a 128-bit pairing secret; it never touches the server.
 - Plaintext is size-padded before encryption, so ciphertext and stored object sizes reveal
   little about message or file length.
 - Background push notifications are **content-free** — they carry only a room id, never message
@@ -339,6 +341,9 @@ What the suites cover:
 - Vanish is **anonymous**: no account, email, phone, or profile is ever collected.
 - Keys live only in the invite link and your browser. **If you lose the link, the room is
   unrecoverable** — there is no reset, by design.
+- When device lock is enabled, invite keys, participant proofs, owner credentials, and Ed25519
+  signing identities are encrypted together in the local vault; legacy plaintext credentials
+  are migrated on first use.
 - Anyone holding the invite key can join and decrypt, so share it only with people you trust.
 - Messages auto-delete on a per-room schedule (default 24 hours), with optional
   burn-after-read; the whole room can also be set to self-destruct, and you can manually prune
