@@ -1,5 +1,6 @@
 import type { Env } from "../types"
 import { roomStub } from "../lib/do"
+import { isValidRoomId } from "../../shared/constants"
 
 // GET /api/ws?room=<roomId> — upgrade to a WebSocket and hand the connection to
 // the room's Durable Object. The access/participant proofs travel in the
@@ -13,7 +14,7 @@ export const onRequest: PagesFunction<Env> = async ({ request, env }) => {
 
   const url = new URL(request.url)
   const roomId = url.searchParams.get("room") || ""
-  if (!roomId) return new Response("missing room", { status: 400 })
+  if (!isValidRoomId(roomId)) return new Response("bad room", { status: 400 })
 
   const stub = roomStub(env, roomId)
   // Use a synthetic internal URL for the DO fetch. The host is irrelevant for a

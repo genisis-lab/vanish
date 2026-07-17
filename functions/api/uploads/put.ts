@@ -1,5 +1,5 @@
 import type { Env } from "../../types"
-import { badRequest, json } from "../../lib/do"
+import { badRequest, forward, json } from "../../lib/do"
 import { uploadSecret, verifyUploadToken } from "../../lib/auth"
 import { isValidObjectKey, MAX_MEDIA_BYTES } from "../../../shared/constants"
 
@@ -24,13 +24,21 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     return json({ error: "forbidden" }, 403)
   }
 
-  const buf = await request.arrayBuffer()
-  if (buf.byteLength !== size) return badRequest("size mismatch")
+  const roomId = objectKey.split("/")[1]
+  const claimed = await forward(env, roomId, "claim-upload", { objectKey, size })
+  if (!claimed.ok) return claimed
+
   if (await env.MEDIA.head(objectKey)) {
     return json({ error: "object already exists" }, 409)
   }
-  await env.MEDIA.put(objectKey, buf, {
+  if (!request.body) return badRequest("missing body")
+  await env.MEDIA.put(objectKey, request.body, {
     httpMetadata: { contentType: "application/octet-stream" },
   })
+  const stored = await env.MEDIA.head(objectKey)
+  if (!stored || stored.size !== size) {
+    await env.MEDIA.delete(objectKey)
+    return badRequest("size mismatch")
+  }
   return json({ ok: true, objectKey })
 }

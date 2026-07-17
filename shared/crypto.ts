@@ -379,7 +379,7 @@ export async function decryptJson<T>(key: CryptoKey, envelopeB64: string, aad?: 
   return JSON.parse(await decryptString(key, envelopeB64, aad)) as T
 }
 
-// ---------- forward-secrecy epoch ratchet (envelope v2) ----------
+// ---------- epoch key separation (envelope v2) ----------
 //
 // Message payloads (text / media / decoy) are encrypted under a per-epoch key
 // derived from the room's root secret rather than the static room message key.
@@ -393,7 +393,7 @@ export async function decryptJson<T>(key: CryptoKey, envelopeB64: string, aad?: 
 //
 // Guarantee & limits (intentionally honest): this provides per-epoch key
 // SEPARATION — an epoch key recovered on its own only exposes that one window —
-// plus the ratchet machinery for forward secrecy. It does NOT defend against
+// It does NOT provide forward secrecy: it cannot defend against
 // compromise of the root invite secret, because every epoch key is derivable
 // from it; full forward secrecy is unachievable in a shared-secret, multi-party
 // room without interactive key agreement, and irreversibly deleting past epoch

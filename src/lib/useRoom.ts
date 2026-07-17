@@ -356,6 +356,17 @@ export function useRoom(session: RoomSession): RoomController {
         else for (const id of ids) storedById.current.delete(id)
         void recompute()
       },
+      onSnapshot: (ids) => {
+        const current = new Set(ids)
+        let changed = false
+        for (const id of storedById.current.keys()) {
+          if (!current.has(id)) {
+            storedById.current.delete(id)
+            changed = true
+          }
+        }
+        if (changed) void recompute()
+      },
       onReact: (f) => {
         const stored = storedById.current.get(f.messageId)
         if (!stored) return

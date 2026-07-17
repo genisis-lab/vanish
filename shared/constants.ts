@@ -5,6 +5,8 @@ export const MIN_MESSAGE_TTL_MS = 5 * 1000 // 5 seconds (burn-style)
 export const MAX_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 export const MAX_MEDIA_BYTES = 50 * 1024 * 1024 // 50 MB encrypted blob ceiling
 export const UPLOAD_TOKEN_TTL_MS = 5 * 60 * 1000
+/** Total encrypted media retained by one room, including pending uploads. */
+export const MAX_ROOM_MEDIA_BYTES = 250 * 1024 * 1024
 
 // ---------- abuse / resource controls (enforced in the Durable Object) ----------
 

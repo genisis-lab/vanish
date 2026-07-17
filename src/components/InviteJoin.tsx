@@ -63,6 +63,7 @@ export function InviteJoin({
         username,
         remembered?.participantId,
         remembered?.participantProof,
+        { ownerSecret: remembered?.ownerSecret, signing: remembered?.signing },
       )
       vault.save({
         roomId: invite.roomId,
@@ -70,6 +71,8 @@ export function InviteJoin({
         username: session.username,
         participantId: session.participantId,
         participantProof: session.participantProof,
+        ownerSecret: session.ownerSecret,
+        signing: session.signingExport,
         lastUsed: Date.now(),
         verifiedSafetyNumber: remembered?.verifiedSafetyNumber,
       })

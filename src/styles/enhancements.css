@@ -190,7 +190,7 @@ svg {
 
 /* ============================================================
    Multi-device transfer block (Verify encryption sheet)
-   Stacks the QR, PIN, code and copy button vertically with
+   Stacks the QR, pairing secret, code and copy button vertically with
    consistent spacing. The code wraps instead of scrolling
    horizontally, so it is fully visible on narrow screens without
    any sideways swiping.
