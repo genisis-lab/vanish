@@ -25,14 +25,7 @@ export function ownerKeyHash(secret: string): Promise<string> {
   return hashAccessProof(secret)
 }
 
-export function saveOwnerSecret(roomId: string, secret: string): void {
-  try {
-    localStorage.setItem(storeKey(roomId), secret)
-  } catch {
-    /* storage may be unavailable (private mode); owner powers won't persist */
-  }
-}
-
+/** Read a legacy plaintext credential once; buildSession immediately migrates it. */
 export function loadOwnerSecret(roomId: string): string | undefined {
   try {
     return localStorage.getItem(storeKey(roomId)) ?? undefined

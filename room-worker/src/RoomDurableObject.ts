@@ -17,6 +17,7 @@ import { RoomCore, type RoomSnapshot } from "../../shared/roomCore"
 import { hashAccessProof } from "../../shared/crypto"
 import type {
   BroadcastRequest,
+  ClaimUploadRequest,
   CreateRoomRequest,
   DeleteOwnMessageRequest,
   EditMessageRequest,
@@ -29,6 +30,7 @@ import type {
   PushUnsubscribeRequest,
   ReactRequest,
   RealtimeFrame,
+  ReserveUploadRequest,
   SessionRequest,
   SetTopicRequest,
   StoredMessage,
@@ -45,8 +47,10 @@ import {
   MAX_MEDIA_BYTES,
   MAX_MESSAGES_PER_ROOM,
   MAX_PUSH_SUBSCRIPTIONS,
+  MAX_ROOM_MEDIA_BYTES,
   MESSAGE_RATE_LIMIT,
   MESSAGE_RATE_WINDOW_MS,
+  UPLOAD_TOKEN_TTL_MS,
 } from "../../shared/constants"
 import { sendWebPush, type PushSubscription, type VapidKeys } from "./webpush"
 
@@ -72,8 +76,17 @@ interface PushRecord {
   at: number
 }
 
+interface UploadReservation {
+  size: number
+  participantId: string
+  expiresAt: number
+  claimed: boolean
+}
+
 const SNAPSHOT_KEY = "snapshot"
 const PUSH_KEY = "pushSubs"
+const RATE_KEY = "rateWindows"
+const UPLOAD_RESERVATIONS_KEY = "uploadReservations"
 const PUSH_FOREGROUND_SUPPRESS_MS = 30_000
 // Signalling frames (typing/seen) are cheap, so they get a more generous rate
 // limit than message sends — but they are still bounded to stop floods.
@@ -95,8 +108,9 @@ export class RoomDurableObject {
   // Short-lived signalling frames (typing/seen) buffered so clients on the
   // polling fallback can receive them via the list response. In-memory only.
   private recentSignals: Array<{ at: number; frame: RealtimeFrame }> = []
-  // Per-participant send timestamps for rate limiting. In-memory only.
+  // Mirrored to storage so hibernation cannot reset abuse controls.
   private rate = new Map<string, number[]>()
+  private uploadReservations = new Map<string, UploadReservation>()
   // Lazily-loaded Web Push registrations, keyed by endpoint. Persisted so they
   // survive hibernation; null until first read.
   private pushSubs: Map<string, PushRecord> | null = null
@@ -107,8 +121,14 @@ export class RoomDurableObject {
     this.env = env
     this.core = new RoomCore()
     this.state.blockConcurrencyWhile(async () => {
-      const snap = await this.state.storage.get<RoomSnapshot>(SNAPSHOT_KEY)
+      const [snap, rate, reservations] = await Promise.all([
+        this.state.storage.get<RoomSnapshot>(SNAPSHOT_KEY),
+        this.state.storage.get<Record<string, number[]>>(RATE_KEY),
+        this.state.storage.get<Record<string, UploadReservation>>(UPLOAD_RESERVATIONS_KEY),
+      ])
       if (snap) this.core = new RoomCore(snap)
+      this.rate = new Map(Object.entries(rate ?? {}))
+      this.uploadReservations = new Map(Object.entries(reservations ?? {}))
       this.loaded = true
     })
   }
@@ -175,6 +195,10 @@ export class RoomDurableObject {
           return this.opReact(body as unknown as ReactRequest)
         case "broadcast":
           return this.opBroadcast(body as unknown as BroadcastRequest)
+        case "reserve-upload":
+          return this.opReserveUpload(body as unknown as ReserveUploadRequest)
+        case "claim-upload":
+          return this.opClaimUpload(body as unknown as ClaimUploadRequest)
         case "push-subscribe":
           return this.opPushSubscribe(body as unknown as PushSubscribeRequest)
         case "push-unsubscribe":
@@ -234,16 +258,47 @@ export class RoomDurableObject {
     return this.core.verifyParticipant(req.participantId, proofHash)
   }
 
-  // Sliding-window per-participant rate limiter. Best-effort; in-memory only.
-  private allowRate(id: string, now: number, limit = MESSAGE_RATE_LIMIT): boolean {
+  private async allowRate(id: string, now: number, limit = MESSAGE_RATE_LIMIT): Promise<boolean> {
+    for (const [key, timestamps] of this.rate) {
+      const active = timestamps.filter((t) => now - t < MESSAGE_RATE_WINDOW_MS)
+      if (active.length) this.rate.set(key, active)
+      else this.rate.delete(key)
+    }
     const arr = (this.rate.get(id) ?? []).filter((t) => now - t < MESSAGE_RATE_WINDOW_MS)
     if (arr.length >= limit) {
       this.rate.set(id, arr)
+      await this.state.storage.put(RATE_KEY, Object.fromEntries(this.rate))
       return false
     }
     arr.push(now)
     this.rate.set(id, arr)
+    await this.state.storage.put(RATE_KEY, Object.fromEntries(this.rate))
     return true
+  }
+
+  private async saveUploadReservations(): Promise<void> {
+    await this.state.storage.put(UPLOAD_RESERVATIONS_KEY, Object.fromEntries(this.uploadReservations))
+  }
+
+  private pendingUploadBytes(now: number): number {
+    let total = 0
+    for (const reservation of this.uploadReservations.values()) {
+      if (reservation.expiresAt > now) total += reservation.size
+    }
+    return total
+  }
+
+  private async sweepUploadReservations(now: number): Promise<void> {
+    const expired: string[] = []
+    for (const [objectKey, reservation] of this.uploadReservations) {
+      if (reservation.expiresAt <= now) {
+        expired.push(objectKey)
+        this.uploadReservations.delete(objectKey)
+      }
+    }
+    if (!expired.length) return
+    await this.saveUploadReservations()
+    await this.deleteObjects(expired)
   }
 
   // Generic guard for client-supplied identifier strings (message ids,
@@ -463,7 +518,19 @@ export class RoomDurableObject {
     if (!this.validMediaRefs(req.message.media, room.roomId)) {
       return json({ error: "bad media ref" }, 400)
     }
-    if (!this.allowRate(req.message.participantId, now)) {
+    if (this.core.hasMessage(req.message.id)) return json({ error: "message already exists" }, 409)
+    for (const ref of req.message.media ?? []) {
+      if (this.core.hasObjectKey(ref.objectKey)) return json({ error: "media already attached" }, 409)
+      const reservation = this.uploadReservations.get(ref.objectKey)
+      if (
+        !reservation ||
+        !reservation.claimed ||
+        reservation.participantId !== req.message.participantId ||
+        reservation.size !== ref.size ||
+        reservation.expiresAt <= now
+      ) return json({ error: "unreserved media" }, 409)
+    }
+    if (!(await this.allowRate(req.message.participantId, now))) {
       return json({ error: "rate limited" }, 429)
     }
     const message = this.core.addMessage(
@@ -479,6 +546,10 @@ export class RoomDurableObject {
       },
       now,
     )
+    if (req.message.media?.length) {
+      for (const ref of req.message.media) this.uploadReservations.delete(ref.objectKey)
+      await this.saveUploadReservations()
+    }
     // Deliver to connected peers immediately, before the storage round-trips
     // (persist + alarm scheduling), so realtime delivery feels instant.
     // Durability follows right after; a crash in the gap at worst drops a
@@ -516,7 +587,7 @@ export class RoomDurableObject {
     if (req.envelope.length > MAX_ENVELOPE_CHARS) {
       return json({ error: "message too large" }, 413)
     }
-    if (!this.allowRate(req.participantId, now)) {
+    if (!(await this.allowRate(req.participantId, now))) {
       return json({ error: "rate limited" }, 429)
     }
     const message = this.core.editMessage(
@@ -551,6 +622,8 @@ export class RoomDurableObject {
   }
 
   private async opList(req: ListMessagesRequest): Promise<Response> {
+    const room = this.core.getRoom()
+    if (room && room.deletedAt !== null) return json({ error: "deleted" }, 410)
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
     if (req.markReadFor && req.markReadFor !== req.participantId) {
@@ -567,6 +640,7 @@ export class RoomDurableObject {
     const swept = this.core.sweep(now)
     if (swept.orphanObjectKeys.length) await this.deleteObjects(swept.orphanObjectKeys)
     let messages = this.core.list(now)
+    const currentMessageIds = messages.map((message) => message.id)
     if (typeof req.since === "number") messages = messages.filter((m) => m.createdAt > req.since!)
 
     // burn-after-read: mark read for this reader (removes others' burn msgs)
@@ -580,7 +654,7 @@ export class RoomDurableObject {
     }
     const signalsSince = typeof req.signalsSince === "number" ? req.signalsSince : now
     const signals = this.recentSignals.filter((s) => s.at > signalsSince).map((s) => s.frame)
-    return json({ messages, room: this.core.publicState(now), serverTime: now, signals })
+    return json({ messages, currentMessageIds, room: this.core.publicState(now), serverTime: now, signals })
   }
 
   private async opPrune(req: PruneRequest): Promise<Response> {
@@ -618,7 +692,7 @@ export class RoomDurableObject {
         return json({ error: "bad envelope" }, 400)
       }
     }
-    if (!this.allowRate(req.participantId, Date.now())) {
+    if (!(await this.allowRate(req.participantId, Date.now()))) {
       return json({ error: "rate limited" }, 429)
     }
     const m = this.core.setReaction({
@@ -658,7 +732,7 @@ export class RoomDurableObject {
         return json({ error: "bad event" }, 400)
       }
     }
-    if (!this.allowRate(`sig:${req.participantId}`, Date.now(), SIGNAL_RATE_LIMIT)) {
+    if (!(await this.allowRate(`sig:${req.participantId}`, Date.now(), SIGNAL_RATE_LIMIT))) {
       return json({ error: "rate limited" }, 429)
     }
     const frame: RealtimeFrame = {
@@ -667,6 +741,56 @@ export class RoomDurableObject {
     }
     this.broadcast(frame)
     this.recordSignal(frame)
+    return json({ ok: true })
+  }
+
+  private async opReserveUpload(req: ReserveUploadRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) return json({ error: "bad participant proof" }, 403)
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
+    const room = this.core.getRoom()
+    const now = Date.now()
+    if (!room) return json({ error: "not found" }, 404)
+    if (this.core.isInviteExpired(now)) return json({ error: "expired" }, 410)
+    if (!isValidObjectKey(req.objectKey) || !req.objectKey.startsWith(`rooms/${room.roomId}/`)) {
+      return json({ error: "bad object key" }, 400)
+    }
+    if (!Number.isInteger(req.size) || req.size <= 0 || req.size > MAX_MEDIA_BYTES) {
+      return json({ error: "bad size" }, 400)
+    }
+    if (
+      !Number.isInteger(req.expiresAt) ||
+      req.expiresAt <= now ||
+      req.expiresAt > now + UPLOAD_TOKEN_TTL_MS + 5_000
+    ) return json({ error: "bad expiry" }, 400)
+    await this.sweepUploadReservations(now)
+    if (this.core.totalMediaBytes() + this.pendingUploadBytes(now) + req.size > MAX_ROOM_MEDIA_BYTES) {
+      return json({ error: "room media quota exceeded" }, 413)
+    }
+    if (this.uploadReservations.has(req.objectKey)) return json({ error: "already reserved" }, 409)
+    this.uploadReservations.set(req.objectKey, {
+      size: req.size,
+      participantId: req.participantId,
+      expiresAt: req.expiresAt,
+      claimed: false,
+    })
+    await this.saveUploadReservations()
+    await this.scheduleSweep()
+    return json({ ok: true })
+  }
+
+  private async opClaimUpload(req: ClaimUploadRequest): Promise<Response> {
+    if (!isValidObjectKey(req.objectKey) || !Number.isInteger(req.size)) {
+      return json({ error: "bad upload" }, 400)
+    }
+    const reservation = this.uploadReservations.get(req.objectKey)
+    if (!reservation || reservation.size !== req.size || reservation.expiresAt <= Date.now()) {
+      return json({ error: "upload reservation expired" }, 409)
+    }
+    if (reservation.claimed) return json({ error: "upload token already used" }, 409)
+    reservation.claimed = true
+    await this.saveUploadReservations()
     return json({ ok: true })
   }
 
@@ -922,7 +1046,10 @@ export class RoomDurableObject {
   // ---------- expiry alarm ----------
 
   private async scheduleSweep(): Promise<void> {
-    const next = this.core.nextExpiry()
+    let next = this.core.nextExpiry()
+    for (const reservation of this.uploadReservations.values()) {
+      if (next === null || reservation.expiresAt < next) next = reservation.expiresAt
+    }
     if (next === null) return
     const existing = await this.state.storage.getAlarm()
     if (existing === null || next < existing) {
@@ -935,6 +1062,7 @@ export class RoomDurableObject {
     const now = Date.now()
     // Whole-room self-destruct takes priority over per-message sweeps.
     if (await this.enforceLifetime(now)) return
+    await this.sweepUploadReservations(now)
     const swept = this.core.sweep(now)
     if (swept.removedIds.length) {
       await this.persist()
@@ -960,6 +1088,9 @@ export class RoomDurableObject {
     // Drop any push registrations along with the room data.
     this.pushSubs = new Map()
     await this.state.storage.delete(PUSH_KEY)
+    this.uploadReservations.clear()
+    this.rate.clear()
+    await this.state.storage.delete([UPLOAD_RESERVATIONS_KEY, RATE_KEY])
     this.broadcast({ t: "room-deleted" })
     for (const s of this.sessions) {
       try {

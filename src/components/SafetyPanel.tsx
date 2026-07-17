@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { BadgeCheck, Copy, Fingerprint, ShieldAlert, Smartphone } from "lucide-react"
-import { exportSigningKeyPair, signingFingerprint } from "@shared/crypto"
+import { exportSigningKeyPair, randomBytes, signingFingerprint, toBase64Url } from "@shared/crypto"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
 import { toQrDataUrl } from "../lib/qr"
@@ -48,16 +48,14 @@ export function SafetyPanel({
     toast("Marked as verified on this device")
   }
 
-  // Prepare an ephemeral, PIN-locked transfer code so this room (its keys,
+  // Prepare an ephemeral transfer code so this room (its keys,
   // identity and — if you are the owner — owner rights) can be added to another
-  // device by scanning the QR or pasting the code and entering the PIN.
+  // device by scanning the QR or pasting the code and entering the pairing secret.
   const startTransfer = async () => {
     if (preparing) return
     setPreparing(true)
     try {
-      const pinBytes = new Uint32Array(1)
-      globalThis.crypto.getRandomValues(pinBytes)
-      const pin = String(100000 + (pinBytes[0] % 900000))
+      const pairingSecret = toBase64Url(randomBytes(16))
       const signing = session.signing ? await exportSigningKeyPair(session.signing) : null
       const token = await buildDeviceTransfer(
         {
@@ -68,9 +66,9 @@ export function SafetyPanel({
           ownerSecret: session.ownerSecret,
           signing: signing ?? undefined,
         },
-        pin,
+        pairingSecret,
       )
-      setTransferPin(pin)
+      setTransferPin(pairingSecret)
       setTransfer(token)
       setTransferQr(await toQrDataUrl(token, prefs.theme === "dark"))
     } catch {
@@ -146,7 +144,7 @@ export function SafetyPanel({
             )}
           </div>
 
-          <span className="label">2. Enter this PIN there</span>
+          <span className="label">2. Enter this one-time pairing secret there</span>
           <div className="transfer-pin">{transferPin}</div>
 
           <span className="label">No camera? Copy the code and paste it instead</span>
@@ -157,7 +155,8 @@ export function SafetyPanel({
 
           <p className="hint">
             This code grants full access to the room (and owner rights, if you have them). Share it
-            only with your own device, and close this panel to expire it.
+            only with your own device. It expires automatically after ten minutes; closing this
+            panel removes the displayed copy.
           </p>
         </div>
       )}
@@ -168,7 +167,7 @@ export function SafetyPanel({
           and media are encrypted in your browser before upload, using keys derived from the invite
           secret. Compare this safety number with another participant (read it aloud or scan the QR)
           — if they match, no one has tampered with the keys. Each device also signs every message
-          it sends with a per-session key, so you will see a warning on any message whose signature
+          it sends with a per-room device key, so you will see a warning on any message whose signature
           does not check out or whose sender's key changes mid-conversation. Cloudflare may still
           process operational metadata such as IP addresses, timestamps, room IDs, and object sizes.
         </span>
