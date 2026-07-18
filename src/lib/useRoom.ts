@@ -629,7 +629,7 @@ export function useRoom(session: RoomSession): RoomController {
           refs.push(ref)
         } catch (e) {
           markSendFailed(id)
-          setError(e instanceof ApiError ? e.message : "Upload failed")
+          setError(e instanceof Error ? e.message : "Upload failed")
           return
         } finally {
           setTimeout(

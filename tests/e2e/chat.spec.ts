@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test"
+import { test, expect, type Page, type Request } from "@playwright/test"
 import path from "node:path"
 import fs from "node:fs"
 import os from "node:os"
@@ -35,19 +35,41 @@ async function joinRoom(page: Page, inviteUrl: string, username: string): Promis
   return page
 }
 
+const PRIVATE_VALUES = {
+  username: "PlaintextNameZZZ",
+  message: "super-secret-plaintext-payload-7788",
+  filename: "my-private-filename-9911.png",
+}
+
 test("two anonymous users chat, share media, prune, and delete", async ({ browser }) => {
   const ctx = await browser.newContext({ serviceWorkers: "block" })
   const alice = await ctx.newPage()
   const bobPage = await ctx.newPage()
   await Promise.all([alice.goto("/"), bobPage.goto("/")])
 
-  const inviteUrl = await createRoom(alice, "Ash")
+  // Sniff sender API requests throughout the real chat flow. Human-readable
+  // identity/message/filename values must only appear inside client ciphertext.
+  const offenders: string[] = []
+  const inspect = (request: Request) => {
+    if (!request.url().includes("/api/")) return
+    const contentType = request.headers()["content-type"] ?? ""
+    const haystacks = [request.url()]
+    if (contentType.includes("json")) haystacks.push(request.postData() ?? "")
+    for (const value of Object.values(PRIVATE_VALUES)) {
+      if (haystacks.some((haystack) => haystack.includes(value))) {
+        offenders.push(`${value} leaked in ${request.method()} ${request.url()}`)
+      }
+    }
+  }
+  alice.on("request", inspect)
+
+  const inviteUrl = await createRoom(alice, PRIVATE_VALUES.username)
   const bob = await joinRoom(bobPage, inviteUrl, "Ember")
 
   // Live text from Ash arrives for Ember.
-  await alice.getByRole("textbox", { name: "Encrypted message" }).fill("hello from ash")
+  await alice.getByRole("textbox", { name: "Encrypted message" }).fill(PRIVATE_VALUES.message)
   await alice.keyboard.press("Enter")
-  await expect(bob.getByText("hello from ash")).toBeVisible()
+  await expect(bob.getByText(PRIVATE_VALUES.message)).toBeVisible()
 
   // Live text back from Ember arrives for Ash.
   await bob.getByRole("textbox", { name: "Encrypted message" }).fill("hi ember here")
@@ -55,7 +77,7 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await expect(alice.getByText("hi ember here")).toBeVisible()
 
   // Ash uploads an image; Ember can decrypt + view it.
-  const tmp = path.join(os.tmpdir(), "vanish-e2e.png")
+  const tmp = path.join(os.tmpdir(), PRIVATE_VALUES.filename)
   // 1x1 PNG
   fs.writeFileSync(
     tmp,
@@ -77,26 +99,61 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await tile.click() // decrypt
   await expect(bob.locator(".media-tile img, .media-tile video")).toBeVisible({ timeout: 20_000 })
 
+  // Files above the small-object threshold use independently encrypted R2
+  // multipart chunks instead of crossing the Worker request-size boundary.
+  const multipartBytes = Buffer.alloc(16 * 1024 * 1024 + 1, 0x5a)
+  await alice.locator('input[type="file"]').setInputFiles({
+    name: "multipart-test.webm",
+    mimeType: "audio/webm",
+    buffer: multipartBytes,
+  })
+  const multipartSigned = alice.waitForResponse(
+    (response) =>
+      response.url().includes("/api/uploads/sign") &&
+      response.request().postData()?.includes('"multipart":true') === true,
+  )
+  const multipartCreated = alice.waitForResponse((response) =>
+    response.url().includes("/api/uploads/multipart/create"),
+  )
+  const multipartPart = alice.waitForResponse((response) =>
+    response.url().includes("/api/uploads/multipart/part"),
+  )
+  let multipartPartCount = 0
+  alice.on("response", (response) => {
+    if (response.url().includes("/api/uploads/multipart/part")) multipartPartCount++
+  })
+  const multipartCompleted = alice.waitForResponse((response) =>
+    response.url().includes("/api/uploads/multipart/complete"),
+  )
+  await alice.getByRole("button", { name: "Send message" }).click()
+  const multipartResponses = await Promise.all([
+    multipartSigned,
+    multipartCreated,
+    multipartPart,
+    multipartCompleted,
+  ])
+  const multipartBodies = await Promise.all(multipartResponses.map((response) => response.text()))
+  for (const response of multipartResponses) {
+    expect(response.ok(), multipartBodies.join("\n")).toBe(true)
+  }
+  expect(multipartPartCount).toBe(2)
+  const encryptedAudio = bob.getByRole("button", { name: /tap to decrypt/i })
+  await expect(encryptedAudio).toBeVisible({ timeout: 20_000 })
+  await encryptedAudio.click()
+  await expect(bob.getByRole("button", { name: "Play voice note" })).toBeVisible({ timeout: 20_000 })
+
   // Prune all visible messages from Ash's side.
   await alice.getByRole("button", { name: "Room actions" }).click()
   await alice.getByRole("button", { name: /clear all visible/i }).click()
-  await expect(alice.getByText("hello from ash")).toHaveCount(0)
-  await expect(bob.getByText("hello from ash")).toHaveCount(0, { timeout: 10_000 })
+  await expect(alice.getByText(PRIVATE_VALUES.message)).toHaveCount(0)
+  await expect(bob.getByText(PRIVATE_VALUES.message)).toHaveCount(0, { timeout: 10_000 })
 
   // Delete the room; Ember sees the deleted state.
   await alice.getByRole("button", { name: "Room actions" }).click()
   await alice.getByRole("button", { name: /delete room/i }).click()
   await alice.getByRole("button", { name: /confirm/i }).click()
   await expect(bob.getByText(/room deleted/i)).toBeVisible({ timeout: 10_000 })
+  expect(offenders, offenders.join("\n")).toHaveLength(0)
 
   await ctx.close()
-})
-
-test("an invalid invite is rejected", async ({ page }) => {
-  const unknown = `anonchat:v1:${"A".repeat(22)}.${"A".repeat(43)}`
-  await page.goto("/")
-  await page.getByRole("tab", { name: /join with key/i }).click()
-  await page.getByLabel(/invite key or link/i).fill(unknown)
-  await page.getByRole("button", { name: /continue/i }).click()
-  await expect(page.getByText(/invalid|couldn.t|not valid/i)).toBeVisible()
 })

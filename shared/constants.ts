@@ -3,10 +3,26 @@ import type { InviteExpiryOption } from "./types"
 export const DEFAULT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 export const MIN_MESSAGE_TTL_MS = 5 * 1000 // 5 seconds (burn-style)
 export const MAX_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
-export const MAX_MEDIA_BYTES = 50 * 1024 * 1024 // 50 MB encrypted blob ceiling
+const MIB = 1024 * 1024
+const GIB = 1024 * MIB
+
+/** Plaintext limit presented to users. Large files use encrypted multipart upload. */
+export const MAX_MEDIA_PLAINTEXT_BYTES = 2 * GIB
+/** Fixed plaintext size encrypted into every multipart part. */
+export const MEDIA_CHUNK_BYTES = 16 * MIB
+/** encryptBytes layout: version (1) + IV (12) + AES-GCM tag (16). */
+export const MEDIA_CHUNK_ENVELOPE_OVERHEAD = 29
+export const MEDIA_ENCRYPTED_CHUNK_BYTES = MEDIA_CHUNK_BYTES + MEDIA_CHUNK_ENVELOPE_OVERHEAD
+export const MAX_MEDIA_CHUNKS = Math.ceil(MAX_MEDIA_PLAINTEXT_BYTES / MEDIA_CHUNK_BYTES)
+/** Maximum server-stored ciphertext for one 2 GiB padded, chunk-encrypted file. */
+export const MAX_MEDIA_BYTES = MAX_MEDIA_CHUNKS * MEDIA_ENCRYPTED_CHUNK_BYTES
+/** Small files retain the original single-object format for compatibility. */
+export const MULTIPART_MEDIA_THRESHOLD_BYTES = 8 * MIB
+export const MAX_SINGLE_UPLOAD_BYTES = 16 * MIB
 export const UPLOAD_TOKEN_TTL_MS = 5 * 60 * 1000
+export const MULTIPART_UPLOAD_TOKEN_TTL_MS = 6 * 60 * 60 * 1000
 /** Total encrypted media retained by one room, including pending uploads. */
-export const MAX_ROOM_MEDIA_BYTES = 250 * 1024 * 1024
+export const MAX_ROOM_MEDIA_BYTES = 5 * GIB
 
 // ---------- abuse / resource controls (enforced in the Durable Object) ----------
 
