@@ -18,7 +18,22 @@ export default defineConfig({
     trace: "on-first-retry",
     video: "retain-on-failure",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // The local Pages emulator can stop accepting new document navigations once
+  // the Durable Object test holds long-lived WebSockets. Run navigation/API
+  // preflight coverage first, then make the realtime chat flow the final phase.
+  projects: [
+    {
+      name: "preflight",
+      testMatch: /privacy\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "chromium",
+      testMatch: /chat\.spec\.ts/,
+      dependencies: ["preflight"],
+      use: { ...devices["Desktop Chrome"] },
+    },
+  ],
   webServer: process.env.E2E_BASE_URL
     ? undefined
     : [

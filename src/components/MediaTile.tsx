@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react"
 import { Film, ImageIcon, Lock, Mic, Pause, Play } from "lucide-react"
 import type { RoomSession } from "../lib/session"
-import { decryptToObjectUrl, type MediaManifestItem } from "../lib/media"
+import {
+  decryptToObjectUrl,
+  requiresStreamingSave,
+  type MediaManifestItem,
+} from "../lib/media"
 import { formatBytes } from "../lib/format"
 
 export function MediaTile({
@@ -18,6 +22,7 @@ export function MediaTile({
   const [failed, setFailed] = useState(false)
   const alive = useRef(true)
   const isAudio = item.previewKind === "audio"
+  const downloadOnly = requiresStreamingSave(item)
   const autoDecryptAudio =
     isAudio && (item.encryptedSize ?? Number.MAX_SAFE_INTEGER) <= AUTO_DECRYPT_AUDIO_BYTES
 
@@ -33,7 +38,7 @@ export function MediaTile({
     setLoading(true)
     setFailed(false)
     try {
-      const u = await decryptToObjectUrl(session, item.objectKey, item.mime)
+      const u = await decryptToObjectUrl(session, item)
       if (alive.current) setUrl(u)
     } catch {
       if (alive.current) setFailed(true)
@@ -53,7 +58,11 @@ export function MediaTile({
     return (
       <div className="media-tile audio-tile" style={AUDIO_TILE}>
         <Mic size={14} style={AUDIO_ICON} />
-        {url ? (
+        {downloadOnly ? (
+          <button type="button" className="btn" style={AUDIO_RETRY} onClick={() => onOpen(item)}>
+            Open attachment · {formatBytes(item.size)}
+          </button>
+        ) : url ? (
           <VoicePlayer src={url} />
         ) : failed ? (
           <button type="button" className="btn" style={AUDIO_RETRY} onClick={decrypt}>
@@ -104,14 +113,24 @@ export function MediaTile({
   }
 
   return (
-    <button className="media-tile" onClick={decrypt} aria-label={`Decrypt ${item.filename}`}>
+    <button
+      className="media-tile"
+      onClick={downloadOnly ? () => onOpen(item) : decrypt}
+      aria-label={`${downloadOnly ? "Open" : "Decrypt"} ${item.filename}`}
+    >
       <span className="loadbtn">
         {loading ? (
           <span className="spinner" />
         ) : (
           <>
             <Lock size={18} />
-            <span>{failed ? "Failed — tap to retry" : "Tap to decrypt"}</span>
+            <span>{
+              downloadOnly
+                ? "Open to download"
+                : failed
+                  ? "Failed — tap to retry"
+                  : "Tap to decrypt"
+            }</span>
             <span style={DIM}>
               {item.previewKind} · {formatBytes(item.size)}
             </span>
