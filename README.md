@@ -26,9 +26,11 @@ it.
   member.
 - **Encrypted media & voice notes** — share images, video, and recorded voice notes; bytes,
   filenames, and captions are encrypted client-side and stored as opaque R2 blobs.
-  Drag-and-drop, clipboard paste, and an in-composer microphone recorder are supported.
+  Files up to 2 GiB are encrypted and uploaded in fixed 16 MiB multipart chunks, keeping
+  browser and Worker memory bounded. Drag-and-drop, clipboard paste, and an in-composer
+  microphone recorder are supported.
 - **Bounded media storage** — uploads require a participant-bound, one-use reservation and each
-  room has a 250 MB encrypted-media quota; unattached reservations are swept automatically.
+  room has a 5 GiB encrypted-media quota; unattached reservations are swept automatically.
 - **Replies, threading & reactions** — quote any message, follow reply chains, and react with
   emoji; replies and reactions are encrypted too.
 - **Edit & delete your own messages** — revise or retract anything you sent; edits and

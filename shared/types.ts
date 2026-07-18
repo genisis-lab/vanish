@@ -185,6 +185,8 @@ export interface SignUploadRequest {
   participantProof: string
   size: number
   previewKind: "image" | "video" | "audio"
+  /** Large files use R2 multipart upload; size is the final encrypted object size. */
+  multipart?: boolean
 }
 
 export interface ReserveUploadRequest {
@@ -207,12 +209,31 @@ export interface SignUploadResponse {
   uploadUrl: string
   token: string
   expiresAt: number
+  /** Final encrypted object size bound into token. */
+  size: number
+  multipart?: boolean
+}
+
+export interface MultipartCreateResponse {
+  uploadId: string
+}
+
+export interface MultipartUploadedPart {
+  partNumber: number
+  etag: string
+}
+
+export interface MultipartCompleteRequest {
+  parts: MultipartUploadedPart[]
 }
 
 export interface DownloadRequest {
   roomId: string
   accessProof: string
   objectKey: string
+  /** Optional authenticated R2 byte range for chunked media. */
+  offset?: number
+  length?: number
 }
 
 export interface PruneRequest {
