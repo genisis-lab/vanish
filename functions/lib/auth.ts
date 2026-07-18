@@ -1,8 +1,9 @@
-// One-time R2 upload tokens.
+// Object-scoped R2 upload tokens.
 //
 // The token only authorizes writing a specific encrypted object of a specific
-// size before an expiry. It is unrelated to end-to-end encryption — the bytes
-// being uploaded are already ciphertext.
+// size before an expiry. Single-object tokens are claimed once; multipart
+// tokens authorize the bounded create/part/complete sequence for that object.
+// This is unrelated to end-to-end encryption — uploaded bytes are ciphertext.
 
 import { toBase64Url, utf8 } from "../../shared/crypto"
 import { timingSafeEqual } from "../../shared/roomCore"

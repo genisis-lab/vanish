@@ -7,6 +7,8 @@ import type {
   EditMessageRequest,
   ListMessagesRequest,
   ListMessagesResponse,
+  MultipartCreateResponse,
+  MultipartUploadedPart,
   OwnerActionRequest,
   PostMessageRequest,
   PruneRequest,
@@ -170,6 +172,65 @@ export const api = {
       xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
     })
   },
+  async createMultipartUpload(sign: SignUploadResponse): Promise<MultipartCreateResponse> {
+    const res = await fetch(`${sign.uploadUrl}/create`, {
+      method: "POST",
+      headers: uploadHeaders(sign),
+    })
+    return uploadResponseJson<MultipartCreateResponse>(res, "could not start upload")
+  },
+  async uploadMultipartPart(
+    sign: SignUploadResponse,
+    uploadId: string,
+    partNumber: number,
+    bytes: Uint8Array,
+    onProgress?: (loaded: number, total: number) => void,
+  ): Promise<MultipartUploadedPart> {
+    return new Promise<MultipartUploadedPart>((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open("PUT", `${sign.uploadUrl}/part`, true)
+      for (const [name, value] of Object.entries(uploadHeaders(sign))) xhr.setRequestHeader(name, value)
+      xhr.setRequestHeader("x-vanish-upload-id", uploadId)
+      xhr.setRequestHeader("x-vanish-part", String(partNumber))
+      xhr.setRequestHeader("content-type", "application/octet-stream")
+      xhr.upload.onprogress = (event) => onProgress?.(event.loaded, event.total || bytes.byteLength)
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new ApiError(xhr.status, friendlyError(xhr.status, "part upload failed")))
+          return
+        }
+        try {
+          resolve(JSON.parse(xhr.responseText) as MultipartUploadedPart)
+        } catch {
+          reject(new ApiError(xhr.status, "Invalid multipart response"))
+        }
+      }
+      xhr.onerror = () => reject(new ApiError(0, friendlyError(0, "network error")))
+      xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
+    })
+  },
+  async completeMultipartUpload(
+    sign: SignUploadResponse,
+    uploadId: string,
+    parts: MultipartUploadedPart[],
+  ): Promise<void> {
+    const res = await fetch(`${sign.uploadUrl}/complete`, {
+      method: "POST",
+      headers: {
+        ...uploadHeaders(sign),
+        "x-vanish-upload-id": uploadId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ parts }),
+    })
+    await uploadResponseJson(res, "could not complete upload")
+  },
+  async abortMultipartUpload(sign: SignUploadResponse, uploadId: string): Promise<void> {
+    await fetch(`${sign.uploadUrl}/abort`, {
+      method: "DELETE",
+      headers: { ...uploadHeaders(sign), "x-vanish-upload-id": uploadId },
+    }).catch(() => undefined)
+  },
   async downloadBlob(roomId: string, accessProof: string, objectKey: string): Promise<Uint8Array> {
     const res = await fetch("/api/uploads/download", {
       method: "POST",
@@ -182,4 +243,39 @@ export const api = {
     }
     return new Uint8Array(await res.arrayBuffer())
   },
+  async downloadBlobRange(
+    roomId: string,
+    accessProof: string,
+    objectKey: string,
+    offset: number,
+    length: number,
+  ): Promise<Uint8Array> {
+    const res = await fetch("/api/uploads/download", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomId, accessProof, objectKey, offset, length }),
+    })
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string }
+      throw new ApiError(res.status, friendlyError(res.status, data.error || res.statusText))
+    }
+    return new Uint8Array(await res.arrayBuffer())
+  },
+}
+
+function uploadHeaders(sign: SignUploadResponse): Record<string, string> {
+  return {
+    "x-vanish-token": sign.token,
+    "x-vanish-object": sign.objectKey,
+    "x-vanish-size": String(sign.size),
+    "x-vanish-expires": String(sign.expiresAt),
+  }
+}
+
+async function uploadResponseJson<T = unknown>(response: Response, fallback: string): Promise<T> {
+  const data = (await response.json().catch(() => ({}))) as T & { error?: string }
+  if (!response.ok) {
+    throw new ApiError(response.status, friendlyError(response.status, data.error || fallback))
+  }
+  return data
 }

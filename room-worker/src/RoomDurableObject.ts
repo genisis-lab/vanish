@@ -48,6 +48,7 @@ import {
   MAX_MESSAGES_PER_ROOM,
   MAX_PUSH_SUBSCRIPTIONS,
   MAX_ROOM_MEDIA_BYTES,
+  MULTIPART_UPLOAD_TOKEN_TTL_MS,
   MESSAGE_RATE_LIMIT,
   MESSAGE_RATE_WINDOW_MS,
   UPLOAD_TOKEN_TTL_MS,
@@ -762,7 +763,7 @@ export class RoomDurableObject {
     if (
       !Number.isInteger(req.expiresAt) ||
       req.expiresAt <= now ||
-      req.expiresAt > now + UPLOAD_TOKEN_TTL_MS + 5_000
+      req.expiresAt > now + Math.max(UPLOAD_TOKEN_TTL_MS, MULTIPART_UPLOAD_TOKEN_TTL_MS) + 5_000
     ) return json({ error: "bad expiry" }, 400)
     await this.sweepUploadReservations(now)
     if (this.core.totalMediaBytes() + this.pendingUploadBytes(now) + req.size > MAX_ROOM_MEDIA_BYTES) {
