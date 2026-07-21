@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc -p tsconfig.build.json && tsc -p functions/tsconfig.json && tsc -p room-worker/tsconfig.json",
-    "pages:dev": "wrangler pages dev dist --compatibility-date=2024-11-06",
+    "pages:dev": "wrangler pages dev dist --compatibility-date=2026-07-17",
     "pages:deploy": "wrangler pages deploy dist",
     "worker:deploy": "wrangler deploy -c room-worker/wrangler.toml",
     "worker:dev": "wrangler dev -c room-worker/wrangler.toml",

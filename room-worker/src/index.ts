@@ -1,8 +1,7 @@
 // Companion Worker entry. Exports the Durable Object class so Pages can bind to
-// it via `script_name`. The default fetch handler is a thin router used mainly
-// for health checks and direct (non-Pages) access during local development.
+// it via `script_name`. The default fetch handler exposes only a health check;
+// room operations must cross the validated Pages service-binding boundary.
 
-import { isValidRoomId } from "../../shared/constants"
 import { RoomDurableObject, type RoomEnv } from "./RoomDurableObject"
 import { AbuseDurableObject } from "./AbuseDurableObject"
 
@@ -21,17 +20,10 @@ export default {
         headers: { "content-type": "application/json" },
       })
     }
-    // /room/<roomId>/<op> -> forward to the matching Durable Object.
-    const match = url.pathname.match(/^\/room\/([^/]+)\/(.+)$/)
-    if (match) {
-      const [, roomId, op] = match
-      if (!isValidRoomId(roomId)) return new Response("not found", { status: 404 })
-      const id = env.ROOM.idFromName(roomId)
-      const stub = env.ROOM.get(id)
-      const target = new URL(request.url)
-      target.pathname = `/${op}`
-      return stub.fetch(new Request(target.toString(), request))
-    }
+    // Room operations are intentionally not routed through this public fetch
+    // handler. Pages reaches the namespaces through service bindings, preserving
+    // validation and rate limits at the only supported external boundary.
+    void env
     return new Response("not found", { status: 404 })
   },
 }

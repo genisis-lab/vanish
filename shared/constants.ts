@@ -24,6 +24,9 @@ export const MULTIPART_UPLOAD_TOKEN_TTL_MS = 6 * 60 * 60 * 1000
 /** Total encrypted media retained by one room, including pending uploads. */
 export const MAX_ROOM_MEDIA_BYTES = 5 * GIB
 
+/** Maximum JSON request body accepted by Pages Functions. */
+export const MAX_JSON_BODY_BYTES = 256 * 1024
+
 // ---------- abuse / resource controls (enforced in the Durable Object) ----------
 
 /** Max characters in a single message envelope (base64url); ~150 KB of bytes. */
@@ -33,6 +36,12 @@ export const MAX_MESSAGES_PER_ROOM = 2000
 /** Per-participant send rate limit. */
 export const MESSAGE_RATE_LIMIT = 30
 export const MESSAGE_RATE_WINDOW_MS = 10_000
+/** Bound persistent and live per-room state against invite-holder abuse. */
+export const MAX_PARTICIPANTS_PER_ROOM = 1024
+export const MAX_UPLOAD_RESERVATIONS = 256
+export const MAX_REACTIONS_PER_MESSAGE = 64
+export const MAX_WS_CONNECTIONS_PER_ROOM = 128
+export const MAX_WS_CONNECTIONS_PER_PARTICIPANT = 4
 
 // ---------- identifier validation (shared by Pages Functions + the DO) ----------
 
@@ -53,8 +62,15 @@ export function isValidObjectKey(key: unknown): key is string {
 /** Generic ceiling for client-supplied ids (message ids, participant ids). */
 export const MAX_ID_CHARS = 128
 
+/** 32 random/hash bytes encoded without base64 padding. */
+export const PROOF_PATTERN = /^[A-Za-z0-9_-]{43}$/
+
+export function isValidProof(value: unknown): value is string {
+  return typeof value === "string" && PROOF_PATTERN.test(value)
+}
+
 /** Cap on stored Web Push registrations per room (oldest evicted beyond this). */
-export const MAX_PUSH_SUBSCRIPTIONS = 64
+export const MAX_PUSH_SUBSCRIPTIONS = 32
 
 export const TTL_PRESETS: { label: string; ms: number }[] = [
   { label: "30 seconds", ms: 30 * 1000 },
@@ -81,7 +97,7 @@ export const ROOM_LIFETIME_PRESETS: { label: string; ms: number }[] = [
 
 /** Clamp a requested room lifetime; returns 0 when disabled/invalid. */
 export function clampRoomLifetime(ms: number | undefined): number {
-  if (!ms || Number.isNaN(ms) || ms <= 0) return 0
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return 0
   return Math.min(MAX_ROOM_LIFETIME_MS, Math.floor(ms))
 }
 
@@ -98,6 +114,6 @@ export function inviteExpiryToMs(option: InviteExpiryOption, now: number): numbe
 }
 
 export function clampTtl(ms: number | undefined, fallback = DEFAULT_MESSAGE_TTL_MS): number {
-  if (!ms || Number.isNaN(ms)) return fallback
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return fallback
   return Math.min(MAX_MESSAGE_TTL_MS, Math.max(MIN_MESSAGE_TTL_MS, Math.floor(ms)))
 }

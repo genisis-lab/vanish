@@ -14,10 +14,11 @@
 // operational metadata (ids, timestamps, sizes, verifier hashes).
 
 import { RoomCore, type RoomSnapshot } from "../../shared/roomCore"
-import { hashAccessProof } from "../../shared/crypto"
+import { fromBase64Url, hashAccessProof } from "../../shared/crypto"
 import type {
   BroadcastRequest,
   ClaimUploadRequest,
+  CompleteUploadRequest,
   CreateRoomRequest,
   DeleteOwnMessageRequest,
   EditMessageRequest,
@@ -41,13 +42,18 @@ import {
   clampRoomLifetime,
   inviteExpiryToMs,
   isValidObjectKey,
+  isValidProof,
   isValidRoomId,
   MAX_ENVELOPE_CHARS,
   MAX_ID_CHARS,
   MAX_MEDIA_BYTES,
   MAX_MESSAGES_PER_ROOM,
+  MAX_PARTICIPANTS_PER_ROOM,
   MAX_PUSH_SUBSCRIPTIONS,
   MAX_ROOM_MEDIA_BYTES,
+  MAX_UPLOAD_RESERVATIONS,
+  MAX_WS_CONNECTIONS_PER_PARTICIPANT,
+  MAX_WS_CONNECTIONS_PER_ROOM,
   MULTIPART_UPLOAD_TOKEN_TTL_MS,
   MESSAGE_RATE_LIMIT,
   MESSAGE_RATE_WINDOW_MS,
@@ -82,6 +88,8 @@ interface UploadReservation {
   participantId: string
   expiresAt: number
   claimed: boolean
+  /** Set only after Pages verifies that R2 published the exact reserved bytes. */
+  completed?: boolean
 }
 
 const SNAPSHOT_KEY = "snapshot"
@@ -200,6 +208,8 @@ export class RoomDurableObject {
           return this.opReserveUpload(body as unknown as ReserveUploadRequest)
         case "claim-upload":
           return this.opClaimUpload(body as unknown as ClaimUploadRequest)
+        case "complete-upload":
+          return this.opCompleteUpload(body as unknown as CompleteUploadRequest)
         case "push-subscribe":
           return this.opPushSubscribe(body as unknown as PushSubscribeRequest)
         case "push-unsubscribe":
@@ -210,28 +220,27 @@ export class RoomDurableObject {
           return json({ error: "unknown op" }, 404)
       }
     } catch (err) {
-      return json({ error: (err as Error).message || "internal error" }, 500)
+      console.error(JSON.stringify({ message: "room operation failed", op, error: String(err) }))
+      return json({ error: "internal error" }, 500)
     }
   }
 
   // ---------- proof gates ----------
 
   private async verifyProof(accessProof: string | undefined): Promise<boolean> {
-    if (!accessProof || typeof accessProof !== "string") return false
-    const hash = await hashAccessProof(accessProof)
-    return this.core.verifyHash(hash)
+    const hash = await this.hashPresentedProof(accessProof)
+    return hash !== null && this.core.verifyHash(hash)
   }
 
   // Owner proof-of-possession: the raw owner secret hashes to the stored owner
   // verifier. Distinct from the access proof so only the creator can moderate.
   private async verifyOwnerProof(ownerProof: string | undefined): Promise<boolean> {
-    if (!ownerProof || typeof ownerProof !== "string") return false
-    const hash = await hashAccessProof(ownerProof)
-    return this.core.verifyOwner(hash)
+    const hash = await this.hashPresentedProof(ownerProof)
+    return hash !== null && this.core.verifyOwner(hash)
   }
 
   private async hashPresentedProof(proof: string | undefined): Promise<string | null> {
-    if (!proof || typeof proof !== "string" || proof.length > 200) return null
+    if (!isValidProof(proof)) return null
     try {
       return await hashAccessProof(proof)
     } catch {
@@ -308,6 +317,18 @@ export class RoomDurableObject {
     return typeof id === "string" && id.length > 0 && id.length <= MAX_ID_CHARS
   }
 
+  private validIdList(ids: unknown): ids is string[] {
+    return (
+      Array.isArray(ids) &&
+      ids.length <= MAX_MESSAGES_PER_ROOM &&
+      ids.every((id) => this.validId(id))
+    )
+  }
+
+  private validOptionalNumber(value: unknown): value is number | undefined {
+    return value === undefined || (typeof value === "number" && Number.isFinite(value))
+  }
+
   // Media refs must point inside THIS room's R2 prefix and match the exact key
   // pattern minted by /api/uploads/sign. Without this check a sender could
   // attach another room's object keys to a message and have our expiry sweeps
@@ -334,7 +355,32 @@ export class RoomDurableObject {
       return false
     }
     try {
-      return new URL(endpoint).protocol === "https:"
+      const url = new URL(endpoint)
+      if (
+        url.protocol !== "https:" ||
+        url.username ||
+        url.password ||
+        url.port ||
+        url.hash
+      ) return false
+      const host = url.hostname.toLowerCase()
+      return (
+        host === "fcm.googleapis.com" ||
+        host === "updates.push.services.mozilla.com" ||
+        host === "push.services.mozilla.com" ||
+        host === "web.push.apple.com" ||
+        host.endsWith(".notify.windows.com")
+      )
+    } catch {
+      return false
+    }
+  }
+
+  private validPushKey(value: unknown, expectedBytes: number, uncompressedPoint = false): boolean {
+    if (typeof value !== "string" || !value || value.length > MAX_PUSH_KEY_CHARS) return false
+    try {
+      const bytes = fromBase64Url(value)
+      return bytes.length === expectedBytes && (!uncompressedPoint || bytes[0] === 4)
     } catch {
       return false
     }
@@ -348,17 +394,36 @@ export class RoomDurableObject {
     // Room ids become R2 key prefixes and DO names; reject anything that could
     // collide with another room's prefix (e.g. ids containing "/").
     if (!isValidRoomId(req.roomId)) return json({ error: "bad room id" }, 400)
-    if (typeof req.accessProofHash !== "string" || req.accessProofHash.length > 200) {
+    if (!isValidProof(req.accessProofHash)) {
       return json({ error: "bad verifier" }, 400)
+    }
+    if (!["never", "24h", "7d"].includes(req.inviteExpiry)) return json({ error: "bad expiry" }, 400)
+    if (!this.validOptionalNumber(req.ttlMs) || !this.validOptionalNumber(req.roomLifetimeMs)) {
+      return json({ error: "bad room policy" }, 400)
+    }
+    if (req.burnAfterRead !== undefined && typeof req.burnAfterRead !== "boolean") {
+      return json({ error: "bad room policy" }, 400)
     }
     if (
       req.ownerKeyHash != null &&
-      (typeof req.ownerKeyHash !== "string" || req.ownerKeyHash.length > 200)
+      !isValidProof(req.ownerKeyHash)
     ) {
       return json({ error: "bad verifier" }, 400)
     }
-    if (req.topicEnvelope && req.topicEnvelope.length > MAX_ENVELOPE_CHARS) {
+    if (
+      req.topicEnvelope != null &&
+      (typeof req.topicEnvelope !== "string" || req.topicEnvelope.length > MAX_ENVELOPE_CHARS)
+    ) {
       return json({ error: "too large" }, 413)
+    }
+    const existing = this.core.getRoom()
+    if (existing) {
+      // Idempotent retries must present the original verifier. Do not expose
+      // metadata for an existing room or resurrect a deleted room identifier.
+      if (existing.deletedAt !== null || !this.core.verifyHash(req.accessProofHash)) {
+        return json({ error: "room unavailable" }, 409)
+      }
+      return json({ room: this.core.publicState(now) })
     }
     this.core.createRoom({
       roomId: req.roomId,
@@ -379,6 +444,7 @@ export class RoomDurableObject {
 
   private async opValidate(req: ValidateInviteRequest): Promise<Response> {
     const now = Date.now()
+    if (!isValidProof(req.accessProofHash)) return json({ status: "invalid" })
     const status = this.core.validateInvite(req.accessProofHash ?? "", now)
     return json({ status, room: status === "valid" ? this.core.publicState(now) : undefined })
   }
@@ -401,6 +467,15 @@ export class RoomDurableObject {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
     const now = Date.now()
+    if (req.inviteExpiry !== undefined && !["never", "24h", "7d"].includes(req.inviteExpiry)) {
+      return json({ error: "bad expiry" }, 400)
+    }
+    if (!this.validOptionalNumber(req.ttlMs) || !this.validOptionalNumber(req.roomLifetimeMs)) {
+      return json({ error: "bad room policy" }, 400)
+    }
+    if (req.burnAfterRead !== undefined && typeof req.burnAfterRead !== "boolean") {
+      return json({ error: "bad room policy" }, 400)
+    }
     let destroyAt: number | null | undefined
     if (req.roomLifetimeMs !== undefined) {
       const lifetime = clampRoomLifetime(req.roomLifetimeMs)
@@ -425,6 +500,7 @@ export class RoomDurableObject {
     if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
     const now = Date.now()
     const envelope = req.topicEnvelope ?? null
+    if (envelope !== null && typeof envelope !== "string") return json({ error: "bad topic" }, 400)
     if (envelope && envelope.length > MAX_ENVELOPE_CHARS) return json({ error: "too large" }, 413)
     const room = this.core.setTopic(envelope)
     if (!room) return json({ error: "not found" }, 404)
@@ -442,7 +518,11 @@ export class RoomDurableObject {
     const now = Date.now()
     switch (req.action) {
       case "ban": {
-        if (!req.targetParticipantId) return json({ error: "missing target" }, 400)
+        if (!this.validId(req.targetParticipantId)) return json({ error: "bad target" }, 400)
+        const banned = this.core.getRoom()?.banned ?? []
+        if (!banned.includes(req.targetParticipantId) && banned.length >= MAX_PARTICIPANTS_PER_ROOM) {
+          return json({ error: "too many bans" }, 413)
+        }
         this.core.banParticipant(req.targetParticipantId)
         await this.persist()
         // Notify the banned device, then drop its live sockets.
@@ -463,7 +543,7 @@ export class RoomDurableObject {
         return json({ room: state })
       }
       case "unban": {
-        if (!req.targetParticipantId) return json({ error: "missing target" }, 400)
+        if (!this.validId(req.targetParticipantId)) return json({ error: "bad target" }, 400)
         this.core.unbanParticipant(req.targetParticipantId)
         await this.persist()
         const state = this.core.publicState(now)
@@ -502,7 +582,10 @@ export class RoomDurableObject {
     }
     if (this.core.isBanned(req.message.participantId)) return json({ error: "banned" }, 403)
     const now = Date.now()
-    if (this.core.isInviteExpired(now) && req.message.kind !== "system") {
+    if (req.message.kind !== "text" && req.message.kind !== "media") {
+      return json({ error: "bad message kind" }, 400)
+    }
+    if (this.core.isInviteExpired(now)) {
       // Expired invites block new joins/sends but existing data is preserved.
       return json({ error: "expired" }, 410)
     }
@@ -511,13 +594,24 @@ export class RoomDurableObject {
     if (req.message.envelope.length > MAX_ENVELOPE_CHARS) {
       return json({ error: "message too large" }, 413)
     }
-    if (typeof req.message.kind !== "string" || req.message.kind.length > 32) {
-      return json({ error: "bad message" }, 400)
+    if (
+      req.message.senderSlot != null &&
+      (typeof req.message.senderSlot !== "string" || req.message.senderSlot.length > 32)
+    ) return json({ error: "bad message" }, 400)
+    if (!this.validOptionalNumber(req.message.ttlMs)) return json({ error: "bad ttl" }, 400)
+    if (req.message.burn !== undefined && typeof req.message.burn !== "boolean") {
+      return json({ error: "bad burn setting" }, 400)
     }
     const room = this.core.getRoom()
     if (!room) return json({ error: "not found" }, 404)
     if (!this.validMediaRefs(req.message.media, room.roomId)) {
       return json({ error: "bad media ref" }, 400)
+    }
+    if (req.message.kind === "media" && !req.message.media?.length) {
+      return json({ error: "missing media" }, 400)
+    }
+    if (req.message.kind === "text" && req.message.media?.length) {
+      return json({ error: "unexpected media" }, 400)
     }
     if (this.core.hasMessage(req.message.id)) return json({ error: "message already exists" }, 409)
     for (const ref of req.message.media ?? []) {
@@ -525,7 +619,7 @@ export class RoomDurableObject {
       const reservation = this.uploadReservations.get(ref.objectKey)
       if (
         !reservation ||
-        !reservation.claimed ||
+        !reservation.completed ||
         reservation.participantId !== req.message.participantId ||
         reservation.size !== ref.size ||
         reservation.expiresAt <= now
@@ -558,7 +652,7 @@ export class RoomDurableObject {
     this.broadcast({ t: "message", message })
     // Wake background/closed devices via Web Push. Fire-and-forget so it never
     // blocks the send; only real content triggers it.
-    if (req.message.kind !== "system") void this.sendPushNotifications(message)
+    this.state.waitUntil(this.sendPushNotifications(message))
     // Rolling per-room cap: prune the oldest messages beyond the ceiling.
     const all = this.core.list(now)
     if (all.length > MAX_MESSAGES_PER_ROOM) {
@@ -583,6 +677,7 @@ export class RoomDurableObject {
       return json({ error: "bad participant proof" }, 403)
     }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
+    if (!this.validId(req.messageId)) return json({ error: "bad message" }, 400)
     const now = Date.now()
     if (typeof req.envelope !== "string" || !req.envelope) return json({ error: "bad envelope" }, 400)
     if (req.envelope.length > MAX_ENVELOPE_CHARS) {
@@ -610,6 +705,7 @@ export class RoomDurableObject {
       return json({ error: "bad participant proof" }, 403)
     }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
+    if (!this.validId(req.messageId)) return json({ error: "bad message" }, 400)
     const now = Date.now()
     const result = this.core.deleteOwnMessage(
       { messageId: req.messageId, participantId: req.participantId },
@@ -660,6 +756,7 @@ export class RoomDurableObject {
 
   private async opPrune(req: PruneRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!req.all && !this.validIdList(req.messageIds)) return json({ error: "bad message ids" }, 400)
     let result: { removedIds: string[]; orphanObjectKeys: string[] }
     if (req.all) {
       if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
@@ -684,6 +781,7 @@ export class RoomDurableObject {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
     if (!this.validId(req.reactionId)) return json({ error: "bad reaction" }, 400)
+    if (!this.validId(req.messageId)) return json({ error: "bad message" }, 400)
     if (!(await this.verifyParticipantProof(req))) {
       return json({ error: "bad participant proof" }, 403)
     }
@@ -695,6 +793,11 @@ export class RoomDurableObject {
     }
     if (!(await this.allowRate(req.participantId, Date.now()))) {
       return json({ error: "rate limited" }, 429)
+    }
+    const reactionCapacity = this.core.reactionCapacity(req.messageId, req.reactionId)
+    if (reactionCapacity === null) return json({ error: "not found" }, 404)
+    if (!reactionCapacity && req.envelope !== null) {
+      return json({ error: "too many reactions" }, 413)
     }
     const m = this.core.setReaction({
       messageId: req.messageId,
@@ -738,7 +841,11 @@ export class RoomDurableObject {
     }
     const frame: RealtimeFrame = {
       t: "signal",
-      event: { ...req.event, participantId: req.participantId },
+      event: {
+        type: req.event.type,
+        envelope: req.event.envelope,
+        participantId: req.participantId,
+      },
     }
     this.broadcast(frame)
     this.recordSignal(frame)
@@ -757,15 +864,18 @@ export class RoomDurableObject {
     if (!isValidObjectKey(req.objectKey) || !req.objectKey.startsWith(`rooms/${room.roomId}/`)) {
       return json({ error: "bad object key" }, 400)
     }
-    if (!Number.isInteger(req.size) || req.size <= 0 || req.size > MAX_MEDIA_BYTES) {
+    if (!Number.isSafeInteger(req.size) || req.size <= 0 || req.size > MAX_MEDIA_BYTES) {
       return json({ error: "bad size" }, 400)
     }
     if (
-      !Number.isInteger(req.expiresAt) ||
+      !Number.isSafeInteger(req.expiresAt) ||
       req.expiresAt <= now ||
       req.expiresAt > now + Math.max(UPLOAD_TOKEN_TTL_MS, MULTIPART_UPLOAD_TOKEN_TTL_MS) + 5_000
     ) return json({ error: "bad expiry" }, 400)
     await this.sweepUploadReservations(now)
+    if (this.uploadReservations.size >= MAX_UPLOAD_RESERVATIONS) {
+      return json({ error: "too many pending uploads" }, 429)
+    }
     if (this.core.totalMediaBytes() + this.pendingUploadBytes(now) + req.size > MAX_ROOM_MEDIA_BYTES) {
       return json({ error: "room media quota exceeded" }, 413)
     }
@@ -775,6 +885,7 @@ export class RoomDurableObject {
       participantId: req.participantId,
       expiresAt: req.expiresAt,
       claimed: false,
+      completed: false,
     })
     await this.saveUploadReservations()
     await this.scheduleSweep()
@@ -782,7 +893,7 @@ export class RoomDurableObject {
   }
 
   private async opClaimUpload(req: ClaimUploadRequest): Promise<Response> {
-    if (!isValidObjectKey(req.objectKey) || !Number.isInteger(req.size)) {
+    if (!isValidObjectKey(req.objectKey) || !Number.isSafeInteger(req.size)) {
       return json({ error: "bad upload" }, 400)
     }
     const reservation = this.uploadReservations.get(req.objectKey)
@@ -791,6 +902,20 @@ export class RoomDurableObject {
     }
     if (reservation.claimed) return json({ error: "upload token already used" }, 409)
     reservation.claimed = true
+    await this.saveUploadReservations()
+    return json({ ok: true })
+  }
+
+  private async opCompleteUpload(req: CompleteUploadRequest): Promise<Response> {
+    if (!isValidObjectKey(req.objectKey) || !Number.isSafeInteger(req.size)) {
+      return json({ error: "bad upload" }, 400)
+    }
+    const reservation = this.uploadReservations.get(req.objectKey)
+    if (!reservation || reservation.size !== req.size || reservation.expiresAt <= Date.now()) {
+      return json({ error: "upload reservation expired" }, 409)
+    }
+    if (!reservation.claimed) return json({ error: "upload not claimed" }, 409)
+    reservation.completed = true
     await this.saveUploadReservations()
     return json({ ok: true })
   }
@@ -836,10 +961,10 @@ export class RoomDurableObject {
       return json({ error: "bad subscription" }, 400)
     }
     if (!this.validPushEndpoint(s.endpoint)) return json({ error: "bad subscription" }, 400)
-    if (typeof s.keys.p256dh !== "string" || s.keys.p256dh.length > MAX_PUSH_KEY_CHARS) {
+    if (!this.validPushKey(s.keys.p256dh, 65, true)) {
       return json({ error: "bad subscription" }, 400)
     }
-    if (typeof s.keys.auth !== "string" || s.keys.auth.length > MAX_PUSH_KEY_CHARS) {
+    if (!this.validPushKey(s.keys.auth, 16)) {
       return json({ error: "bad subscription" }, 400)
     }
     const subs = await this.getPushSubs()
@@ -949,6 +1074,16 @@ export class RoomDurableObject {
     if (this.core.isBanned(participantId)) return new Response("banned", { status: 403 })
     const now = Date.now()
     if (this.core.isInviteExpired(now)) return new Response("expired", { status: 410 })
+    if (this.sessions.size >= MAX_WS_CONNECTIONS_PER_ROOM) {
+      return new Response("too many connections", { status: 429 })
+    }
+    let participantConnections = 0
+    for (const active of this.sessions) {
+      if (active.participantId === participantId) participantConnections++
+    }
+    if (participantConnections >= MAX_WS_CONNECTIONS_PER_PARTICIPANT) {
+      return new Response("too many participant connections", { status: 429 })
+    }
 
     const pair = new WebSocketPair()
     const client = pair[0]
@@ -959,7 +1094,7 @@ export class RoomDurableObject {
     this.core.touchParticipant(participantId, now)
 
     server.addEventListener("message", (event: MessageEvent) => {
-      this.onClientFrame(session, event.data)
+      this.state.waitUntil(this.onClientFrame(session, event.data))
     })
     const drop = () => {
       this.sessions.delete(session)
@@ -980,7 +1115,7 @@ export class RoomDurableObject {
   // Client frames are opaque signalling (typing/presence/seen). Content stays
   // encrypted; we just relay envelopes between peers. Oversized or overly
   // frequent frames are dropped before they reach anyone.
-  private onClientFrame(session: Session, raw: string | ArrayBuffer): void {
+  private async onClientFrame(session: Session, raw: string | ArrayBuffer): Promise<void> {
     const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw)
     if (text.length > MAX_WS_FRAME_CHARS) return
     let frame: RealtimeFrame | null = null
@@ -995,16 +1130,23 @@ export class RoomDurableObject {
     this.core.touchParticipant(session.participantId, now)
     if (frame.t === "signal") {
       if (!frame.event || typeof frame.event.type !== "string") return
-      if (!this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT)) return
+      if (!(await this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT))) return
       const safeFrame: RealtimeFrame = {
         t: "signal",
-        event: { ...frame.event, participantId: session.participantId },
+        event: {
+          type: frame.event.type.slice(0, 64),
+          envelope:
+            typeof frame.event.envelope === "string" && frame.event.envelope.length <= MAX_ENVELOPE_CHARS
+              ? frame.event.envelope
+              : undefined,
+          participantId: session.participantId,
+        },
       }
       this.broadcast(safeFrame, session)
       this.recordSignal(safeFrame)
     } else if (frame.t === "seen") {
       if (typeof frame.lastSeen !== "number") return
-      if (!this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT)) return
+      if (!(await this.allowRate(`sig:${session.participantId}`, now, SIGNAL_RATE_LIMIT))) return
       const safeFrame: RealtimeFrame = {
         t: "seen",
         participantId: session.participantId,
