@@ -13,7 +13,7 @@ export const onRequestPut: PagesFunction<Env> = async ({ request, env }) => {
   const partNumber = Number(request.headers.get("x-vanish-part") ?? "0")
   const partCount = auth.size / MEDIA_ENCRYPTED_CHUNK_BYTES
   if (!uploadId) return badRequest("bad upload id")
-  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > partCount) {
+  if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > partCount) {
     return badRequest("bad part number")
   }
   if (Number(request.headers.get("content-length") ?? "0") !== MEDIA_ENCRYPTED_CHUNK_BYTES) {

@@ -1,5 +1,5 @@
 import type { Env } from "../../../types"
-import { badRequest, json, readJson } from "../../../lib/do"
+import { badRequest, forward, json, readJson } from "../../../lib/do"
 import { authorizeMultipartUpload, uploadIdFrom } from "../../../lib/uploadAuth"
 import { MEDIA_ENCRYPTED_CHUNK_BYTES } from "../../../../shared/constants"
 import type { MultipartCompleteRequest, MultipartUploadedPart } from "../../../../shared/types"
@@ -30,19 +30,22 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const uploadId = uploadIdFrom(request)
   if (!uploadId) return badRequest("bad upload id")
   const contentLength = Number(request.headers.get("content-length") ?? "0")
-  if (!Number.isInteger(contentLength) || contentLength <= 0 || contentLength > 128 * 1024) {
+  if (!Number.isSafeInteger(contentLength) || contentLength <= 0 || contentLength > 128 * 1024) {
     return json({ error: "completion payload too large" }, 413)
   }
-  const body = await readJson<MultipartCompleteRequest>(request)
+  const body = await readJson<MultipartCompleteRequest>(request, 128 * 1024)
   const expected = auth.size / MEDIA_ENCRYPTED_CHUNK_BYTES
   if (!body || !validParts(body.parts, expected)) return badRequest("bad multipart parts")
 
   try {
     const existing = await env.MEDIA.head(auth.objectKey)
     if (existing) {
-      return existing.size === auth.size
-        ? json({ ok: true, objectKey: auth.objectKey })
-        : json({ error: "object already exists" }, 409)
+      if (existing.size !== auth.size) return json({ error: "object already exists" }, 409)
+      const marked = await forward(env, auth.roomId, "complete-upload", {
+        objectKey: auth.objectKey,
+        size: auth.size,
+      })
+      return marked.ok ? json({ ok: true, objectKey: auth.objectKey }) : marked
     }
     const upload = env.MEDIA.resumeMultipartUpload(auth.objectKey, uploadId)
     const object = await upload.complete([...body.parts].sort((a, b) => a.partNumber - b.partNumber))
@@ -50,7 +53,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       await env.MEDIA.delete(auth.objectKey)
       return badRequest("size mismatch")
     }
-    return json({ ok: true, objectKey: auth.objectKey })
+    const marked = await forward(env, auth.roomId, "complete-upload", {
+      objectKey: auth.objectKey,
+      size: auth.size,
+    })
+    return marked.ok ? json({ ok: true, objectKey: auth.objectKey }) : marked
   } catch {
     return json({ error: "could not complete multipart upload" }, 502)
   }

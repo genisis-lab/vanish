@@ -2,7 +2,13 @@
 // can be unit-tested directly and reused by the Durable Object as its source of
 // truth. The Durable Object is a thin persistence + realtime wrapper around it.
 
-import { clampRoomLifetime, clampTtl, DEFAULT_MESSAGE_TTL_MS } from "./constants"
+import {
+  clampRoomLifetime,
+  clampTtl,
+  DEFAULT_MESSAGE_TTL_MS,
+  MAX_PARTICIPANTS_PER_ROOM,
+  MAX_REACTIONS_PER_MESSAGE,
+} from "./constants"
 import type {
   EncryptedMediaRef,
   MessageKind,
@@ -227,6 +233,7 @@ export class RoomCore {
     if (!participantId || !proofHash) return false
     const prev = this.participants.get(participantId)
     if (prev?.proofHash && !timingSafeEqual(prev.proofHash, proofHash)) return false
+    if (!prev && this.participants.size >= MAX_PARTICIPANTS_PER_ROOM) return false
     this.participants.set(participantId, { lastSeen: now, proofHash })
     return true
   }
@@ -367,6 +374,15 @@ export class RoomCore {
       m.reactions[input.reactionId] = { participantId: input.participantId, envelope: input.envelope }
     }
     return m
+  }
+
+  /** Whether a reaction can be added without growing an individual message's
+   * persistent reaction map beyond its hard cap. null means no live message. */
+  reactionCapacity(messageId: string, reactionId: string): boolean | null {
+    const message = this.messages.get(messageId)
+    if (!message || message.deletedAt) return null
+    const reactions = message.reactions ?? {}
+    return reactionId in reactions || Object.keys(reactions).length < MAX_REACTIONS_PER_MESSAGE
   }
 
   prune(messageIds: string[]): { removedIds: string[]; orphanObjectKeys: string[] } {

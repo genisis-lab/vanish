@@ -18,6 +18,8 @@ const REMEMBER_KEY = "vanish.remember.v1"
 const ENC_KEY = "vanish.rooms.enc.v1" // encrypted rooms blob (when passphrase set)
 const LOCK_KEY = "vanish.lock.v1" // base64url(salt); presence => passphrase enabled
 const DURESS_KEY = "vanish.duress.v1" // base64url(salt).base64url(verifier)
+export const MIN_VAULT_PASSPHRASE_LENGTH = 12
+export const MIN_DURESS_PASSPHRASE_LENGTH = 8
 
 export interface RememberedRoom {
   roomId: string
@@ -238,6 +240,9 @@ export const vault = {
     unlocked = false
   },
   async setPassphrase(passphrase: string): Promise<void> {
+    if (passphrase.length < MIN_VAULT_PASSPHRASE_LENGTH) {
+      throw new Error(`Use at least ${MIN_VAULT_PASSPHRASE_LENGTH} characters`)
+    }
     const current = hasPassphrase() ? (unlocked && mem ? mem : []) : readPlain()
     const salt = globalThis.crypto.getRandomValues(new Uint8Array(16))
     vaultKey = await deriveVaultKey(passphrase, salt)
@@ -282,6 +287,9 @@ export const vault = {
     }
   },
   async setDuressPassphrase(passphrase: string): Promise<void> {
+    if (passphrase.length < MIN_DURESS_PASSPHRASE_LENGTH) {
+      throw new Error(`Use at least ${MIN_DURESS_PASSPHRASE_LENGTH} characters`)
+    }
     const salt = globalThis.crypto.getRandomValues(new Uint8Array(16))
     const verifier = await duressVerifier(passphrase, salt)
     try {

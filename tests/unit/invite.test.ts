@@ -21,6 +21,9 @@ describe("invite keys", () => {
     expect(parseInviteKey("nope")).toBeNull()
     expect(parseInviteKey("anonchat:v1:onlyroom")).toBeNull()
     expect(parseInviteKey("anonchat:v2:room.secret")).toBeNull()
+    expect(parseInviteKey(`anonchat:v1:${"A".repeat(9)}.${"A".repeat(43)}`)).toBeNull()
+    expect(parseInviteKey(`anonchat:v1:${"A".repeat(22)}.${"A".repeat(42)}`)).toBeNull()
+    expect(parseInviteKey(`anonchat:v1:${"A".repeat(22)}.${"A".repeat(44)}`)).toBeNull()
   })
 
   it("builds and parses a browser-safe invite URL", () => {

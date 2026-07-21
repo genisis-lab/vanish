@@ -255,22 +255,18 @@ What the suites cover:
    ```bash
    npm run worker:deploy   # publishes the "vanish-room" worker that exports RoomDurableObject
    ```
-4. **Set the shared upload secret** (used to sign R2 upload/download tokens) on **both** the
-   worker and the Pages project. This is a value you generate yourself (e.g.
-   `openssl rand -base64 32`) — it is not issued by Cloudflare; just use the same string in
-   both commands:
+4. **Set the Pages upload secret** (used to sign R2 upload/download capabilities). This is a
+   value you generate yourself (e.g. `openssl rand -base64 32`) — it is not issued by
+   Cloudflare:
    ```bash
-   npx wrangler secret put UPLOAD_SECRET                       # for the worker
-   npx wrangler pages secret put UPLOAD_SECRET --project-name vanish   # for Pages
+   npx wrangler pages secret put UPLOAD_SECRET --project-name vanish
    ```
    To confirm it is already set (names only, never values):
    ```bash
-   npx wrangler secret list
    npx wrangler pages secret list --project-name vanish
    ```
-   > If `UPLOAD_SECRET` is **not** set, the worker falls back to a hard-coded development secret
-   > (`vanish-dev-upload-secret-change-me`). That makes upload/download tokens forgeable, so
-   > setting a real secret in production is required, not optional.
+   > Upload endpoints fail closed with `503` when `UPLOAD_SECRET` is not set. There is no
+   > hard-coded fallback, so configuring the same high-entropy secret for Pages is required.
 5. **Enable background notifications** (optional, recommended) — generate a VAPID key pair for
    Web Push:
    ```bash
@@ -308,7 +304,7 @@ What the suites cover:
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
-| `UPLOAD_SECRET` | Worker + Pages (secret) | Signs short-lived R2 upload/download tokens |
+| `UPLOAD_SECRET` | Pages (secret) | Signs short-lived, object-scoped R2 upload capabilities |
 | `VAPID_PUBLIC_KEY` | Worker + Pages (secret) | Web Push public key; the client subscribes with it (same value in both places) |
 | `VAPID_PRIVATE_KEY` | Worker (secret) | Web Push private key that signs push messages — never place it on Pages |
 | `VAPID_SUBJECT` | Worker (secret) | VAPID contact URI (`mailto:…` or `https://…`) |

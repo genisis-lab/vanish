@@ -6,7 +6,7 @@ export interface Env {
   ABUSE: DurableObjectNamespace
   /** R2 bucket holding only encrypted media bytes. */
   MEDIA: R2Bucket
-  /** HMAC secret used to sign one-time upload tokens. */
+  /** HMAC secret used to sign short-lived, object-scoped upload capabilities. */
   UPLOAD_SECRET?: string
   APP_NAME?: string
   /** VAPID public key (base64url), served to clients so they can subscribe to Web Push. */

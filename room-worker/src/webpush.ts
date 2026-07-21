@@ -165,6 +165,7 @@ export async function sendWebPush(
   const auth = await vapidAuthHeader(sub.endpoint, vapid)
   const res = await fetch(sub.endpoint, {
     method: "POST",
+    redirect: "manual",
     headers: {
       "Content-Encoding": "aes128gcm",
       "Content-Type": "application/octet-stream",
@@ -174,5 +175,6 @@ export async function sendWebPush(
     },
     body: body as unknown as BodyInit,
   })
+  await res.body?.cancel()
   return res.status
 }

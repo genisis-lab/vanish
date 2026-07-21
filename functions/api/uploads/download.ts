@@ -16,8 +16,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const ranged = body.offset !== undefined || body.length !== undefined
   if (
     ranged &&
-    (!Number.isInteger(body.offset) ||
-      !Number.isInteger(body.length) ||
+    (!Number.isSafeInteger(body.offset) ||
+      !Number.isSafeInteger(body.length) ||
       body.offset! < 0 ||
       body.length! <= 0 ||
       body.length! > MEDIA_ENCRYPTED_CHUNK_BYTES)

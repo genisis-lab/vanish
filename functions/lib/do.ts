@@ -1,6 +1,6 @@
 // Helpers for forwarding Pages Function requests to the room's Durable Object.
 import type { Env } from "../types"
-import { isValidRoomId } from "../../shared/constants"
+import { isValidRoomId, MAX_JSON_BODY_BYTES } from "../../shared/constants"
 
 export function roomStub(env: Env, roomId: string): DurableObjectStub {
   const id = env.ROOM.idFromName(roomId)
@@ -38,11 +38,41 @@ export function json(body: unknown, status = 200): Response {
   })
 }
 
-export async function readJson<T>(request: Request): Promise<T | null> {
+export async function readJson<T>(
+  request: Request,
+  maxBytes = MAX_JSON_BODY_BYTES,
+): Promise<T | null> {
+  const declared = request.headers.get("content-length")
+  if (declared !== null) {
+    const length = Number(declared)
+    if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) return null
+  }
+  if (!request.body) return null
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
   try {
-    return (await request.json()) as T
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel("request body too large").catch(() => undefined)
+        return null
+      }
+      chunks.push(value)
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as T
   } catch {
     return null
+  } finally {
+    reader.releaseLock()
   }
 }
 

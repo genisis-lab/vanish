@@ -23,7 +23,12 @@ import { TTL_PRESETS, ROOM_LIFETIME_PRESETS, DEFAULT_MESSAGE_TTL_MS } from "@sha
 import type { Prefs } from "../lib/usePrefs"
 import type { RoomSession } from "../lib/session"
 import { createRoom } from "../lib/createRoom"
-import { vault, type RememberedRoom } from "../lib/vault"
+import {
+  MIN_DURESS_PASSPHRASE_LENGTH,
+  MIN_VAULT_PASSPHRASE_LENGTH,
+  vault,
+  type RememberedRoom,
+} from "../lib/vault"
 import { applyDeviceBundle, parseDeviceTransfer } from "../lib/deviceTransfer"
 import { formatRelative, hueFromString, initials } from "../lib/format"
 import { IconButton, useToast } from "./ui"
@@ -480,8 +485,8 @@ function LockCard() {
   async function enable() {
     const p1 = window.prompt("Set a passphrase to encrypt your saved rooms on this device:")
     if (!p1) return
-    if (p1.length < 6) {
-      toast("Use at least 6 characters.")
+    if (p1.length < MIN_VAULT_PASSPHRASE_LENGTH) {
+      toast(`Use at least ${MIN_VAULT_PASSPHRASE_LENGTH} characters.`)
       return
     }
     const p2 = window.prompt("Confirm passphrase:")
@@ -513,8 +518,8 @@ function LockCard() {
       "Set a DURESS passphrase. Entering it at the unlock screen will silently and permanently wipe all saved rooms on this device:",
     )
     if (!p1) return
-    if (p1.length < 4) {
-      toast("Use at least 4 characters.")
+    if (p1.length < MIN_DURESS_PASSPHRASE_LENGTH) {
+      toast(`Use at least ${MIN_DURESS_PASSPHRASE_LENGTH} characters.`)
       return
     }
     const p2 = window.prompt("Confirm duress passphrase:")

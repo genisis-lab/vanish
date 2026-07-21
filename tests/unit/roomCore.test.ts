@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest"
 import { RoomCore } from "@shared/roomCore"
 import { deriveKeys, hashAccessProof } from "@shared/crypto"
 import { createInvite } from "@shared/invite"
-import { inviteExpiryToMs } from "@shared/constants"
+import {
+  inviteExpiryToMs,
+  MAX_PARTICIPANTS_PER_ROOM,
+  MAX_REACTIONS_PER_MESSAGE,
+} from "@shared/constants"
 
 async function freshRoom(opts?: { inviteExpiry?: "never" | "24h" | "7d"; ttlMs?: number; burn?: boolean }) {
   const invite = createInvite()
@@ -83,6 +87,28 @@ describe("RoomCore participant proof binding", () => {
     expect(core.registerParticipant("legacy", now + 1000, "legacy-proof")).toBe(true)
     expect(core.verifyParticipant("legacy", "legacy-proof")).toBe(true)
     expect(core.verifyParticipant("legacy", "other-proof")).toBe(false)
+  })
+
+  it("caps proof-bound participant records", async () => {
+    const { core, now } = await freshRoom()
+    for (let i = 0; i < MAX_PARTICIPANTS_PER_ROOM; i++) {
+      expect(core.registerParticipant(`p-${i}`, now, `proof-${i}`)).toBe(true)
+    }
+    expect(core.registerParticipant("overflow", now, "overflow-proof")).toBe(false)
+  })
+})
+
+describe("RoomCore reaction bounds", () => {
+  it("caps unique reactions per message while allowing updates", async () => {
+    const { core, now } = await freshRoom()
+    core.addMessage({ id: "m", participantId: "p", envelope: "e", kind: "text" }, now)
+    for (let i = 0; i < MAX_REACTIONS_PER_MESSAGE; i++) {
+      expect(core.reactionCapacity("m", `r-${i}`)).toBe(true)
+      core.setReaction({ messageId: "m", reactionId: `r-${i}`, participantId: "p", envelope: "e" })
+    }
+    expect(core.reactionCapacity("m", "overflow")).toBe(false)
+    expect(core.reactionCapacity("m", "r-0")).toBe(true)
+    expect(core.reactionCapacity("missing", "r")).toBeNull()
   })
 })
 
