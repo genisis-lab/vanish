@@ -68,4 +68,10 @@ describe("encrypted device vault credentials", () => {
       signing: { priv: "private-signing-key", pub: "public-signing-key" },
     })
   })
+
+  it("rejects weak vault passphrases", async () => {
+    const { vault } = await import("@/lib/vault")
+    await expect(vault.setPassphrase("short")).rejects.toThrow(/at least 12/i)
+    await expect(vault.setDuressPassphrase("short")).rejects.toThrow(/at least 8/i)
+  })
 })

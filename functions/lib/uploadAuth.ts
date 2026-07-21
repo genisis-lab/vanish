@@ -31,12 +31,12 @@ export async function authorizeMultipartUpload(
 
   if (!isValidObjectKey(objectKey)) return badRequest("bad object key")
   if (
-    !Number.isInteger(size) ||
+    !Number.isSafeInteger(size) ||
     size <= 0 ||
     size > MAX_MEDIA_BYTES ||
     size % MEDIA_ENCRYPTED_CHUNK_BYTES !== 0
   ) return badRequest("bad multipart size")
-  if (!Number.isInteger(expiresAt) || expiresAt <= 0) return badRequest("bad token")
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) return badRequest("bad token")
   if (!(await verifyUploadToken(secret, objectKey, size, expiresAt, token))) {
     return json({ error: "forbidden" }, 403)
   }

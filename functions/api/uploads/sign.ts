@@ -38,7 +38,8 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     !body?.size
   ) return badRequest("missing fields")
   if (!isValidRoomId(body.roomId)) return badRequest("bad room id")
-  if (!Number.isInteger(body.size) || body.size <= 0) return badRequest("bad size")
+  if (!Number.isSafeInteger(body.size) || body.size <= 0) return badRequest("bad size")
+  if (!["image", "video", "audio"].includes(body.previewKind)) return badRequest("bad preview kind")
   if (body.size > MAX_MEDIA_BYTES) return json({ error: "payload too large" }, 413)
   if (body.multipart) {
     if (body.size % MEDIA_ENCRYPTED_CHUNK_BYTES !== 0) return badRequest("bad multipart size")

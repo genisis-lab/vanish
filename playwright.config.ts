@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test"
 
 const PORT = Number(process.env.E2E_PORT ?? 8788)
+const WORKER_PORT = Number(process.env.E2E_WORKER_PORT ?? 8797)
 const BASE = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`
 
 // By default we drive the full Pages + Functions + Durable Object stack via
@@ -38,8 +39,8 @@ export default defineConfig({
     ? undefined
     : [
         {
-          command: "npm run worker:dev -- --port 8787",
-          url: "http://localhost:8787/health",
+          command: `npm run worker:dev -- --port ${WORKER_PORT}`,
+          url: `http://localhost:${WORKER_PORT}/health`,
           timeout: 180_000,
           reuseExistingServer: !process.env.CI,
         },

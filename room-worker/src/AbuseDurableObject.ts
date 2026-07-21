@@ -3,6 +3,7 @@
 
 const RULES = {
   "room-create": { limit: 10, windowMs: 60 * 60 * 1000 },
+  "session-register": { limit: 60, windowMs: 60 * 60 * 1000 },
   "upload-sign": { limit: 60, windowMs: 10 * 60 * 1000 },
 } as const
 
