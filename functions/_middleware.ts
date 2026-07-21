@@ -8,6 +8,9 @@ export const onRequest: PagesFunction<Env> = async ({ next }) => {
   headers.set("X-Content-Type-Options", "nosniff")
   headers.set("Referrer-Policy", "no-referrer")
   headers.set("X-Frame-Options", "DENY")
+  headers.set("Cross-Origin-Resource-Policy", "same-origin")
+  headers.set("Permissions-Policy", "geolocation=(), camera=(), microphone=(), interest-cohort=()")
+  headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
   if (!headers.has("cache-control")) headers.set("cache-control", "no-store")
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers })
 }

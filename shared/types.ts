@@ -204,6 +204,11 @@ export interface ClaimUploadRequest {
   size: number
 }
 
+export interface CompleteUploadRequest {
+  objectKey: string
+  size: number
+}
+
 export interface SignUploadResponse {
   objectKey: string
   uploadUrl: string

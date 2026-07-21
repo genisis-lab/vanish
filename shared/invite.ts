@@ -12,6 +12,7 @@
 // of access logs, Referer headers, and proxies.
 
 import { fromBase64Url, randomBytes, toBase64Url } from "./crypto"
+import { isValidRoomId } from "./constants"
 
 export const INVITE_PREFIX = "anonchat:v1:"
 
@@ -38,14 +39,14 @@ export function parseInviteKey(raw: string): ParsedInvite | null {
   if (dot <= 0 || dot >= body.length - 1) return null
   const roomId = body.slice(0, dot)
   const secretB64 = body.slice(dot + 1)
-  if (!/^[A-Za-z0-9_-]+$/.test(roomId) || !/^[A-Za-z0-9_-]+$/.test(secretB64)) return null
+  if (!isValidRoomId(roomId) || !/^[A-Za-z0-9_-]{43}$/.test(secretB64)) return null
   let secret: Uint8Array
   try {
     secret = fromBase64Url(secretB64)
   } catch {
     return null
   }
-  if (secret.length < 16) return null
+  if (secret.length !== 32) return null
   return { roomId, secret, secretB64, inviteKey: `${INVITE_PREFIX}${roomId}.${secretB64}` }
 }
 

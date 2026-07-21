@@ -1,13 +1,12 @@
 import type { Env } from "../types"
 import { json } from "./do"
 
-export type AbuseAction = "room-create" | "upload-sign"
+export type AbuseAction = "room-create" | "session-register" | "upload-sign"
 
 async function clientDigest(request: Request): Promise<string> {
-  const raw =
-    request.headers.get("cf-connecting-ip") ||
-    request.headers.get("x-forwarded-for")?.split(",", 1)[0]?.trim() ||
-    "local-development"
+  // Cloudflare overwrites CF-Connecting-IP at the edge. Do not trust forwarded
+  // headers supplied by clients when the platform header is absent.
+  const raw = request.headers.get("cf-connecting-ip") || "unknown-client"
   const bytes = new TextEncoder().encode(`vanish-abuse-v1:${raw}`)
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")
