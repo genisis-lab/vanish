@@ -309,8 +309,11 @@ What the suites cover:
 | `VAPID_PRIVATE_KEY` | Worker (secret) | Web Push private key that signs push messages — never place it on Pages |
 | `VAPID_SUBJECT` | Worker (secret) | VAPID contact URI (`mailto:…` or `https://…`) |
 | `VITE_APP_NAME` | Build-time (optional) | Override the app name |
-| `VITE_CF_ANALYTICS_TOKEN` | Build-time (optional) | Cloudflare Web Analytics token |
 | `VITE_IPA_DOWNLOAD_URL` | Build-time (optional) | If set, shows the “Install the app” prompt and a Download IPA button |
+
+Cloudflare Web Analytics is enabled at the Pages/zone level. The production CSP allows only
+Cloudflare's documented beacon script and reporting endpoint; no build-time analytics token is
+required.
 
 ---
 
