@@ -39,6 +39,7 @@ interface Props {
   onReply: (msg: DecryptedMessage) => void
   onEdit?: (msg: DecryptedMessage) => void
   onDelete?: (msg: DecryptedMessage) => void
+  onReport?: (msg: DecryptedMessage) => void
   onOpenMedia: (item: MediaManifestItem) => void
   onRetry?: (id: string) => void
   onJumpTo?: (id: string) => void
@@ -71,6 +72,7 @@ function MessageItemInner({
   onReply,
   onEdit,
   onDelete,
+  onReport,
   onOpenMedia,
   onRetry,
   onJumpTo,
@@ -196,6 +198,18 @@ function MessageItemInner({
           }}
         >
           <Trash2 size={15} />
+        </button>
+      )}
+      {!msg.mine && onReport && (
+        <button
+          className="icon-btn mini"
+          aria-label="Report message"
+          onClick={() => {
+            onReport(msg)
+            setActions(false)
+          }}
+        >
+          <ShieldAlert size={15} />
         </button>
       )}
       <button
