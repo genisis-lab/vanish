@@ -33,6 +33,18 @@ new_sqlite_classes = ["AbuseDurableObject"]
 binding = "MEDIA"
 bucket_name = "vanish-media"
 
+[[queues.producers]]
+binding = "MODERATION_QUEUE"
+queue = "vanish-moderation-reports"
+
+[[queues.consumers]]
+queue = "vanish-moderation-reports"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "vanish-moderation-reports-dlq"
+retry_delay = 30
+
 # Web Push (VAPID). Required for background notifications that fire even when
 # the app is fully closed. Generate a key pair once:
 #
