@@ -157,6 +157,18 @@ export interface DeleteOwnMessageRequest {
   participantId: string
 }
 
+export type AbuseReportCategory = "spam" | "harassment" | "threat" | "other"
+
+/** Privacy-preserving report. Message contents and encrypted envelopes are never included. */
+export interface ReportMessageRequest {
+  roomId: string
+  accessProof: string
+  participantId: string
+  participantProof: string
+  messageId: string
+  category: AbuseReportCategory
+}
+
 export interface ListMessagesRequest {
   roomId: string
   accessProof: string

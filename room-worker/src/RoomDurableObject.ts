@@ -30,6 +30,7 @@ import type {
   PushSubscribeRequest,
   PushUnsubscribeRequest,
   ReactRequest,
+  ReportMessageRequest,
   RealtimeFrame,
   ReserveUploadRequest,
   SessionRequest,
@@ -63,10 +64,22 @@ import { sendWebPush, type PushSubscription, type VapidKeys } from "./webpush"
 
 export interface RoomEnv {
   MEDIA: R2Bucket
+  MODERATION_QUEUE: Queue<ModerationReport>
   /** VAPID keys for Web Push. When unset, push fan-out is silently disabled. */
   VAPID_PUBLIC_KEY?: string
   VAPID_PRIVATE_KEY?: string
   VAPID_SUBJECT?: string
+}
+
+export interface ModerationReport {
+  version: 1
+  reportId: string
+  roomDigest: string
+  messageId: string
+  reporterDigest: string
+  reportedParticipantDigest: string
+  category: "spam" | "harassment" | "threat" | "other"
+  createdAt: number
 }
 
 interface Session {
@@ -196,6 +209,8 @@ export class RoomDurableObject {
           return this.opEdit(body as unknown as EditMessageRequest)
         case "delete-message":
           return this.opDeleteOwn(body as unknown as DeleteOwnMessageRequest)
+        case "report-message":
+          return this.opReportMessage(body as unknown as ReportMessageRequest)
         case "list":
           return this.opList(body as unknown as ListMessagesRequest)
         case "prune":
@@ -716,6 +731,42 @@ export class RoomDurableObject {
     if (result.orphanObjectKeys.length) await this.deleteObjects(result.orphanObjectKeys)
     this.broadcast({ t: "edit", message: result.message })
     return json({ message: result.message })
+  }
+
+  private async opReportMessage(req: ReportMessageRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId) || !this.validId(req.messageId)) {
+      return json({ error: "bad report" }, 400)
+    }
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
+    if (!(["spam", "harassment", "threat", "other"] as string[]).includes(req.category)) {
+      return json({ error: "bad category" }, 400)
+    }
+    const message = this.core.list(Date.now()).find((item) => item.id === req.messageId)
+    if (!message || message.participantId === req.participantId) {
+      return json({ error: "message not reportable" }, 409)
+    }
+    if (!(await this.allowRate(`report:${req.participantId}`, Date.now(), 3))) {
+      return json({ error: "report rate limited" }, 429)
+    }
+    const digest = async (value: string) => {
+      const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
+      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    }
+    const report: ModerationReport = {
+      version: 1,
+      reportId: crypto.randomUUID(),
+      roomDigest: await digest(`room:${this.core.getRoom()?.roomId ?? ""}`),
+      messageId: req.messageId,
+      reporterDigest: await digest(`participant:${req.participantId}`),
+      reportedParticipantDigest: await digest(`participant:${message.participantId}`),
+      category: req.category,
+      createdAt: Date.now(),
+    }
+    await this.env.MODERATION_QUEUE.send(report)
+    return json({ ok: true, reportId: report.reportId }, 202)
   }
 
   private async opList(req: ListMessagesRequest): Promise<Response> {

@@ -37,6 +37,7 @@ import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
 import { useRoom } from "../lib/useRoom"
 import type { DecryptedMessage, ReplyRef } from "../lib/messages"
+import type { AbuseReportCategory } from "@shared/types"
 import type { MediaManifestItem } from "../lib/media"
 import { revokeAllObjectUrls } from "../lib/media"
 import { formatCountdown } from "../lib/format"
@@ -317,6 +318,24 @@ export function ChatRoom({
       }
     },
     [room.deleteMessage],
+  )
+  const reportMessage = useCallback(
+    (m: DecryptedMessage) => {
+      const raw = window.prompt(
+        "Report category: spam, harassment, threat, or other. Vanish sends metadata only—not the encrypted message.",
+        "spam",
+      )
+      if (raw === null) return
+      const category = raw.trim().toLowerCase() as AbuseReportCategory
+      if (!["spam", "harassment", "threat", "other"].includes(category)) {
+        toast("Choose spam, harassment, threat, or other")
+        return
+      }
+      void room.reportMessage(m.id, category)
+        .then(() => toast("Report queued without sharing message contents"))
+        .catch(() => toast("Could not submit report"))
+    },
+    [room.reportMessage, toast],
   )
 
   function saveRoom() {
@@ -701,6 +720,7 @@ export function ChatRoom({
                 onReply={startReply}
                 onEdit={editMessage}
                 onDelete={deleteMessage}
+                onReport={reportMessage}
                 onOpenMedia={setViewer}
                 onRetry={room.retrySend}
                 onJumpTo={jumpToMessage}
