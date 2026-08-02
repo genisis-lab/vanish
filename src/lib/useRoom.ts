@@ -3,7 +3,7 @@
 // encryption/decryption happens here or in the helpers it calls.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { decryptString, encryptString } from "@shared/crypto"
-import type { PublicRoomState, StoredMessage } from "@shared/types"
+import type { AbuseReportCategory, PublicRoomState, StoredMessage } from "@shared/types"
 import { api, ApiError } from "./api"
 import { Realtime, type ConnState } from "./realtime"
 import { aad, type RoomSession } from "./session"
@@ -72,6 +72,7 @@ export interface RoomController {
   retrySend: (id: string) => Promise<void>
   editMessage: (id: string, text: string) => Promise<void>
   deleteMessage: (id: string) => Promise<void>
+  reportMessage: (id: string, category: AbuseReportCategory) => Promise<void>
   markSeen: (lastSeen: number) => void
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
@@ -958,6 +959,18 @@ export function useRoom(session: RoomSession): RoomController {
     (participantId: string) => ownerAction("ban", participantId),
     [ownerAction],
   )
+  const reportMessage = useCallback(
+    async (messageId: string, category: AbuseReportCategory) => {
+      await api.reportMessage({
+        roomId: session.invite.roomId,
+        accessProof: session.keys.accessProof,
+        ...participantAuth(session),
+        messageId,
+        category,
+      })
+    },
+    [session],
+  )
   const unbanMember = useCallback(
     (participantId: string) => ownerAction("unban", participantId),
     [ownerAction],
@@ -1022,6 +1035,7 @@ export function useRoom(session: RoomSession): RoomController {
       retrySend,
       editMessage,
       deleteMessage,
+      reportMessage,
       markSeen,
       toggleReaction,
       prune,
@@ -1056,6 +1070,7 @@ export function useRoom(session: RoomSession): RoomController {
       retrySend,
       editMessage,
       deleteMessage,
+      reportMessage,
       markSeen,
       toggleReaction,
       prune,

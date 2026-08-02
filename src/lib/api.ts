@@ -16,6 +16,7 @@ import type {
   PushSubscribeRequest,
   PushUnsubscribeRequest,
   ReactRequest,
+  ReportMessageRequest,
   SetTopicRequest,
   SignUploadRequest,
   SignUploadResponse,
@@ -121,6 +122,9 @@ export const api = {
   },
   react(body: ReactRequest) {
     return post<{ ok: boolean }>("/api/react", body)
+  },
+  reportMessage(body: ReportMessageRequest) {
+    return post<{ ok: boolean; reportId: string }>("/api/messages/report", body)
   },
   broadcast(body: BroadcastRequest) {
     return post<{ ok: boolean }>("/api/broadcast", body)
