@@ -12,3 +12,6 @@
   Cache-Control: no-store
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
+
+/.well-known/security.txt
+  Content-Type: text/plain; charset=utf-8
