@@ -289,7 +289,7 @@ What the suites cover:
 6. **Build and deploy Pages**
    ```bash
    npm run build
-   npm run pages:deploy    # wrangler pages deploy dist --project-name vanish
+   npm run pages:deploy    # deploys dist to the vanish Pages project
    ```
    The Pages project binds the `ROOM` Durable Object namespace to the `vanish-room` worker and
    binds the `MEDIA` R2 bucket (see `wrangler.toml`). Confirm both bindings in the dashboard if
