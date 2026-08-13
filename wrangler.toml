@@ -27,11 +27,7 @@ binding = "MEDIA"
 bucket_name = "vanish-media"
 
 # Set the upload-signing secret with:
-#   wrangler pages secret put UPLOAD_SECRET
+#   wrangler pages secret put UPLOAD_SECRET --project-name vanish
 # (do not commit real secrets to [vars])
 [vars]
 APP_NAME = "Vanish"
-
-[observability]
-enabled = true
-head_sampling_rate = 0.1
