@@ -4,8 +4,17 @@
 // Only static, non-sensitive build assets and the navigation shell are cached.
 // Push payloads never contain message content (the server is zero-knowledge),
 // so the notification shown here is a generic "new message" ping.
-const CACHE = "vanish-shell-v7"
-const SHELL = ["/", "/manifest.webmanifest", "/icon.svg"]
+const CACHE = "vanish-shell-v8"
+const SHELL = [
+  "/",
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-maskable-192.png",
+  "/icon-maskable-512.png",
+  "/apple-touch-icon.png",
+]
 
 self.addEventListener("install", (event) => {
   // Note: we intentionally do NOT call skipWaiting() here. A freshly installed
