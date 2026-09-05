@@ -65,6 +65,7 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
 
   const inviteUrl = await createRoom(alice, PRIVATE_VALUES.username)
   const bob = await joinRoom(bobPage, inviteUrl, "Ember")
+  await expect(alice.getByText("Ember joined the room", { exact: true })).toBeVisible()
 
   // Live text from Ash arrives for Ember.
   await alice.getByRole("textbox", { name: "Encrypted message" }).fill(PRIVATE_VALUES.message)

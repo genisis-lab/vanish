@@ -135,6 +135,7 @@ export function useRoom(session: RoomSession): RoomController {
   )
   // Client-only system notices (join/leave). Never sent to or stored on server.
   const noticesRef = useRef<DecryptedMessage[]>([])
+  const joinEnvelopes = useRef(new Set<string>())
   // Live display-name overrides keyed by participantId, applied on top of the
   // names baked into past envelopes so a mid-session rename shows consistently.
   const nameOverrides = useRef(new Map<string, string>())
@@ -308,6 +309,29 @@ export function useRoom(session: RoomSession): RoomController {
 
   useEffect(() => {
     let cancelled = false
+    let announced = false
+    let announcing = false
+    let joinEnvelope: string | undefined
+    async function announceJoin() {
+      if (cancelled || announced || announcing) return
+      announcing = true
+      try {
+        joinEnvelope ??= await encryptString(session.channelKey, session.username, aad(session, "channel"))
+        if (cancelled) return
+        await api.broadcast({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ...participantAuth(session),
+          event: { type: "join", participantId: session.participantId, envelope: joinEnvelope },
+        })
+        announced = true
+      } catch {
+        // Retry on the next successful presence heartbeat, using the same
+        // envelope so recipients can deduplicate an ambiguous response.
+      } finally {
+        announcing = false
+      }
+    }
     async function boot() {
       try {
         await api.session({
@@ -315,6 +339,8 @@ export function useRoom(session: RoomSession): RoomController {
           accessProof: session.keys.accessProof,
           ...participantAuth(session),
         })
+        if (cancelled) return
+        void announceJoin()
         const res = await api.listMessages({
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
@@ -405,8 +431,14 @@ export function useRoom(session: RoomSession): RoomController {
             })
             .catch(() => {})
         } else if (ev.type === "join" && ev.envelope) {
+          const envelope = ev.envelope
           void decryptString(session.channelKey, ev.envelope, aad(session, "channel"))
             .then((raw) => {
+              if (cancelled || joinEnvelopes.current.has(envelope)) return
+              joinEnvelopes.current.add(envelope)
+              if (joinEnvelopes.current.size > 200) {
+                joinEnvelopes.current.delete(joinEnvelopes.current.values().next().value!)
+              }
               const name = raw.trim().slice(0, 32) || "anon"
               nameOverrides.current.set(ev.participantId, name)
               pushNotice(`${name} joined the room`)
@@ -444,19 +476,6 @@ export function useRoom(session: RoomSession): RoomController {
     rt.current = realtime
     realtime.start()
 
-    // Announce ourselves so existing members see a named join notice. The
-    // username is encrypted with the channel key; the server only relays an
-    // opaque envelope. sendSignal falls back to the HTTP relay if the socket
-    // isn't open yet.
-    void encryptString(session.channelKey, session.username, aad(session, "channel"))
-      .then((envelope) => {
-        realtime.sendSignal({
-          t: "signal",
-          event: { type: "join", participantId: session.participantId, envelope },
-        })
-      })
-      .catch(() => {})
-
     // Keep our presence fresh so the participant count (and join/leave notices)
     // stay accurate even when we are on the polling fallback. The server only
     // refreshes presence on /session, not /list.
@@ -467,6 +486,7 @@ export function useRoom(session: RoomSession): RoomController {
           accessProof: session.keys.accessProof,
           ...participantAuth(session),
         })
+        .then(() => announceJoin())
         .catch(() => {})
     }, 20000)
 

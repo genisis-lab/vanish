@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test"
-import { createInvite } from "../../shared/invite"
+import { buildInviteUrl, createInvite } from "../../shared/invite"
 import { deriveKeys, randomBytes, toBase64Url } from "../../shared/crypto"
 import { MEDIA_ENCRYPTED_CHUNK_BYTES } from "../../shared/constants"
 
@@ -26,6 +26,26 @@ test("an invalid invite is rejected", async ({ page }) => {
   await page.getByLabel(/invite key or link/i).fill(unknown)
   await page.getByRole("button", { name: /continue/i }).click()
   await expect(page.getByText(/invalid|couldn.t|not valid/i)).toBeVisible()
+})
+
+test("a first-time invite stays on the join form when the service worker claims the page", async ({ browser, request, baseURL }) => {
+  const { invite } = await createApiSession(request)
+  const context = await browser.newContext({ serviceWorkers: "allow" })
+  const page = await context.newPage()
+  let navigations = 0
+  page.on("framenavigated", frame => { if (frame === page.mainFrame()) navigations++ })
+  try {
+    await page.goto(buildInviteUrl(baseURL!, invite.inviteKey))
+    await expect(page.getByText("Invite is valid. Choose a name to enter.")).toBeVisible()
+    await page.getByLabel("Display name").fill("New guest")
+    await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true)
+    await expect(page.getByLabel("Display name")).toHaveValue("New guest")
+    await expect(page.getByRole("button", { name: "Join room", exact: true })).toBeEnabled()
+    expect(new URL(page.url()).hash).toBe("")
+    expect(navigations).toBe(1)
+  } finally {
+    await context.close()
+  }
 })
 
 test("malformed API JSON and invalid room ids fail at the edge", async ({ request }) => {

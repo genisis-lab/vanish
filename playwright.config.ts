@@ -55,7 +55,6 @@ export default defineConfig({
           env: {
             UPLOAD_SECRET: process.env.UPLOAD_SECRET ?? "e2e-only-upload-secret",
             E2E_MODE: "1",
-            VITE_DISABLE_SW: "1",
           },
         },
       ],
