@@ -33,7 +33,9 @@ test("a first-time invite stays on the join form when the service worker claims 
   const context = await browser.newContext({ serviceWorkers: "allow" })
   const page = await context.newPage()
   let navigations = 0
-  page.on("framenavigated", frame => { if (frame === page.mainFrame()) navigations++ })
+  page.on("request", request => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) navigations++
+  })
   try {
     await page.goto(buildInviteUrl(baseURL!, invite.inviteKey))
     await expect(page.getByText("Invite is valid. Choose a name to enter.")).toBeVisible()
