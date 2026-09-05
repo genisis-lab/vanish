@@ -14,6 +14,8 @@ function route(pathname: string, method = "GET", next = vi.fn(async () => new Re
 describe("API routing middleware", () => {
   it.each([
     ["/api/rooms", "POST"],
+    ["/api/messages/read", "POST"],
+    ["/api/messages/consume", "POST"],
     ["/api/push/vapid", "GET"],
     ["/api/ws", "GET"],
     ["/api/rooms/example-room", "DELETE"],

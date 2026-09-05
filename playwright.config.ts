@@ -1,7 +1,10 @@
+import { resolve } from "node:path"
 import { defineConfig, devices } from "@playwright/test"
 
 const PORT = Number(process.env.E2E_PORT ?? 8788)
 const WORKER_PORT = Number(process.env.E2E_WORKER_PORT ?? 8797)
+// Both emulators must share R2 storage or deletion checks exercise different buckets.
+const STATE = resolve(process.env.E2E_STATE_DIR ?? ".wrangler/e2e-state")
 const BASE = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`
 
 // By default we drive the full Pages + Functions + Durable Object stack via
@@ -39,13 +42,13 @@ export default defineConfig({
     ? undefined
     : [
         {
-          command: `npm run worker:dev -- --port ${WORKER_PORT}`,
+          command: `npm run worker:dev -- --port ${WORKER_PORT} --persist-to "${STATE}"`,
           url: `http://localhost:${WORKER_PORT}/health`,
           timeout: 180_000,
           reuseExistingServer: !process.env.CI,
         },
         {
-          command: `npm run build && npx wrangler pages dev dist --port ${PORT} --binding E2E_MODE=1 --binding UPLOAD_SECRET=e2e-only-upload-secret`,
+          command: `npm run build && npx wrangler pages dev dist --port ${PORT} --persist-to "${STATE}" --binding E2E_MODE=1 --binding UPLOAD_SECRET=e2e-only-upload-secret`,
           url: BASE,
           timeout: 180_000,
           reuseExistingServer: !process.env.CI,

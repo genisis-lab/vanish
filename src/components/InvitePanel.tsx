@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Copy, KeyRound, Link2, QrCode } from "lucide-react"
+import { Copy, KeyRound, Link2, QrCode, Share2, Check } from "lucide-react"
 import { buildInviteUrl } from "@shared/invite"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
@@ -18,6 +18,8 @@ export function InvitePanel({
   onClose: () => void
 }) {
   const toast = useToast()
+  const [copied, setCopied] = useState(false)
+  const [shareError, setShareError] = useState("")
   const [showQr, setShowQr] = useState(initialQr)
   const [qr, setQr] = useState<string | null>(null)
   const inviteUrl = buildInviteUrl(window.location.origin, session.invite.inviteKey)
@@ -30,6 +32,7 @@ export function InvitePanel({
     try {
       await navigator.clipboard.writeText(text)
       toast(`${what} copied`)
+      if (what === "Link") setCopied(true)
     } catch {
       toast("Copy failed — select and copy manually")
     }
@@ -42,15 +45,50 @@ export function InvitePanel({
         trust.
       </p>
 
+      {typeof navigator.share === "function" && (
+        <button
+          className="btn btn-primary btn-block invite-share"
+          onClick={async () => {
+            setShareError("")
+            try {
+              await navigator.share({ title: "Join my Vanish room", url: inviteUrl })
+            } catch (error) {
+              if (!(error instanceof DOMException && error.name === "AbortError"))
+                setShareError("Could not open sharing. Copy the invite link below instead.")
+            }
+          }}
+        >
+          <Share2 size={16} /> Share invite
+        </button>
+      )}
+      {shareError && (
+        <p className="inline-error" role="alert">
+          {shareError}
+        </p>
+      )}
       <span className="label">Invite link</span>
       <div className="copy-field" style={MB}>
         <div className="box mono">{inviteUrl}</div>
-        <button className="btn" onClick={() => copy(inviteUrl, "Link")} aria-label="Copy invite link">
-          <Copy size={16} />
+        <button
+          className="btn"
+          onClick={() => copy(inviteUrl, "Link")}
+          aria-label="Copy invite link"
+        >
+          {copied ? <Check size={16} /> : <Copy size={16} />}
         </button>
       </div>
 
-      <button className="btn btn-block" style={MB} onClick={() => copy(session.invite.inviteKey, "Key")}>
+      {copied && (
+        <p role="status" className="hint">
+          Invite link copied. Anyone with it can open this room.
+        </p>
+      )}
+
+      <button
+        className="btn btn-block"
+        style={MB}
+        onClick={() => copy(session.invite.inviteKey, "Key")}
+      >
         <KeyRound size={16} /> Copy raw invite key
       </button>
 

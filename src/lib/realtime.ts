@@ -16,7 +16,7 @@ export interface RealtimeHandlers {
   onReact: (f: Extract<RealtimeFrame, { t: "react" }>) => void
   onPresence: (count: number) => void
   onSignal: (f: Extract<RealtimeFrame, { t: "signal" }>) => void
-  onSeen: (participantId: string, lastSeen: number) => void
+  onSeen: (participantId: string, lastSeen: number, messageIds?: string[]) => void
   onRoomUpdated: (room: PublicRoomState) => void
   onBanned: (participantId: string) => void
   onRoomDeleted: () => void
@@ -160,7 +160,7 @@ export class Realtime {
         this.handlers.onSignal(frame)
         break
       case "seen":
-        this.handlers.onSeen(frame.participantId, frame.lastSeen)
+        this.handlers.onSeen(frame.participantId, frame.lastSeen, frame.messageIds)
         break
       case "room-updated":
         this.handlers.onRoomUpdated(frame.room)
@@ -218,7 +218,6 @@ export class Realtime {
           participantProof: this.session.participantProof,
           since: this.handlers.getSince(),
           signalsSince: this.signalsSince,
-          markReadFor: this.session.participantId,
         })
         for (const m of res.messages) this.handlers.onMessage(m)
         if (res.currentMessageIds) this.handlers.onSnapshot(res.currentMessageIds)

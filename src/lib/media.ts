@@ -150,19 +150,23 @@ export async function encryptAndUpload(
   session: RoomSession,
   file: File,
   onStatus: (status: UploadStatus, progress?: number) => void,
+  signal?: AbortSignal,
 ): Promise<EncryptUploadResult> {
   if (!Number.isInteger(file.size) || file.size <= 0 || file.size > MAX_MEDIA_PLAINTEXT_BYTES) {
     throw new Error("File exceeds the 2 GB limit")
   }
+  signal?.throwIfAborted()
   onStatus("encrypting")
   const norm = await normalizeFile(file)
   if (norm.size <= 0 || norm.size > MAX_MEDIA_PLAINTEXT_BYTES) {
     throw new Error("File exceeds the 2 GB limit")
   }
+  signal?.throwIfAborted()
   const thumb = await makeThumb(file)
+  signal?.throwIfAborted()
   const previewKind = previewKindFor(norm.mime)
   if (norm.size > MULTIPART_MEDIA_THRESHOLD_BYTES) {
-    return encryptAndUploadMultipart(session, norm, previewKind, thumb, onStatus)
+    return encryptAndUploadMultipart(session, norm, previewKind, thumb, onStatus, signal)
   }
 
   // Pad the plaintext to a size bucket before encryption (length-hiding).
@@ -171,16 +175,22 @@ export async function encryptAndUpload(
 
   onStatus("uploading", 0)
   try {
-    const sign = await api.signUpload({
-      roomId: session.invite.roomId,
-      accessProof: session.keys.accessProof,
-      participantId: session.participantId,
-      participantProof: session.participantProof,
-      size: cipher.byteLength,
-      previewKind,
-    })
-    await api.uploadBlob(sign, cipher, (loaded, total) =>
-      onStatus("uploading", total ? loaded / total : 0),
+    const sign = await api.signUpload(
+      {
+        roomId: session.invite.roomId,
+        accessProof: session.keys.accessProof,
+        participantId: session.participantId,
+        participantProof: session.participantProof,
+        size: cipher.byteLength,
+        previewKind,
+      },
+      signal,
+    )
+    await api.uploadBlob(
+      sign,
+      cipher,
+      (loaded, total) => onStatus("uploading", total ? loaded / total : 0),
+      signal,
     )
     onStatus("done")
     return {
@@ -207,24 +217,29 @@ async function encryptAndUploadMultipart(
   previewKind: MediaPreviewKind,
   thumb: string | undefined,
   onStatus: (status: UploadStatus, progress?: number) => void,
+  signal?: AbortSignal,
 ): Promise<EncryptUploadResult> {
   const chunkCount = mediaChunkCount(norm.size)
   const encryptedSize = multipartEncryptedSize(norm.size)
-  const sign = await api.signUpload({
-    roomId: session.invite.roomId,
-    accessProof: session.keys.accessProof,
-    participantId: session.participantId,
-    participantProof: session.participantProof,
-    size: encryptedSize,
-    previewKind,
-    multipart: true,
-  })
+  const sign = await api.signUpload(
+    {
+      roomId: session.invite.roomId,
+      accessProof: session.keys.accessProof,
+      participantId: session.participantId,
+      participantProof: session.participantProof,
+      size: encryptedSize,
+      previewKind,
+      multipart: true,
+    },
+    signal,
+  )
   let uploadId: string | null = null
   try {
-    uploadId = (await api.createMultipartUpload(sign)).uploadId
+    uploadId = (await api.createMultipartUpload(sign, signal)).uploadId
     const parts: MultipartUploadedPart[] = []
     onStatus("uploading", 0)
     for (let index = 0; index < chunkCount; index++) {
+      signal?.throwIfAborted()
       const start = index * MEDIA_CHUNK_BYTES
       const source = new Uint8Array(
         await norm.blob.slice(start, Math.min(norm.size, start + MEDIA_CHUNK_BYTES)).arrayBuffer(),
@@ -237,14 +252,21 @@ async function encryptAndUploadMultipart(
         index,
         norm.size,
       )
-      const part = await uploadPartWithRetry(sign, uploadId, index + 1, encrypted, (loaded) => {
-        const completed = index * MEDIA_ENCRYPTED_CHUNK_BYTES
-        onStatus("uploading", Math.min(1, (completed + loaded) / encryptedSize))
-      })
+      const part = await uploadPartWithRetry(
+        sign,
+        uploadId,
+        index + 1,
+        encrypted,
+        (loaded) => {
+          const completed = index * MEDIA_ENCRYPTED_CHUNK_BYTES
+          onStatus("uploading", Math.min(1, (completed + loaded) / encryptedSize))
+        },
+        signal,
+      )
       parts.push(part)
       onStatus("uploading", ((index + 1) * MEDIA_ENCRYPTED_CHUNK_BYTES) / encryptedSize)
     }
-    await api.completeMultipartUpload(sign, uploadId, parts)
+    await api.completeMultipartUpload(sign, uploadId, parts, signal)
     onStatus("done", 1)
     return {
       ref: { objectKey: sign.objectKey, size: encryptedSize, previewKind },
@@ -274,12 +296,22 @@ async function uploadPartWithRetry(
   partNumber: number,
   encrypted: Uint8Array,
   onProgress: (loaded: number) => void,
+  signal?: AbortSignal,
 ): Promise<MultipartUploadedPart> {
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await api.uploadMultipartPart(sign, uploadId, partNumber, encrypted, onProgress)
+      signal?.throwIfAborted()
+      return await api.uploadMultipartPart(
+        sign,
+        uploadId,
+        partNumber,
+        encrypted,
+        onProgress,
+        signal,
+      )
     } catch (error) {
+      if (signal?.aborted) throw error
       lastError = error
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 400 * 2 ** attempt))
     }
@@ -309,10 +341,7 @@ export async function decryptToObjectUrl(
   return url
 }
 
-export async function decryptToBlob(
-  session: RoomSession,
-  item: MediaManifestItem,
-): Promise<Blob> {
+export async function decryptToBlob(session: RoomSession, item: MediaManifestItem): Promise<Blob> {
   const cached = decryptedBlobCache.get(item.objectKey)
   if (cached) return cached
   if (item.storageFormat === CHUNKED_MEDIA_FORMAT) {
@@ -324,10 +353,16 @@ export async function decryptToBlob(
     decryptedBlobCache.set(item.objectKey, blob)
     return blob
   }
-  const cipher = await api.downloadBlob(session.invite.roomId, session.keys.accessProof, item.objectKey)
+  const cipher = await api.downloadBlob(
+    session.invite.roomId,
+    session.keys.accessProof,
+    item.objectKey,
+  )
   const padded = await decryptBytes(session.keys.mediaKey, cipher, aad(session, "media"))
   const plain = unpackMedia(padded)
-  const blob = new Blob([plain as unknown as BlobPart], { type: item.mime || "application/octet-stream" })
+  const blob = new Blob([plain as unknown as BlobPart], {
+    type: item.mime || "application/octet-stream",
+  })
   decryptedBlobCache.set(item.objectKey, blob)
   return blob
 }
@@ -349,22 +384,26 @@ export async function saveLargeMediaToFile(
   if (!requiresStreamingSave(item) || !isValidChunkedMedia(item)) {
     throw new Error("This attachment does not require streaming download")
   }
-  const picker = (window as Window & {
-    showSaveFilePicker?: (options: {
-      suggestedName?: string
-      types?: Array<{ description?: string; accept: Record<string, string[]> }>
-    }) => Promise<FileSystemFileHandle>
-  }).showSaveFilePicker
+  const picker = (
+    window as Window & {
+      showSaveFilePicker?: (options: {
+        suggestedName?: string
+        types?: Array<{ description?: string; accept: Record<string, string[]> }>
+      }) => Promise<FileSystemFileHandle>
+    }
+  ).showSaveFilePicker
   if (!picker) {
     throw new Error("This browser cannot save a file this large. Use desktop Chrome or Edge.")
   }
   const handle = await picker({
     suggestedName: item.filename || "vanish-media",
     types: item.mime
-      ? [{
-          description: "Decrypted media",
-          accept: { [item.mime.split(";", 1)[0]]: [extensionFor(item.filename)] },
-        }]
+      ? [
+          {
+            description: "Decrypted media",
+            accept: { [item.mime.split(";", 1)[0]]: [extensionFor(item.filename)] },
+          },
+        ]
       : undefined,
   })
   const writable = await handle.createWritable()
@@ -405,6 +444,13 @@ async function downloadAndDecryptChunk(
     index,
     item.size,
   )
+}
+
+export function revokeMediaObject(objectKey: string): void {
+  const url = blobUrlCache.get(objectKey)
+  if (url) URL.revokeObjectURL(url)
+  blobUrlCache.delete(objectKey)
+  decryptedBlobCache.delete(objectKey)
 }
 
 export function revokeAllObjectUrls(): void {

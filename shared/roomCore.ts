@@ -9,12 +9,7 @@ import {
   MAX_PARTICIPANTS_PER_ROOM,
   MAX_REACTIONS_PER_MESSAGE,
 } from "./constants"
-import type {
-  EncryptedMediaRef,
-  MessageKind,
-  PublicRoomState,
-  StoredMessage,
-} from "./types"
+import type { EncryptedMediaRef, MessageKind, PublicRoomState, StoredMessage } from "./types"
 
 export interface RoomRecord {
   roomId: string
@@ -78,7 +73,14 @@ export class RoomCore {
       if (this.room.topicEnvelope === undefined) this.room.topicEnvelope = null
       if (this.room.banned === undefined) this.room.banned = []
     }
-    this.messages = new Map((snapshot?.messages ?? []).map((m) => [m.id, m]))
+    this.messages = new Map(
+      (snapshot?.messages ?? []).map((m) => [
+        m.id,
+        m.burn && m.expiresAt === null
+          ? { ...m, expiresAt: m.createdAt + (this.room?.defaultTtlMs ?? DEFAULT_MESSAGE_TTL_MS) }
+          : m,
+      ]),
+    )
     this.participants = new Map(
       Object.entries(snapshot?.participants ?? {}).map(([id, value]) => [
         id,
@@ -178,7 +180,8 @@ export class RoomCore {
   }): RoomRecord | null {
     if (!this.room || this.room.deletedAt !== null) return null
     if (input.inviteExpiresAt !== undefined) this.room.inviteExpiresAt = input.inviteExpiresAt
-    if (input.ttlMs !== undefined) this.room.defaultTtlMs = clampTtl(input.ttlMs, this.room.defaultTtlMs)
+    if (input.ttlMs !== undefined)
+      this.room.defaultTtlMs = clampTtl(input.ttlMs, this.room.defaultTtlMs)
     if (input.burnAfterRead !== undefined) this.room.burnAfterRead = input.burnAfterRead
     if (input.destroyAt !== undefined) this.room.destroyAt = input.destroyAt
     return this.room
@@ -272,7 +275,7 @@ export class RoomCore {
       media: input.media,
       kind: input.kind,
       createdAt: now,
-      expiresAt: burn ? null : now + ttl,
+      expiresAt: now + ttl,
       burn,
     }
     this.messages.set(message.id, message)
@@ -344,11 +347,15 @@ export class RoomCore {
    * Mark burn-after-read messages consumed by a reader who is not the author.
    * They are removed after this delivery. Returns object keys to free.
    */
-  markRead(readerId: string, now: number): { burnedIds: string[]; orphanObjectKeys: string[] } {
+  markRead(
+    readerId: string,
+    now: number,
+    messageIds: string[],
+  ): { burnedIds: string[]; orphanObjectKeys: string[] } {
     const burnedIds: string[] = []
     const orphanObjectKeys: string[] = []
     for (const m of this.messages.values()) {
-      if (m.burn && m.participantId !== readerId) {
+      if (messageIds.includes(m.id) && m.burn && m.participantId !== readerId) {
         burnedIds.push(m.id)
         for (const ref of m.media ?? []) orphanObjectKeys.push(ref.objectKey)
         this.messages.delete(m.id)
@@ -371,7 +378,10 @@ export class RoomCore {
     if (input.envelope === null) {
       delete m.reactions[input.reactionId]
     } else {
-      m.reactions[input.reactionId] = { participantId: input.participantId, envelope: input.envelope }
+      m.reactions[input.reactionId] = {
+        participantId: input.participantId,
+        envelope: input.envelope,
+      }
     }
     return m
   }

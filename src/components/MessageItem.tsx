@@ -19,7 +19,14 @@ import type { MediaManifestItem } from "../lib/media"
 import { formatCountdown, formatTime, hueFromString } from "../lib/format"
 import { MediaTile } from "./MediaTile"
 
-const QUICK_EMOJI = ["\u{1F525}", "\u2764\uFE0F", "\u{1F44D}", "\u{1F602}", "\u{1F62E}", "\u{1F622}"]
+const QUICK_EMOJI = [
+  "\u{1F525}",
+  "\u2764\uFE0F",
+  "\u{1F44D}",
+  "\u{1F602}",
+  "\u{1F62E}",
+  "\u{1F622}",
+]
 
 interface Props {
   session: RoomSession
@@ -40,6 +47,7 @@ interface Props {
   onEdit?: (msg: DecryptedMessage) => void
   onDelete?: (msg: DecryptedMessage) => void
   onReport?: (msg: DecryptedMessage) => void
+  onOpenOnce: (msg: DecryptedMessage) => void
   onOpenMedia: (item: MediaManifestItem) => void
   onRetry?: (id: string) => void
   onJumpTo?: (id: string) => void
@@ -74,6 +82,7 @@ function MessageItemInner({
   onDelete,
   onReport,
   onOpenMedia,
+  onOpenOnce,
   onRetry,
   onJumpTo,
 }: Props) {
@@ -117,6 +126,24 @@ function MessageItemInner({
 
   if (msg.kind === "system") {
     return <div className="sys-line">{msg.text}</div>
+  }
+
+  if (msg.burn && !msg.mine && !msg.deleted) {
+    return (
+      <div className="msg" data-mid={msg.id}>
+        <span className="who">{msg.username}</span>
+        <button
+          className="btn read-once-card"
+          onClick={() => (selecting ? onToggleSelect(msg.id) : onOpenOnce(msg))}
+          aria-pressed={selecting ? selected : undefined}
+        >
+          <Flame size={18} /> Open once{msg.kind === "media" ? " · attachment" : " · message"}
+        </button>
+        <span className="hint">
+          Expires in {formatCountdown(msg.expiresAt)}. Opening removes it for everyone.
+        </span>
+      </div>
+    )
   }
 
   const hue = hueFromString(msg.username)
@@ -273,7 +300,12 @@ function MessageItemInner({
               {msg.items && msg.items.length > 0 && (
                 <div className="media-grid">
                   {msg.items.map((it) => (
-                    <MediaTile key={it.objectKey} session={session} item={it} onOpen={onOpenMedia} />
+                    <MediaTile
+                      key={it.objectKey}
+                      session={session}
+                      item={it}
+                      onOpen={onOpenMedia}
+                    />
                   ))}
                 </div>
               )}
@@ -345,10 +377,13 @@ function MessageItemInner({
             <Clock size={10} /> {ttl}
           </span>
         )}
-        {msg.mine && !msg.deleted && <SendState failed={msg.failed} pending={msg.pending} seen={seen} />}
+        {msg.mine && !msg.deleted && (
+          <SendState failed={msg.failed} pending={msg.pending} seen={seen} />
+        )}
         {msg.mine && !msg.deleted && seenByNames && seenByNames.length > 0 && (
           <span className="seen-by" style={SEENBY} title={`Seen by ${seenByNames.join(", ")}`}>
-            Seen by {seenByNames.length <= 2 ? seenByNames.join(", ") : `${seenByNames.length} people`}
+            Seen by{" "}
+            {seenByNames.length <= 2 ? seenByNames.join(", ") : `${seenByNames.length} people`}
           </span>
         )}
         {msg.mine && msg.failed && onRetry && (

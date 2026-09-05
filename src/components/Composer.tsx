@@ -21,6 +21,9 @@ import { formatBytes } from "../lib/format"
 interface ComposerProps {
   uploads: UploadState[]
   roomId: string
+  defaultTtlMs: number
+  defaultBurn: boolean
+  onCancelUpload: (messageId: string) => void
   replyTo: ReplyRef | null
   onCancelReply: () => void
   onSend: (text: string, opts?: SendOpts) => void
@@ -29,7 +32,7 @@ interface ComposerProps {
 }
 
 const TTL_OPTIONS = [
-  { label: "Off", ms: 0 },
+  { label: "Room default", ms: 0 },
   { label: "10s", ms: 10_000 },
   { label: "1m", ms: 60_000 },
   { label: "5m", ms: 300_000 },
@@ -54,12 +57,7 @@ function pickAudioMime(): string | undefined {
   if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
     return undefined
   }
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/mp4",
-  ]
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]
   for (const c of candidates) {
     try {
       if (MediaRecorder.isTypeSupported(c)) return c
@@ -84,6 +82,9 @@ function formatSecs(s: number): string {
 export function Composer({
   uploads,
   roomId,
+  defaultTtlMs,
+  defaultBurn,
+  onCancelUpload,
   replyTo,
   onCancelReply,
   onSend,
@@ -94,9 +95,14 @@ export function Composer({
   const [text, setText] = useState("")
   const [files, setFiles] = useState<File[]>([])
   const [ttlIdx, setTtlIdx] = useState(0)
-  const [burn, setBurn] = useState(false)
+  const [burn, setBurn] = useState(defaultBurn)
   const [justSent, setJustSent] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [recordError, setRecordError] = useState("")
+  const [startingRecording, setStartingRecording] = useState(false)
+  const [voice, setVoice] = useState<File | null>(null)
+  const [voiceUrl, setVoiceUrl] = useState<string | null>(null)
+  const mounted = useRef(true)
   const [recording, setRecording] = useState(false)
   const [recSecs, setRecSecs] = useState(0)
   const editorRef = useRef<HTMLDivElement>(null)
@@ -109,6 +115,27 @@ export function Composer({
   const discardRef = useRef(false)
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
   const ttl = TTL_OPTIONS[ttlIdx]
+  const effectiveTtl = ttl.ms || defaultTtlMs
+  const effectiveLabel =
+    effectiveTtl < 60_000
+      ? `${Math.round(effectiveTtl / 1000)}s`
+      : effectiveTtl < 3_600_000
+        ? `${Math.round(effectiveTtl / 60_000)}m`
+        : effectiveTtl < 86_400_000
+          ? `${Math.round(effectiveTtl / 3_600_000)}h`
+          : `${Math.round(effectiveTtl / 86_400_000)}d`
+  useEffect(() => {
+    setBurn(defaultBurn)
+  }, [defaultBurn])
+  useEffect(() => {
+    if (!voice) {
+      setVoiceUrl(null)
+      return
+    }
+    const url = URL.createObjectURL(voice)
+    setVoiceUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [voice])
   const supportsRecording =
     typeof navigator !== "undefined" &&
     !!navigator.mediaDevices?.getUserMedia &&
@@ -141,7 +168,9 @@ export function Composer({
 
   // Tear down any in-flight recording (and release the mic) on unmount.
   useEffect(() => {
+    mounted.current = true
     return () => {
+      mounted.current = false
       if (recTimer.current) clearInterval(recTimer.current)
       if (recRef.current && recRef.current.state !== "inactive") {
         discardRef.current = true
@@ -205,9 +234,15 @@ export function Composer({
   }
 
   async function startRecording() {
-    if (recording || !supportsRecording) return
+    if (recording || startingRecording || voice || !supportsRecording) return
+    setRecordError("")
+    setStartingRecording(true)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (!mounted.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       streamRef.current = stream
       const mime = pickAudioMime()
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined)
@@ -229,12 +264,7 @@ export function Composer({
         const type = rec.mimeType || mime || "audio/webm"
         const blob = new Blob(chunksRef.current, { type })
         const file = new File([blob], `voice-note-${Date.now()}.${extFor(type)}`, { type })
-        onSendMedia([file], "", {
-          ttlMs: ttl.ms > 0 ? ttl.ms : undefined,
-          burn: burn || undefined,
-          replyTo: replyTo ?? undefined,
-        })
-        finishSend()
+        if (mounted.current) setVoice(file)
       }
       recRef.current = rec
       rec.start()
@@ -246,9 +276,20 @@ export function Composer({
         setRecSecs(recSecsRef.current)
         if (recSecsRef.current >= 300) stopRecording() // 5-minute safety cap
       }, 1000)
-    } catch {
+    } catch (error) {
       releaseStream()
-      setRecording(false)
+      if (mounted.current) {
+        setRecording(false)
+        setRecordError(
+          error instanceof DOMException && error.name === "NotAllowedError"
+            ? "Microphone access was denied. Allow it in your browser's site settings, then try again."
+            : error instanceof DOMException && error.name === "NotFoundError"
+              ? "No microphone was found. Connect one and try again."
+              : "Could not start recording. Check that your microphone is available and try again.",
+        )
+      }
+    } finally {
+      if (mounted.current) setStartingRecording(false)
     }
   }
 
@@ -269,14 +310,16 @@ export function Composer({
   }
 
   function submit() {
+    if (busy || recording || startingRecording) return
     const t = readEditorText().trim()
     const opts: SendOpts = {
       ttlMs: ttl.ms > 0 ? ttl.ms : undefined,
-      burn: burn || undefined,
+      burn,
       replyTo: replyTo ?? undefined,
     }
-    if (files.length > 0) {
-      onSendMedia(files, t, opts)
+    if (files.length > 0 || voice) {
+      onSendMedia(voice ? [...files, voice] : files, t, opts)
+      setVoice(null)
       setFiles([])
       clearEditor()
       finishSend()
@@ -288,9 +331,13 @@ export function Composer({
   }
 
   function finishSend() {
-    setBurn(false)
+    setBurn(defaultBurn)
     onCancelReply()
-    localStorage.removeItem(draftKey)
+    try {
+      localStorage.removeItem(draftKey)
+    } catch {
+      /* unavailable storage */
+    }
     flashSent()
   }
 
@@ -302,7 +349,7 @@ export function Composer({
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       submit()
     }
@@ -362,7 +409,11 @@ export function Composer({
     }
   }
 
-  const canSend = (text.trim().length > 0 || files.length > 0) && !busy
+  const canSend =
+    (text.trim().length > 0 || files.length > 0 || !!voice) &&
+    !busy &&
+    !recording &&
+    !startingRecording
 
   return (
     <div
@@ -382,6 +433,15 @@ export function Composer({
             <div className="upload-item" key={u.id}>
               <UploadIcon status={u.status} />
               <span style={NAME}>{u.filename}</span>
+              {(u.status === "uploading" || u.status === "encrypting") && (
+                <button
+                  className="btn"
+                  onClick={() => onCancelUpload(u.messageId)}
+                  aria-label={`Cancel upload ${u.filename}`}
+                >
+                  Cancel
+                </button>
+              )}
               {u.status === "uploading" ? (
                 <span className="bar">
                   <i style={barWidth(u.progress)} />
@@ -424,16 +484,37 @@ export function Composer({
         </div>
       )}
 
+      {recordError && (
+        <p role="alert" className="inline-error">
+          {recordError}
+        </p>
+      )}
+      {voice && voiceUrl && (
+        <div className="voice-preview">
+          <span>Preview voice note</span>
+          <audio controls src={voiceUrl} aria-label="Voice note preview" />
+          <button className="btn" onClick={() => setVoice(null)} disabled={busy}>
+            Discard voice note
+          </button>
+          <button className="btn btn-primary" onClick={submit} disabled={!canSend}>
+            Send voice note
+          </button>
+        </div>
+      )}
       {recording && (
         <div className="rec-bar" style={REC_BAR}>
           <span style={REC_DOT} aria-hidden="true" />
           <span>Recording voice note… {formatSecs(recSecs)}</span>
           <span style={SPACER} />
-          <button className="icon-btn mini" aria-label="Discard recording" onClick={cancelRecording}>
+          <button
+            className="icon-btn mini"
+            aria-label="Discard recording"
+            onClick={cancelRecording}
+          >
             <X size={15} />
           </button>
           <button className="btn btn-primary" onClick={stopRecording}>
-            <Square size={14} /> Stop & send
+            <Square size={14} /> Stop & preview
           </button>
         </div>
       )}
@@ -454,6 +535,7 @@ export function Composer({
           <button
             type="button"
             className={`upload-btn ${recording ? "recording" : ""}`}
+            disabled={startingRecording || !!voice || busy}
             onClick={recording ? stopRecording : startRecording}
             title={recording ? "Stop recording" : "Record an encrypted voice note"}
             aria-label={recording ? "Stop recording" : "Record an encrypted voice note"}
@@ -477,7 +559,7 @@ export function Composer({
           role="textbox"
           aria-label="Encrypted message"
           aria-multiline="true"
-          contentEditable={!busy}
+          contentEditable={!busy && !recording}
           data-placeholder="Write an encrypted message…"
           data-empty={text.trim().length === 0 ? "true" : "false"}
           suppressContentEditableWarning
@@ -499,20 +581,28 @@ export function Composer({
       </div>
 
       <div className="composer-tools">
-        <button
-          type="button"
-          className={`chip-toggle ${ttl.ms > 0 ? "on" : ""}`}
-          onClick={() => setTtlIdx((i) => (i + 1) % TTL_OPTIONS.length)}
-          title="Disappearing timer — message self-destructs after this delay"
-          aria-label="Disappearing timer"
-        >
-          <Timer size={13} /> {ttl.ms > 0 ? ttl.label : "Timer"}
-        </button>
+        <label className="timer-select">
+          <Timer size={13} />
+          <span className="sr-only">Disappearing timer</span>
+          <select
+            aria-label="Disappearing timer"
+            value={ttlIdx}
+            onChange={(e) => setTtlIdx(Number(e.target.value))}
+          >
+            {TTL_OPTIONS.map((option, i) => (
+              <option key={option.ms} value={i}>
+                {i === 0
+                  ? `Room default: ${defaultTtlMs < 60_000 ? Math.round(defaultTtlMs / 1000) + "s" : defaultTtlMs < 3_600_000 ? Math.round(defaultTtlMs / 60_000) + "m" : defaultTtlMs < 86_400_000 ? Math.round(defaultTtlMs / 3_600_000) + "h" : Math.round(defaultTtlMs / 86_400_000) + "d"}`
+                  : option.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           type="button"
           className={`chip-toggle ${burn ? "on danger" : ""}`}
           onClick={() => setBurn((v) => !v)}
-          title="Read once — disappears after someone reads it"
+          title={`Read once — expires after ${effectiveLabel} if unopened`}
           aria-label="Read once"
           aria-pressed={burn}
         >
@@ -551,7 +641,12 @@ function barWidth(p: number) {
   return { width: Math.round(p * 100) + "%" }
 }
 
-const NAME = { flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }
+const NAME = {
+  flex: 1,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap" as const,
+}
 const STATUS = { color: "var(--text-faint)" }
 const SPACER = { flex: 1 } as const
 const REC_BAR = {

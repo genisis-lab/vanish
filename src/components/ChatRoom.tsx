@@ -50,9 +50,11 @@ import { Composer } from "./Composer"
 import { InvitePanel } from "./InvitePanel"
 import { SafetyPanel } from "./SafetyPanel"
 import { SecurityTransparency } from "./SecurityTransparency"
+import { ReadOnceViewer } from "./ReadOnceViewer"
 import { MediaViewer } from "./MediaViewer"
 
-type Panel = "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | null
+type Panel =
+  "settings" | "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | null
 
 export function ChatRoom({
   session,
@@ -68,6 +70,7 @@ export function ChatRoom({
   const [panel, setPanel] = useState<Panel>(null)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [readOnce, setReadOnce] = useState<DecryptedMessage | null>(null)
   const [viewer, setViewer] = useState<MediaManifestItem | null>(null)
   const [showJump, setShowJump] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -174,27 +177,47 @@ export function ChatRoom({
     }
   }, [room.messages.length])
 
-  // Tell peers how far we've read so they get per-person read receipts. Fires
-  // when new messages arrive (while visible) and when the tab regains focus.
   useEffect(() => {
-    const markIfVisible = () => {
-      if (document.visibilityState === "hidden") return
-      const msgs = room.messages
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].kind !== "system") {
-          room.markSeen(msgs[i].createdAt)
-          break
+    const scroller = scrollRef.current
+    if (!scroller || panel || viewer || readOnce) return
+    const visible = new Set<string>()
+    const eligible = new Set(
+      room.messages
+        .filter((m) => !m.mine && !m.burn && !m.deleted && m.kind !== "system")
+        .map((m) => m.id),
+    )
+    const flush = () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return
+      room.markSeen([...visible].filter((id) => eligible.has(id)))
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.mid
+          if (!id) continue
+          // At least half of a normal message, or most of the viewport for tall messages.
+          const visibleEnough =
+            entry.isIntersecting &&
+            entry.intersectionRect.height >=
+              Math.min(entry.boundingClientRect.height * 0.5, scroller.clientHeight * 0.8)
+          if (visibleEnough) visible.add(id)
+          else visible.delete(id)
         }
-      }
-    }
-    markIfVisible()
-    window.addEventListener("focus", markIfVisible)
-    document.addEventListener("visibilitychange", markIfVisible)
+        flush()
+      },
+      { root: scroller, threshold: [0, 0.1, 0.5, 1] },
+    )
+    scroller.querySelectorAll<HTMLElement>("[data-mid]").forEach((el) => observer.observe(el))
+    const retry = window.setInterval(flush, 2000)
+    window.addEventListener("focus", flush)
+    document.addEventListener("visibilitychange", flush)
     return () => {
-      window.removeEventListener("focus", markIfVisible)
-      document.removeEventListener("visibilitychange", markIfVisible)
+      observer.disconnect()
+      clearInterval(retry)
+      window.removeEventListener("focus", flush)
+      document.removeEventListener("visibilitychange", flush)
     }
-  }, [room.messages, room.markSeen])
+  }, [room.messages, room.markSeen, panel, viewer, readOnce])
 
   function onScroll() {
     const el = scrollRef.current
@@ -231,7 +254,7 @@ export function ChatRoom({
     if (q.length < 2) return [] as string[]
     return room.messages
       .filter((m) => {
-        if (m.deleted || m.kind === "system") return false
+        if (m.deleted || m.kind === "system" || (m.burn && !m.mine)) return false
         const text = (m.text ?? "").toLowerCase()
         const who = (m.username ?? "").toLowerCase()
         return text.includes(q) || who.includes(q)
@@ -243,7 +266,7 @@ export function ChatRoom({
     if (matches.length === 0) return
     const len = matches.length
     const base = matchIdx < 0 && dir === -1 ? 0 : matchIdx
-    const next = ((base + dir) % len + len) % len
+    const next = (((base + dir) % len) + len) % len
     setMatchIdx(next)
     jumpToMessage(matches[next])
   }
@@ -259,11 +282,7 @@ export function ChatRoom({
     setMuted(next)
     vault.setMuted(session.invite.roomId, next)
     setPanel(null)
-    toast(
-      next
-        ? "Room muted on this device — no sounds or pop-up alerts"
-        : "Room unmuted",
-    )
+    toast(next ? "Room muted on this device — no sounds or pop-up alerts" : "Room unmuted")
   }
 
   const toggleSelect = useCallback(
@@ -331,7 +350,8 @@ export function ChatRoom({
         toast("Choose spam, harassment, threat, or other")
         return
       }
-      void room.reportMessage(m.id, category)
+      void room
+        .reportMessage(m.id, category)
         .then(() => toast("Report queued without sharing message contents"))
         .catch(() => toast("Could not submit report"))
     },
@@ -396,7 +416,7 @@ export function ChatRoom({
 
   function exportTranscript() {
     const lines = room.messages
-      .filter((m) => m.kind !== "system")
+      .filter((m) => m.kind !== "system" && (!m.burn || m.mine))
       .map((m) => {
         const when = new Date(m.createdAt).toISOString()
         const who = m.mine ? `${m.username || "anon"} (you)` : m.username || "anon"
@@ -546,7 +566,11 @@ export function ChatRoom({
           <div className="select-bar" style={GROW}>
             <IconButton icon={<X size={18} />} label="Cancel selection" onClick={cancelSelect} />
             <span className="count">{selected.size} selected</span>
-            <button className="btn btn-danger" disabled={selected.size === 0} onClick={pruneSelected}>
+            <button
+              className="btn btn-danger"
+              disabled={selected.size === 0}
+              onClick={pruneSelected}
+            >
               <Trash2 size={15} /> Prune
             </button>
           </div>
@@ -555,7 +579,7 @@ export function ChatRoom({
             <div className="room-id">
               <button type="button" className="t brand-home" onClick={onLeave} title="Back to home">
                 <Flame size={16} color="var(--accent)" />
-                <span className="hide-sm">{topic || "Vanish room"}</span>
+                <span>{topic || "Vanish room"}</span>
               </button>
               <span className="s">
                 <span className={`dot ${room.connState}`} />
@@ -565,7 +589,11 @@ export function ChatRoom({
               </span>
             </div>
             <div className="topbar-actions">
-              <IconButton icon={<Share2 size={19} />} label="Invite" onClick={() => setPanel("invite")} />
+              <IconButton
+                icon={<Share2 size={19} />}
+                label="Invite"
+                onClick={() => setPanel("invite")}
+              />
               <IconButton
                 icon={<ShieldCheck size={19} />}
                 label="Verify encryption"
@@ -576,43 +604,6 @@ export function ChatRoom({
                 label="Search messages"
                 onClick={toggleSearch}
                 active={searchOpen}
-              />
-              <IconButton
-                icon={<QrCode size={19} />}
-                label="Show invite QR"
-                onClick={() => setPanel("invite-qr")}
-                className="hide-sm"
-              />
-              <IconButton
-                icon={privacy ? <Eye size={18} /> : <EyeOff size={18} />}
-                label={privacy ? "Privacy blur on" : "Privacy blur off"}
-                onClick={() => setPrivacy((v) => !v)}
-                active={privacy}
-                className="hide-sm"
-              />
-              <IconButton
-                icon={notifOn ? <Bell size={18} /> : <BellOff size={18} />}
-                label={notifOn ? "Notifications on" : "Enable notifications"}
-                onClick={toggleNotifications}
-                active={notifOn}
-                className="hide-sm"
-              />
-              <IconButton
-                icon={prefs.compact ? <Maximize2 size={18} /> : <Minimize2 size={18} />}
-                label={prefs.compact ? "Exit compact mode" : "Compact mode"}
-                onClick={prefs.toggleCompact}
-                active={prefs.compact}
-                className="hide-sm"
-              />
-              <IconButton
-                icon={<Type size={18} />}
-                label={`Text size: ${prefs.fontScale.toUpperCase()}`}
-                onClick={prefs.cycleFontScale}
-              />
-              <IconButton
-                icon={prefs.theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-                label="Toggle theme"
-                onClick={prefs.toggleTheme}
               />
               <IconButton
                 icon={<MoreVertical size={19} />}
@@ -687,21 +678,28 @@ export function ChatRoom({
           {room.messages.length === 0 && (
             <div className="center-spinner" style={EMPTY}>
               <Flame size={26} color="var(--accent)" />
+              <h2>Your room is ready</h2>
               <p className="hint" style={EMPTYTEXT}>
-                This room is empty and encrypted end-to-end. Say hello — messages auto-delete on the
-                schedule you chose.
+                Invite someone to start talking. Messages expire on your chosen schedule.
               </p>
+              <button className="btn btn-primary" onClick={() => setPanel("invite")}>
+                <Share2 size={17} /> Invite someone
+              </button>
+              <button className="btn" onClick={() => setPanel("invite-qr")}>
+                <QrCode size={17} /> Show invite QR
+              </button>
             </div>
           )}
           {room.messages.map((m, i) => {
             const prev = room.messages[i - 1]
-            const showWho = !prev || prev.participantId !== m.participantId || prev.kind === "system"
-            const seen = room.participantCount > 1 && room.othersSeenUpTo >= m.createdAt
+            const showWho =
+              !prev || prev.participantId !== m.participantId || prev.kind === "system"
+            const seen = (room.readByMessage[m.id]?.length ?? 0) > 0
             const seenByNames =
               m.id === lastMineId
-                ? Object.entries(room.seenBy)
-                    .filter(([pid, ts]) => pid !== session.participantId && ts >= m.createdAt)
-                    .map(([pid]) => room.names[pid] || "someone")
+                ? (room.readByMessage[m.id] ?? [])
+                    .filter((pid) => pid !== session.participantId)
+                    .map((pid) => room.names[pid] || "someone")
                 : undefined
             return (
               <MessageItem
@@ -722,6 +720,7 @@ export function ChatRoom({
                 onDelete={deleteMessage}
                 onReport={reportMessage}
                 onOpenMedia={setViewer}
+                onOpenOnce={setReadOnce}
                 onRetry={room.retrySend}
                 onJumpTo={jumpToMessage}
               />
@@ -756,8 +755,16 @@ export function ChatRoom({
         )}
       </div>
 
+      {room.error && (
+        <p className="inline-error room-error" role="alert">
+          {room.error}
+        </p>
+      )}
       <Composer
         uploads={room.uploads}
+        onCancelUpload={room.cancelUpload}
+        defaultTtlMs={room.room?.defaultTtlMs ?? 86_400_000}
+        defaultBurn={room.room?.burnAfterRead ?? false}
         roomId={session.invite.roomId}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
@@ -765,6 +772,10 @@ export function ChatRoom({
         onSendMedia={room.sendMedia}
         onTyping={room.notifyTyping}
       />
+
+      {readOnce && (
+        <ReadOnceViewer session={session} message={readOnce} onClose={() => setReadOnce(null)} />
+      )}
 
       {panel === "invite" && (
         <InvitePanel session={session} prefs={prefs} onClose={() => setPanel(null)} />
@@ -826,9 +837,44 @@ export function ChatRoom({
           </div>
         </Sheet>
       )}
-      {panel === "actions" && (
-        <Sheet title="Room actions" icon={<MoreVertical size={18} />} onClose={() => setPanel(null)}>
+      {panel === "settings" && (
+        <Sheet title="Room settings" onClose={() => setPanel(null)}>
           <div className="stack">
+            <button className="btn" onClick={prefs.toggleTheme}>
+              {prefs.theme === "dark" ? <Sun size={18} /> : <Moon size={18} />} Switch to{" "}
+              {prefs.theme === "dark" ? "light" : "dark"} mode
+            </button>
+            <button className="btn" onClick={prefs.cycleFontScale}>
+              <Type size={18} /> Text size: {prefs.fontScale.toUpperCase()}
+            </button>
+            <button className="btn" aria-pressed={prefs.compact} onClick={prefs.toggleCompact}>
+              {prefs.compact ? <Maximize2 size={18} /> : <Minimize2 size={18} />} Compact mode:{" "}
+              {prefs.compact ? "on" : "off"}
+            </button>
+            <button className="btn" aria-pressed={privacy} onClick={() => setPrivacy((v) => !v)}>
+              {privacy ? <Eye size={18} /> : <EyeOff size={18} />} Privacy blur:{" "}
+              {privacy ? "on" : "off"}
+            </button>
+            <button className="btn" aria-pressed={notifOn} onClick={toggleNotifications}>
+              {notifOn ? <Bell size={18} /> : <BellOff size={18} />}{" "}
+              {notifOn ? "Turn notifications off" : "Enable notifications"}
+            </button>
+            <button className="btn" onClick={() => setPanel("invite-qr")}>
+              <QrCode size={18} /> Show invite QR
+            </button>
+          </div>
+        </Sheet>
+      )}
+      {panel === "actions" && (
+        <Sheet
+          title="Room actions"
+          icon={<MoreVertical size={18} />}
+          onClose={() => setPanel(null)}
+        >
+          <div className="stack">
+            <button className="btn btn-block" onClick={() => setPanel("settings")}>
+              Appearance & notifications
+            </button>
             <button className="btn btn-block" onClick={changeNickname}>
               <Pencil size={16} /> Change your nickname
             </button>
@@ -896,7 +942,10 @@ export function ChatRoom({
                     <Trash2 size={16} /> Confirm — delete room & all data
                   </button>
                 ) : (
-                  <button className="btn btn-danger btn-block" onClick={() => setConfirmDelete(true)}>
+                  <button
+                    className="btn btn-danger btn-block"
+                    onClick={() => setConfirmDelete(true)}
+                  >
                     <Trash2 size={16} /> Delete room & encrypted data
                   </button>
                 )}
@@ -955,7 +1004,8 @@ function RoomTimer({ destroyAt }: { destroyAt: number | null }) {
 function playChime() {
   try {
     const Ctx =
-      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     const ctx = new Ctx()
     const o = ctx.createOscillator()
     const g = ctx.createGain()
