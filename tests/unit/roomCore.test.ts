@@ -145,9 +145,9 @@ describe("RoomCore pruning + expiry + delete", () => {
     const { core, now } = await freshRoom({ burn: true })
     core.addMessage({ id: "m1", participantId: "author", envelope: "e", kind: "text" }, now)
     // author reading does not burn
-    expect(core.markRead("author", now).burnedIds).toHaveLength(0)
+    expect(core.markRead("author", now, ["m1"]).burnedIds).toHaveLength(0)
     // a different reader burns it
-    expect(core.markRead("reader", now).burnedIds).toContain("m1")
+    expect(core.markRead("reader", now, ["m1"]).burnedIds).toContain("m1")
     expect(core.list(now).length).toBe(0)
   })
 

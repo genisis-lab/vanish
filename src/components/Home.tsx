@@ -22,6 +22,7 @@ import type { InviteExpiryOption } from "@shared/types"
 import { TTL_PRESETS, ROOM_LIFETIME_PRESETS, DEFAULT_MESSAGE_TTL_MS } from "@shared/constants"
 import type { Prefs } from "../lib/usePrefs"
 import type { RoomSession } from "../lib/session"
+import { ApiError } from "../lib/api"
 import { createRoom } from "../lib/createRoom"
 import {
   MIN_DURESS_PASSPHRASE_LENGTH,
@@ -52,6 +53,9 @@ const INSTALL_DISMISS_KEY = "vanish.pwa-install.dismissed.v1"
 export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
   const toast = useToast()
   const [tab, setTab] = useState<"create" | "join">("create")
+  const [preset, setPreset] = useState<"quick" | "day" | "custom">("custom")
+  const [createError, setCreateError] = useState("")
+  const [joinError, setJoinError] = useState("")
   const [username, setUsername] = useState("")
   const [expiry, setExpiry] = useState<InviteExpiryOption>("never")
   const [ttlMs, setTtlMs] = useState<number>(DEFAULT_MESSAGE_TTL_MS)
@@ -82,6 +86,7 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
     e.preventDefault()
     if (busy) return
     setBusy(true)
+    setCreateError("")
     try {
       vault.setRememberEnabled(remember)
       const session = await createRoom({
@@ -102,15 +107,23 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
         lastUsed: Date.now(),
       })
       onCreated(session)
-    } catch {
-      toast("Could not create room. Check your connection.")
+    } catch (error) {
+      setCreateError(
+        error instanceof ApiError || error instanceof Error
+          ? error.message
+          : "Could not create room. Please try again.",
+      )
       setBusy(false)
     }
   }
 
   function handleJoin(e: React.FormEvent) {
     e.preventDefault()
-    if (!onJoinKey(joinKey)) toast("That doesn't look like a valid invite key.")
+    setJoinError(
+      onJoinKey(joinKey)
+        ? ""
+        : "Enter a complete invite link or key. Check that nothing was cut off.",
+    )
   }
 
   const setRememberPersist = (on: boolean) => {
@@ -118,8 +131,18 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
     vault.setRememberEnabled(on)
   }
 
+  function choosePreset(value: "quick" | "day" | "custom") {
+    setPreset(value)
+    if (value === "custom") return
+    setExpiry("24h")
+    setTtlMs(value === "quick" ? 300_000 : 86_400_000)
+    setRoomLifetimeMs(value === "quick" ? 3_600_000 : 86_400_000)
+    setBurn(false)
+  }
+  const timerSummary = `Messages: ${TTL_PRESETS.find((p) => p.ms === ttlMs)?.label ?? "24 hours"}. Room: ${ROOM_LIFETIME_PRESETS.find((p) => p.ms === roomLifetimeMs)?.label ?? "Off"}. Invite: ${EXPIRY_OPTIONS.find((p) => p.id === expiry)?.label}.`
+
   return (
-    <div className="shell">
+    <div className="shell home-refresh">
       <div className="brandbar">
         <div className="brand">
           <span className="spark">
@@ -136,45 +159,18 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
 
       <div className="hero">
         <h1>
-          Anonymous chat that <span className="grad">vanishes without a trace</span>
+          Anonymous chat that <span className="grad">disappears on your schedule</span>
         </h1>
         <p>
           Spin up an end-to-end encrypted room, share one link, and talk freely. No accounts, no
-          profiles — your keys never leave your browser.
+          profiles. Your room secret stays on your devices and in the invite you share.
         </p>
       </div>
 
-      {!onboarded && (
-        <div className="card" style={ONBOARD_CARD}>
-          <h2>Welcome — three things to know</h2>
-          <ul className="privacy" style={NO_LIST}>
-            <li>
-              <KeyRound size={17} />
-              <span>
-                <strong>The link IS the key.</strong> Your invite link contains the encryption
-                secret — anyone who has it can read the room, and it never touches the server.
-              </span>
-            </li>
-            <li>
-              <Clock size={17} />
-              <span>
-                <strong>Everything vanishes.</strong> Messages and media auto-delete on the timers
-                you pick; rooms can self-destruct entirely.
-              </span>
-            </li>
-            <li>
-              <Shield size={17} />
-              <span>
-                <strong>Trust, then verify.</strong> Inside a room, tap the shield to compare safety
-                numbers and confirm no one swapped keys.
-              </span>
-            </li>
-          </ul>
-          <button className="btn btn-primary" style={MT} onClick={dismissOnboarding}>
-            Got it
-          </button>
-        </div>
-      )}
+      <p className="privacy-summary">
+        People you invite can copy or save content. Network metadata remains visible to the service.{" "}
+        <a href="#privacy-details">Privacy details</a>
+      </p>
 
       <div className="grid">
         <div className="card">
@@ -214,65 +210,110 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
                 />
               </div>
 
-              <div className="field">
-                <span className="label">Invite expires</span>
+              <fieldset className="room-presets">
+                <legend className="label">Room preset</legend>
                 <div className="seg">
-                  {EXPIRY_OPTIONS.map((o) => (
-                    <button
-                      type="button"
-                      key={o.id}
-                      className={expiry === o.id ? "active" : ""}
-                      onClick={() => setExpiry(o.id)}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
+                  <button
+                    type="button"
+                    aria-pressed={preset === "quick"}
+                    className={preset === "quick" ? "active" : ""}
+                    onClick={() => choosePreset("quick")}
+                  >
+                    Quick conversation
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={preset === "day"}
+                    className={preset === "day" ? "active" : ""}
+                    onClick={() => choosePreset("day")}
+                  >
+                    24-hour room
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={preset === "custom"}
+                    className={preset === "custom" ? "active" : ""}
+                    onClick={() => choosePreset("custom")}
+                  >
+                    Custom
+                  </button>
                 </div>
-              </div>
+              </fieldset>
+              <p className="preset-summary" role="status">
+                {timerSummary}
+                {burn ? " Read once enabled." : ""} Invites also stop working when the room expires.
+              </p>
+              <details className="advanced-settings">
+                <summary>Advanced expiration settings</summary>
+                <div onChange={() => setPreset("custom")}>
+                  <div className="field">
+                    <span className="label">Invite expires</span>
+                    <div className="seg">
+                      {EXPIRY_OPTIONS.map((o) => (
+                        <button
+                          type="button"
+                          key={o.id}
+                          className={expiry === o.id ? "active" : ""}
+                          onClick={() => {
+                            setExpiry(o.id)
+                            setPreset("custom")
+                          }}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
 
-              <div className="field">
-                <label className="label" htmlFor="ttl">
-                  Auto-delete messages after
-                </label>
-                <select
-                  id="ttl"
-                  className="input"
-                  value={ttlMs}
-                  onChange={(e) => setTtlMs(Number(e.target.value))}
-                >
-                  {TTL_PRESETS.map((p) => (
-                    <option key={p.ms} value={p.ms}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  <div className="field">
+                    <label className="label" htmlFor="ttl">
+                      Auto-delete messages after
+                    </label>
+                    <select
+                      id="ttl"
+                      className="input"
+                      value={ttlMs}
+                      onChange={(e) => setTtlMs(Number(e.target.value))}
+                    >
+                      {TTL_PRESETS.map((p) => (
+                        <option key={p.ms} value={p.ms}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div className="field">
-                <label className="label" htmlFor="rlife">
-                  Room self-destructs
-                </label>
-                <select
-                  id="rlife"
-                  className="input"
-                  value={roomLifetimeMs}
-                  onChange={(e) => setRoomLifetimeMs(Number(e.target.value))}
-                >
-                  {ROOM_LIFETIME_PRESETS.map((p) => (
-                    <option key={p.ms} value={p.ms}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  <div className="field">
+                    <label className="label" htmlFor="rlife">
+                      Room self-destructs
+                    </label>
+                    <select
+                      id="rlife"
+                      className="input"
+                      value={roomLifetimeMs}
+                      onChange={(e) => setRoomLifetimeMs(Number(e.target.value))}
+                    >
+                      {ROOM_LIFETIME_PRESETS.map((p) => (
+                        <option key={p.ms} value={p.ms}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <label className="upload-item" style={CHECK_ROW}>
-                <input type="checkbox" checked={burn} onChange={(e) => setBurn(e.target.checked)} />
-                <span>
-                  <strong style={STRONG}>Burn after read</strong> — remove each message once another
-                  participant has seen it.
-                </span>
-              </label>
+                  <label className="upload-item" style={CHECK_ROW}>
+                    <input
+                      type="checkbox"
+                      checked={burn}
+                      onChange={(e) => setBurn(e.target.checked)}
+                    />
+                    <span>
+                      <strong style={STRONG}>Burn after read</strong> — remove each message once
+                      another participant has seen it.
+                    </span>
+                  </label>
+                </div>
+              </details>
 
               <label className="upload-item" style={CHECK_ROW}>
                 <input
@@ -280,9 +321,23 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
                   checked={remember}
                   onChange={(e) => setRememberPersist(e.target.checked)}
                 />
-                <span>Remember this room on this device so I can rejoin after refresh.</span>
+                <span>
+                  Remember this room on this device so I can rejoin after refresh.
+                  <small className="storage-note">
+                    {remember
+                      ? vault.hasPassphrase()
+                        ? "Saved on this device — passphrase protected."
+                        : "Saved on this device — unlocked. Anyone with access to this browser can reopen it. Add a passphrase under Device lock."
+                      : "Not saved. Keep your invite to rejoin."}
+                  </small>
+                </span>
               </label>
 
+              {createError && (
+                <p className="inline-error" role="alert">
+                  {createError}
+                </p>
+              )}
               <button className="btn btn-primary btn-block" disabled={busy} style={MT}>
                 {busy ? <span className="spinner" /> : <Plus size={17} />}
                 {busy ? "Creating…" : "Create encrypted room"}
@@ -290,6 +345,11 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
             </form>
           ) : (
             <form onSubmit={handleJoin}>
+              {joinError && (
+                <p className="inline-error" role="alert">
+                  {joinError}
+                </p>
+              )}
               <div className="field">
                 <label className="label" htmlFor="jk">
                   Invite key or link
@@ -315,6 +375,19 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
         </div>
 
         <div className="stack">
+          {!onboarded && (
+            <details className="card onboarding-details">
+              <summary>New to Vanish? Three things to know</summary>
+              <p>The invite contains the room secret. Share it only with people you trust.</p>
+              <p>
+                Messages expire on your timer; read-once messages disappear when someone opens them.
+              </p>
+              <p>Compare safety numbers using Verify encryption inside the room.</p>
+              <button className="btn" onClick={dismissOnboarding}>
+                Got it
+              </button>
+            </details>
+          )}
           <MobileInstallCard />
 
           {rooms.length > 0 && (
@@ -347,7 +420,7 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
             </div>
           )}
 
-          <div className="card">
+          <div className="card" id="privacy-details">
             <h2>Private by design</h2>
             <p className="sub">What the server can and cannot see.</p>
             <ul className="privacy" style={NO_LIST}>
@@ -368,8 +441,8 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
               <li>
                 <KeyRound size={17} />
                 <span>
-                  <strong>Keys live in the link.</strong> The invite secret never reaches the
-                  server — lose it and the room is unrecoverable.
+                  <strong>Keys live in the link.</strong> The invite secret never reaches the server
+                  — lose it and the room is unrecoverable.
                 </span>
               </li>
               <li>
@@ -420,8 +493,16 @@ function MobileInstallCard() {
 
   const steps =
     platform === "ios"
-      ? ["Tap Share in the browser bar.", "Choose Add to Home Screen.", "Open Vanish from the new icon."]
-      : ["Open the browser menu.", "Choose Install app or Add to Home screen.", "Open Vanish from the new icon."]
+      ? [
+          "Tap Share in the browser bar.",
+          "Choose Add to Home Screen.",
+          "Open Vanish from the new icon.",
+        ]
+      : [
+          "Open the browser menu.",
+          "Choose Install app or Add to Home screen.",
+          "Open Vanish from the new icon.",
+        ]
 
   function dismiss() {
     setDismissed(true)
@@ -459,7 +540,8 @@ function detectMobileInstallPlatform(): "ios" | "android" | null {
   const ios = /iPad|iPhone|iPod/i.test(ua) || iPadOS
   const android = /Android/i.test(ua)
   const coarseMobile =
-    window.matchMedia?.("(pointer: coarse)").matches && Math.min(window.innerWidth, window.innerHeight) < 900
+    window.matchMedia?.("(pointer: coarse)").matches &&
+    Math.min(window.innerWidth, window.innerHeight) < 900
 
   if (ios) return "ios"
   if (android || coarseMobile) return "android"
@@ -556,7 +638,8 @@ function LockCard() {
             style={MT}
             onClick={() => void (duress ? clearDuress() : setupDuress())}
           >
-            <ShieldAlert size={16} /> {duress ? "Remove duress passphrase" : "Add duress passphrase"}
+            <ShieldAlert size={16} />{" "}
+            {duress ? "Remove duress passphrase" : "Add duress passphrase"}
           </button>
           <p className="hint" style={MT}>
             A duress passphrase is a decoy: typed at the unlock screen, it looks like a normal
@@ -598,8 +681,8 @@ function DeviceTransferCard({ onResume }: { onResume: (roomId: string) => void }
     <div className="card">
       <h2>Add from another device</h2>
       <p className="sub">
-        Already in this room on another device? Move it here — keys, owner rights and identity travel
-        inside a short-lived code protected by a high-entropy pairing secret.
+        Already in this room on another device? Move it here — keys, owner rights and identity
+        travel inside a short-lived code protected by a high-entropy pairing secret.
       </p>
       <button className="btn btn-block" disabled={busy} onClick={() => void importFromDevice()}>
         <Smartphone size={16} /> Import device transfer

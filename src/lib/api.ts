@@ -2,6 +2,8 @@
 // already encrypted; these calls only move opaque envelopes + metadata.
 import type {
   BroadcastRequest,
+  ConsumeMessagesRequest,
+  ReadReceiptRequest,
   CreateRoomRequest,
   DeleteOwnMessageRequest,
   EditMessageRequest,
@@ -54,28 +56,95 @@ export function friendlyError(status: number, message: string): string {
   }
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  })
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
-  if (!res.ok) {
-    const raw = (data.error as string) || res.statusText
-    throw new ApiError(res.status, friendlyError(res.status, raw))
+export const REQUEST_TIMEOUT_MS = 30_000
+
+export async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+  signal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController()
+  const cancel = () => controller.abort(signal?.reason)
+  signal?.addEventListener("abort", cancel, { once: true })
+  if (signal?.aborted) cancel()
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("Request timed out", "TimeoutError")),
+    REQUEST_TIMEOUT_MS,
+  )
+  try {
+    const res = await fetch(path, { ...init, signal: controller.signal })
+    const data = (await res.json().catch((error: unknown) => {
+      if (controller.signal.aborted) throw error
+      throw new ApiError(
+        res.status,
+        res.ok
+          ? "The server returned an invalid response. Try again."
+          : friendlyError(res.status, res.statusText || "The service is temporarily unavailable."),
+      )
+    })) as Record<string, unknown>
+    if (!res.ok)
+      throw new ApiError(
+        res.status,
+        friendlyError(res.status, typeof data.error === "string" ? data.error : res.statusText),
+      )
+    return data as T
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException("Upload cancelled", "AbortError")
+    if (controller.signal.aborted) throw new ApiError(0, "The request timed out. Please try again.")
+    if (error instanceof ApiError) throw error
+    throw new ApiError(0, friendlyError(0, "Network error"))
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", cancel)
   }
-  return data as T
 }
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(path)
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
-  if (!res.ok) {
-    const raw = (data.error as string) || res.statusText
-    throw new ApiError(res.status, friendlyError(res.status, raw))
-  }
-  return data as T
+function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  return requestJson<T>(
+    path,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    signal,
+  )
+}
+function get<T>(path: string): Promise<T> {
+  return requestJson<T>(path)
+}
+
+/** XHR is retained for byte progress, with bounded time and real cancellation. */
+function uploadXhr(
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  bytes: Uint8Array,
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<XMLHttpRequest> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const cancel = () => {
+      xhr.abort()
+      reject(new DOMException("Upload cancelled", "AbortError"))
+    }
+    if (signal?.aborted) {
+      cancel()
+      return
+    }
+    xhr.open(method, path, true)
+    xhr.timeout = 120_000
+    for (const [key, value] of Object.entries(headers)) xhr.setRequestHeader(key, value)
+    xhr.setRequestHeader("content-type", "application/octet-stream")
+    xhr.upload.onprogress = (event) => onProgress?.(event.loaded, event.total || bytes.byteLength)
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300
+        ? resolve(xhr)
+        : reject(new ApiError(xhr.status, friendlyError(xhr.status, "Upload failed. Try again.")))
+    xhr.onerror = () => reject(new ApiError(0, friendlyError(0, "Network error")))
+    xhr.ontimeout = () => reject(new ApiError(0, "Upload timed out. Please retry."))
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"))
+    xhr.onloadend = () => signal?.removeEventListener("abort", cancel)
+    signal?.addEventListener("abort", cancel, { once: true })
+    xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
+  })
 }
 
 export const api = {
@@ -114,6 +183,12 @@ export const api = {
   deleteOwnMessage(body: DeleteOwnMessageRequest) {
     return post<{ message: StoredMessage }>("/api/messages/delete", body)
   },
+  readMessages(body: ReadReceiptRequest) {
+    return post<{ ok: boolean }>("/api/messages/read", body)
+  },
+  consumeMessages(body: ConsumeMessagesRequest) {
+    return post<{ consumedIds: string[] }>("/api/messages/consume", body)
+  },
   listMessages(body: ListMessagesRequest) {
     return post<ListMessagesResponse>("/api/messages/list", body)
   },
@@ -138,8 +213,8 @@ export const api = {
   pushUnsubscribe(body: PushUnsubscribeRequest) {
     return post<{ ok: boolean }>("/api/push/unsubscribe", body)
   },
-  signUpload(body: SignUploadRequest) {
-    return post<SignUploadResponse>("/api/uploads/sign", body)
+  signUpload(body: SignUploadRequest, signal?: AbortSignal) {
+    return post<SignUploadResponse>("/api/uploads/sign", body, signal)
   },
   async deleteRoom(roomId: string, accessProof: string, ownerProof: string) {
     const res = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, {
@@ -157,31 +232,19 @@ export const api = {
     sign: SignUploadResponse,
     bytes: Uint8Array,
     onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<void> {
-    // Use XHR so we can surface upload progress in the UI.
-    await new Promise<void>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      xhr.open("POST", sign.uploadUrl, true)
-      xhr.setRequestHeader("x-vanish-token", sign.token)
-      xhr.setRequestHeader("x-vanish-object", sign.objectKey)
-      xhr.setRequestHeader("x-vanish-size", String(bytes.byteLength))
-      xhr.setRequestHeader("x-vanish-expires", String(sign.expiresAt))
-      xhr.setRequestHeader("content-type", "application/octet-stream")
-      xhr.upload.onprogress = (e) => onProgress?.(e.loaded, e.total)
-      xhr.onload = () =>
-        xhr.status >= 200 && xhr.status < 300
-          ? resolve()
-          : reject(new ApiError(xhr.status, friendlyError(xhr.status, "upload failed")))
-      xhr.onerror = () => reject(new ApiError(0, friendlyError(0, "network error")))
-      xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
-    })
+    await uploadXhr("POST", sign.uploadUrl, uploadHeaders(sign), bytes, onProgress, signal)
   },
-  async createMultipartUpload(sign: SignUploadResponse): Promise<MultipartCreateResponse> {
-    const res = await fetch(`${sign.uploadUrl}/create`, {
-      method: "POST",
-      headers: uploadHeaders(sign),
-    })
-    return uploadResponseJson<MultipartCreateResponse>(res, "could not start upload")
+  createMultipartUpload(
+    sign: SignUploadResponse,
+    signal?: AbortSignal,
+  ): Promise<MultipartCreateResponse> {
+    return requestJson(
+      `${sign.uploadUrl}/create`,
+      { method: "POST", headers: uploadHeaders(sign) },
+      signal,
+    )
   },
   async uploadMultipartPart(
     sign: SignUploadResponse,
@@ -189,48 +252,48 @@ export const api = {
     partNumber: number,
     bytes: Uint8Array,
     onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<MultipartUploadedPart> {
-    return new Promise<MultipartUploadedPart>((resolve, reject) => {
-      const xhr = new XMLHttpRequest()
-      xhr.open("PUT", `${sign.uploadUrl}/part`, true)
-      for (const [name, value] of Object.entries(uploadHeaders(sign))) xhr.setRequestHeader(name, value)
-      xhr.setRequestHeader("x-vanish-upload-id", uploadId)
-      xhr.setRequestHeader("x-vanish-part", String(partNumber))
-      xhr.setRequestHeader("content-type", "application/octet-stream")
-      xhr.upload.onprogress = (event) => onProgress?.(event.loaded, event.total || bytes.byteLength)
-      xhr.onload = () => {
-        if (xhr.status < 200 || xhr.status >= 300) {
-          reject(new ApiError(xhr.status, friendlyError(xhr.status, "part upload failed")))
-          return
-        }
-        try {
-          resolve(JSON.parse(xhr.responseText) as MultipartUploadedPart)
-        } catch {
-          reject(new ApiError(xhr.status, "Invalid multipart response"))
-        }
-      }
-      xhr.onerror = () => reject(new ApiError(0, friendlyError(0, "network error")))
-      xhr.send(bytes as unknown as XMLHttpRequestBodyInit)
-    })
+    const xhr = await uploadXhr(
+      "PUT",
+      `${sign.uploadUrl}/part`,
+      {
+        ...uploadHeaders(sign),
+        "x-vanish-upload-id": uploadId,
+        "x-vanish-part": String(partNumber),
+      },
+      bytes,
+      onProgress,
+      signal,
+    )
+    try {
+      return JSON.parse(xhr.responseText) as MultipartUploadedPart
+    } catch {
+      throw new ApiError(xhr.status, "Invalid multipart response")
+    }
   },
   async completeMultipartUpload(
     sign: SignUploadResponse,
     uploadId: string,
     parts: MultipartUploadedPart[],
+    signal?: AbortSignal,
   ): Promise<void> {
-    const res = await fetch(`${sign.uploadUrl}/complete`, {
-      method: "POST",
-      headers: {
-        ...uploadHeaders(sign),
-        "x-vanish-upload-id": uploadId,
-        "content-type": "application/json",
+    await requestJson(
+      `${sign.uploadUrl}/complete`,
+      {
+        method: "POST",
+        headers: {
+          ...uploadHeaders(sign),
+          "x-vanish-upload-id": uploadId,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ parts }),
       },
-      body: JSON.stringify({ parts }),
-    })
-    await uploadResponseJson(res, "could not complete upload")
+      signal,
+    )
   },
   async abortMultipartUpload(sign: SignUploadResponse, uploadId: string): Promise<void> {
-    await fetch(`${sign.uploadUrl}/abort`, {
+    await requestJson(`${sign.uploadUrl}/abort`, {
       method: "DELETE",
       headers: { ...uploadHeaders(sign), "x-vanish-upload-id": uploadId },
     }).catch(() => undefined)
@@ -274,12 +337,4 @@ function uploadHeaders(sign: SignUploadResponse): Record<string, string> {
     "x-vanish-size": String(sign.size),
     "x-vanish-expires": String(sign.expiresAt),
   }
-}
-
-async function uploadResponseJson<T = unknown>(response: Response, fallback: string): Promise<T> {
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string }
-  if (!response.ok) {
-    throw new ApiError(response.status, friendlyError(response.status, data.error || fallback))
-  }
-  return data
 }

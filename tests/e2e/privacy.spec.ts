@@ -46,7 +46,9 @@ test("malformed API JSON and invalid room ids fail at the edge", async ({ reques
   expect(invalid.status()).toBe(400)
 })
 
-test("security boundaries reject oversized, forged, incomplete, and SSRF-shaped requests", async ({ request }) => {
+test("security boundaries reject oversized, forged, incomplete, and SSRF-shaped requests", async ({
+  request,
+}) => {
   const oversized = await request.post("/api/rooms", {
     data: JSON.stringify({ padding: "x".repeat(300 * 1024) }),
     headers: { "content-type": "application/json" },
@@ -137,11 +139,13 @@ test("security boundaries reject oversized, forged, incomplete, and SSRF-shaped 
         participantId: session.participantId,
         envelope: "opaque",
         kind: "media",
-        media: [{
-          objectKey: capability.objectKey,
-          size: capability.size,
-          previewKind: "image",
-        }],
+        media: [
+          {
+            objectKey: capability.objectKey,
+            size: capability.size,
+            previewKind: "image",
+          },
+        ],
       },
     },
   })
@@ -191,4 +195,141 @@ test("security boundaries reject oversized, forged, incomplete, and SSRF-shaped 
     { data: { roomId: session.invite.roomId, accessProofHash: session.keys.accessProofHash } },
   )
   expect(directWorker.status()).toBe(404)
+})
+
+test("read-once media survives listing and is removed only by an authenticated consumption receipt", async ({
+  request,
+}) => {
+  const sender = await createApiSession(request)
+  const reader = {
+    roomId: sender.invite.roomId,
+    accessProof: sender.keys.accessProof,
+    participantId: toBase64Url(randomBytes(12)),
+    participantProof: toBase64Url(randomBytes(32)),
+  }
+  expect((await request.post("/api/session", { data: reader })).status()).toBe(200)
+  const auth = {
+    roomId: sender.invite.roomId,
+    accessProof: sender.keys.accessProof,
+    participantId: sender.participantId,
+    participantProof: sender.participantProof,
+  }
+  const signed = await request.post("/api/uploads/sign", {
+    data: { ...auth, size: 64, previewKind: "image" },
+  })
+  expect(signed.status(), await signed.text()).toBe(200)
+  const sign = await signed.json()
+  expect(
+    (
+      await request.post("/api/uploads/put", {
+        data: Buffer.alloc(64, 7),
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-vanish-token": sign.token,
+          "x-vanish-object": sign.objectKey,
+          "x-vanish-size": String(sign.size),
+          "x-vanish-expires": String(sign.expiresAt),
+        },
+      })
+    ).status(),
+  ).toBe(200)
+  const id = toBase64Url(randomBytes(12))
+  const posted = await request.post("/api/messages", {
+    data: {
+      ...auth,
+      message: {
+        id,
+        participantId: sender.participantId,
+        kind: "media",
+        envelope: "opaque",
+        burn: true,
+        ttlMs: 60_000,
+        media: [{ objectKey: sign.objectKey, size: sign.size, previewKind: "image" }],
+      },
+    },
+  })
+  expect(posted.status(), await posted.text()).toBe(200)
+  expect((await posted.json()).message.expiresAt).toBeGreaterThan(Date.now())
+  const listed = await request.post("/api/messages/list", {
+    data: { ...reader, markReadFor: reader.participantId },
+  })
+  expect((await listed.json()).messages.map((m: { id: string }) => m.id)).toContain(id)
+  const download = () =>
+    request.post("/api/uploads/download", { data: { ...reader, objectKey: sign.objectKey } })
+  expect((await download()).status()).toBe(200)
+  const forged = await request.post("/api/messages/consume", {
+    data: { ...reader, participantProof: auth.participantProof, messageIds: [id] },
+  })
+  expect(forged.status()).toBe(403)
+  const authorRead = await request.post("/api/messages/consume", {
+    data: { ...auth, messageIds: [id] },
+  })
+  expect((await authorRead.json()).consumedIds).toEqual([])
+  const consumed = await request.post("/api/messages/consume", {
+    data: { ...reader, messageIds: [id] },
+  })
+  expect(consumed.status(), await consumed.text()).toBe(200)
+  expect((await consumed.json()).consumedIds).toEqual([id])
+  expect((await download()).status()).toBe(404)
+  expect(
+    (await (await request.post("/api/messages/list", { data: auth })).json()).messages,
+  ).toEqual([])
+})
+
+test("read receipts identify visible messages and do not consume unopened messages", async ({
+  request,
+}) => {
+  const sender = await createApiSession(request)
+  const auth = {
+    roomId: sender.invite.roomId,
+    accessProof: sender.keys.accessProof,
+    participantId: sender.participantId,
+    participantProof: sender.participantProof,
+  }
+  const reader = {
+    ...auth,
+    participantId: toBase64Url(randomBytes(12)),
+    participantProof: toBase64Url(randomBytes(32)),
+  }
+  await request.post("/api/session", { data: reader })
+  const ids = [
+    toBase64Url(randomBytes(12)),
+    toBase64Url(randomBytes(12)),
+    toBase64Url(randomBytes(12)),
+  ]
+  for (let i = 0; i < ids.length; i++) {
+    const posted = await request.post("/api/messages", {
+      data: {
+        ...auth,
+        message: {
+          id: ids[i],
+          participantId: sender.participantId,
+          kind: "text",
+          envelope: "opaque",
+          burn: i === 2,
+          ttlMs: 60_000,
+        },
+      },
+    })
+    expect(posted.status()).toBe(200)
+  }
+  const receipt = await request.post("/api/messages/read", {
+    data: { ...reader, messageIds: [ids[1], ids[2]] },
+  })
+  expect(receipt.status()).toBe(200)
+  const snapshot = await (
+    await request.post("/api/messages/list", {
+      data: { ...auth, signalsSince: Date.now() - 10_000 },
+    })
+  ).json()
+  const seen = snapshot.signals.filter((f: { t: string }) => f.t === "seen")
+  expect(seen.at(-1).messageIds).toEqual([ids[1]])
+  expect(snapshot.messages.map((m: { id: string }) => m.id)).toEqual(ids)
+  expect(
+    (
+      await request.post("/api/messages/read", {
+        data: { ...reader, participantProof: auth.participantProof, messageIds: [ids[0]] },
+      })
+    ).status(),
+  ).toBe(403)
 })

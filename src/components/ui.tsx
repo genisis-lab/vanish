@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
+import { createPortal } from "react-dom"
 import { X } from "lucide-react"
 
 /* ---------- Toast ---------- */
@@ -16,7 +25,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastCtx.Provider value={show}>
       {children}
-      {msg && <div className="toast" role="status">{msg}</div>}
+      {msg && (
+        <div className="toast" role="status">
+          {msg}
+        </div>
+      )}
     </ToastCtx.Provider>
   )
 }
@@ -61,14 +74,80 @@ export function Sheet({
   onClose: () => void
   children: ReactNode
 }) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  if (!hostRef.current) hostRef.current = document.createElement("div")
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
+  const sheetRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose()
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [onClose])
-  return (
-    <div className="scrim" onClick={onClose} role="dialog" aria-modal="true" aria-label={title}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+    const host = hostRef.current!
+    const previous = document.activeElement as HTMLElement | null
+    document.body.appendChild(host)
+    const backgrounds = [...document.body.children].filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== host,
+    )
+    const states = backgrounds.map((el) => ({ el, inert: el.inert }))
+    backgrounds.forEach((el) => {
+      el.inert = true
+    })
+    const overflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    const focusable = () =>
+      [
+        ...(sheetRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"], audio[controls], video[controls]',
+        ) ?? []),
+      ].filter((el) => !el.hidden && el.getClientRects().length > 0)
+    ;(focusable()[0] ?? sheetRef.current)?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault()
+        e.stopPropagation()
+        closeRef.current()
+        return
+      }
+      if (e.key !== "Tab") return
+      const nodes = focusable()
+      const first = nodes[0],
+        last = nodes[nodes.length - 1]
+      if (!first) {
+        e.preventDefault()
+        sheetRef.current?.focus()
+        return
+      }
+      if (
+        !sheetRef.current?.contains(document.activeElement) ||
+        (e.shiftKey && document.activeElement === first)
+      ) {
+        e.preventDefault()
+        ;(e.shiftKey ? last : first).focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener("keydown", onKey, true)
+    return () => {
+      document.removeEventListener("keydown", onKey, true)
+      states.forEach(({ el, inert }) => {
+        el.inert = inert
+      })
+      document.body.style.overflow = overflow
+      host.remove()
+      if (previous?.isConnected) previous.focus()
+    }
+  }, [])
+  return createPortal(
+    <div className="scrim" onClick={onClose}>
+      <div
+        ref={sheetRef}
+        className="sheet"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+      >
         <div className="sheet-head">
           {icon}
           <h3>{title}</h3>
@@ -76,6 +155,7 @@ export function Sheet({
         </div>
         <div className="sheet-body">{children}</div>
       </div>
-    </div>
+    </div>,
+    hostRef.current,
   )
 }

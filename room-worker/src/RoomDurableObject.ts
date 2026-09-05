@@ -24,6 +24,8 @@ import type {
   EditMessageRequest,
   EncryptedMediaRef,
   ListMessagesRequest,
+  ConsumeMessagesRequest,
+  ReadReceiptRequest,
   OwnerActionRequest,
   PostMessageRequest,
   PruneRequest,
@@ -152,6 +154,7 @@ export class RoomDurableObject {
       this.rate = new Map(Object.entries(rate ?? {}))
       this.uploadReservations = new Map(Object.entries(reservations ?? {}))
       this.loaded = true
+      await this.scheduleSweep()
     })
   }
 
@@ -213,6 +216,10 @@ export class RoomDurableObject {
           return this.opReportMessage(body as unknown as ReportMessageRequest)
         case "list":
           return this.opList(body as unknown as ListMessagesRequest)
+        case "read":
+          return this.opRead(body as unknown as ReadReceiptRequest)
+        case "consume":
+          return this.opConsume(body as unknown as ConsumeMessagesRequest)
         case "prune":
           return this.opPrune(body as unknown as PruneRequest)
         case "react":
@@ -302,7 +309,10 @@ export class RoomDurableObject {
   }
 
   private async saveUploadReservations(): Promise<void> {
-    await this.state.storage.put(UPLOAD_RESERVATIONS_KEY, Object.fromEntries(this.uploadReservations))
+    await this.state.storage.put(
+      UPLOAD_RESERVATIONS_KEY,
+      Object.fromEntries(this.uploadReservations),
+    )
   }
 
   private pendingUploadBytes(now: number): number {
@@ -371,13 +381,8 @@ export class RoomDurableObject {
     }
     try {
       const url = new URL(endpoint)
-      if (
-        url.protocol !== "https:" ||
-        url.username ||
-        url.password ||
-        url.port ||
-        url.hash
-      ) return false
+      if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash)
+        return false
       const host = url.hostname.toLowerCase()
       return (
         host === "fcm.googleapis.com" ||
@@ -412,17 +417,15 @@ export class RoomDurableObject {
     if (!isValidProof(req.accessProofHash)) {
       return json({ error: "bad verifier" }, 400)
     }
-    if (!["never", "24h", "7d"].includes(req.inviteExpiry)) return json({ error: "bad expiry" }, 400)
+    if (!["never", "24h", "7d"].includes(req.inviteExpiry))
+      return json({ error: "bad expiry" }, 400)
     if (!this.validOptionalNumber(req.ttlMs) || !this.validOptionalNumber(req.roomLifetimeMs)) {
       return json({ error: "bad room policy" }, 400)
     }
     if (req.burnAfterRead !== undefined && typeof req.burnAfterRead !== "boolean") {
       return json({ error: "bad room policy" }, 400)
     }
-    if (
-      req.ownerKeyHash != null &&
-      !isValidProof(req.ownerKeyHash)
-    ) {
+    if (req.ownerKeyHash != null && !isValidProof(req.ownerKeyHash)) {
       return json({ error: "bad verifier" }, 400)
     }
     if (
@@ -535,7 +538,10 @@ export class RoomDurableObject {
       case "ban": {
         if (!this.validId(req.targetParticipantId)) return json({ error: "bad target" }, 400)
         const banned = this.core.getRoom()?.banned ?? []
-        if (!banned.includes(req.targetParticipantId) && banned.length >= MAX_PARTICIPANTS_PER_ROOM) {
+        if (
+          !banned.includes(req.targetParticipantId) &&
+          banned.length >= MAX_PARTICIPANTS_PER_ROOM
+        ) {
           return json({ error: "too many bans" }, 413)
         }
         this.core.banParticipant(req.targetParticipantId)
@@ -612,7 +618,8 @@ export class RoomDurableObject {
     if (
       req.message.senderSlot != null &&
       (typeof req.message.senderSlot !== "string" || req.message.senderSlot.length > 32)
-    ) return json({ error: "bad message" }, 400)
+    )
+      return json({ error: "bad message" }, 400)
     if (!this.validOptionalNumber(req.message.ttlMs)) return json({ error: "bad ttl" }, 400)
     if (req.message.burn !== undefined && typeof req.message.burn !== "boolean") {
       return json({ error: "bad burn setting" }, 400)
@@ -630,7 +637,8 @@ export class RoomDurableObject {
     }
     if (this.core.hasMessage(req.message.id)) return json({ error: "message already exists" }, 409)
     for (const ref of req.message.media ?? []) {
-      if (this.core.hasObjectKey(ref.objectKey)) return json({ error: "media already attached" }, 409)
+      if (this.core.hasObjectKey(ref.objectKey))
+        return json({ error: "media already attached" }, 409)
       const reservation = this.uploadReservations.get(ref.objectKey)
       if (
         !reservation ||
@@ -638,7 +646,8 @@ export class RoomDurableObject {
         reservation.participantId !== req.message.participantId ||
         reservation.size !== ref.size ||
         reservation.expiresAt <= now
-      ) return json({ error: "unreserved media" }, 409)
+      )
+        return json({ error: "unreserved media" }, 409)
     }
     if (!(await this.allowRate(req.message.participantId, now))) {
       return json({ error: "rate limited" }, 429)
@@ -694,7 +703,8 @@ export class RoomDurableObject {
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     if (!this.validId(req.messageId)) return json({ error: "bad message" }, 400)
     const now = Date.now()
-    if (typeof req.envelope !== "string" || !req.envelope) return json({ error: "bad envelope" }, 400)
+    if (typeof req.envelope !== "string" || !req.envelope)
+      return json({ error: "bad envelope" }, 400)
     if (req.envelope.length > MAX_ENVELOPE_CHARS) {
       return json({ error: "message too large" }, 413)
     }
@@ -753,7 +763,9 @@ export class RoomDurableObject {
     }
     const digest = async (value: string) => {
       const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
-      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")
+      return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join(
+        "",
+      )
     }
     const report: ModerationReport = {
       version: 1,
@@ -791,23 +803,83 @@ export class RoomDurableObject {
     const currentMessageIds = messages.map((message) => message.id)
     if (typeof req.since === "number") messages = messages.filter((m) => m.createdAt > req.since!)
 
-    // burn-after-read: mark read for this reader (removes others' burn msgs)
-    if (req.markReadFor) {
-      const { burnedIds, orphanObjectKeys } = this.core.markRead(req.markReadFor, now)
-      if (burnedIds.length) {
-        await this.persist()
-        if (orphanObjectKeys.length) await this.deleteObjects(orphanObjectKeys)
-        this.broadcast({ t: "prune", messageIds: burnedIds })
-      }
-    }
     const signalsSince = typeof req.signalsSince === "number" ? req.signalsSince : now
     const signals = this.recentSignals.filter((s) => s.at > signalsSince).map((s) => s.frame)
-    return json({ messages, currentMessageIds, room: this.core.publicState(now), serverTime: now, signals })
+    return json({
+      messages,
+      currentMessageIds,
+      room: this.core.publicState(now),
+      serverTime: now,
+      signals,
+    })
+  }
+
+  private async sweepExpired(now: number): Promise<void> {
+    const swept = this.core.sweep(now)
+    if (swept.removedIds.length) {
+      await this.persist()
+      await this.deleteObjects(swept.orphanObjectKeys)
+      this.broadcast({ t: "prune", messageIds: swept.removedIds })
+    }
+  }
+
+  private async opRead(req: ReadReceiptRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId) || !this.validIdList(req.messageIds))
+      return json({ error: "bad receipt" }, 400)
+    if (!(await this.verifyParticipantProof(req)) || this.core.isBanned(req.participantId))
+      return json({ error: "forbidden" }, 403)
+    const now = Date.now()
+    if (!(await this.allowRate(`sig:${req.participantId}`, now, SIGNAL_RATE_LIMIT)))
+      return json({ error: "rate limited" }, 429)
+    await this.sweepExpired(now)
+    const messages = this.core
+      .list(now)
+      .filter(
+        (m) => req.messageIds.includes(m.id) && !m.burn && m.participantId !== req.participantId,
+      )
+    if (messages.length) {
+      const frame: RealtimeFrame = {
+        t: "seen",
+        participantId: req.participantId,
+        lastSeen: Math.max(...messages.map((m) => m.createdAt)),
+        messageIds: messages.map((m) => m.id),
+      }
+      this.broadcast(frame)
+      this.recordSignal(frame)
+    }
+    return json({ ok: true })
+  }
+
+  private async opConsume(req: ConsumeMessagesRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId) || !this.validIdList(req.messageIds)) {
+      return json({ error: "bad reader or message ids" }, 400)
+    }
+    if (!(await this.verifyParticipantProof(req)) || this.core.isBanned(req.participantId)) {
+      return json({ error: "bad participant proof" }, 403)
+    }
+    const now = Date.now()
+    if (!(await this.allowRate(`sig:${req.participantId}`, now, SIGNAL_RATE_LIMIT)))
+      return json({ error: "rate limited" }, 429)
+    await this.sweepExpired(now)
+    const { burnedIds, orphanObjectKeys } = this.core.markRead(
+      req.participantId,
+      now,
+      req.messageIds,
+    )
+    if (burnedIds.length) {
+      await this.persist()
+      await this.deleteObjects(orphanObjectKeys)
+      this.broadcast({ t: "prune", messageIds: burnedIds })
+    }
+    return json({ consumedIds: burnedIds })
   }
 
   private async opPrune(req: PruneRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
-    if (!req.all && !this.validIdList(req.messageIds)) return json({ error: "bad message ids" }, 400)
+    if (!req.all && !this.validIdList(req.messageIds))
+      return json({ error: "bad message ids" }, 400)
     let result: { removedIds: string[]; orphanObjectKeys: string[] }
     if (req.all) {
       if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
@@ -883,7 +955,10 @@ export class RoomDurableObject {
       return json({ error: "bad event" }, 400)
     }
     if (req.event.envelope != null) {
-      if (typeof req.event.envelope !== "string" || req.event.envelope.length > MAX_ENVELOPE_CHARS) {
+      if (
+        typeof req.event.envelope !== "string" ||
+        req.event.envelope.length > MAX_ENVELOPE_CHARS
+      ) {
         return json({ error: "bad event" }, 400)
       }
     }
@@ -906,7 +981,8 @@ export class RoomDurableObject {
   private async opReserveUpload(req: ReserveUploadRequest): Promise<Response> {
     if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
     if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
-    if (!(await this.verifyParticipantProof(req))) return json({ error: "bad participant proof" }, 403)
+    if (!(await this.verifyParticipantProof(req)))
+      return json({ error: "bad participant proof" }, 403)
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     const room = this.core.getRoom()
     const now = Date.now()
@@ -922,12 +998,16 @@ export class RoomDurableObject {
       !Number.isSafeInteger(req.expiresAt) ||
       req.expiresAt <= now ||
       req.expiresAt > now + Math.max(UPLOAD_TOKEN_TTL_MS, MULTIPART_UPLOAD_TOKEN_TTL_MS) + 5_000
-    ) return json({ error: "bad expiry" }, 400)
+    )
+      return json({ error: "bad expiry" }, 400)
     await this.sweepUploadReservations(now)
     if (this.uploadReservations.size >= MAX_UPLOAD_RESERVATIONS) {
       return json({ error: "too many pending uploads" }, 429)
     }
-    if (this.core.totalMediaBytes() + this.pendingUploadBytes(now) + req.size > MAX_ROOM_MEDIA_BYTES) {
+    if (
+      this.core.totalMediaBytes() + this.pendingUploadBytes(now) + req.size >
+      MAX_ROOM_MEDIA_BYTES
+    ) {
       return json({ error: "room media quota exceeded" }, 413)
     }
     if (this.uploadReservations.has(req.objectKey)) return json({ error: "already reserved" }, 409)
@@ -1045,7 +1125,8 @@ export class RoomDurableObject {
     }
     const subs = await this.getPushSubs()
     const rec = req.endpoint ? subs.get(req.endpoint) : null
-    if (rec?.participantId === req.participantId && subs.delete(req.endpoint)) await this.savePushSubs()
+    if (rec?.participantId === req.participantId && subs.delete(req.endpoint))
+      await this.savePushSubs()
     return json({ ok: true })
   }
 
@@ -1154,7 +1235,11 @@ export class RoomDurableObject {
     server.addEventListener("close", drop)
     server.addEventListener("error", drop)
 
-    this.send(session, { t: "hello", serverTime: now, participantCount: this.core.participantCount(now) })
+    this.send(session, {
+      t: "hello",
+      serverTime: now,
+      participantCount: this.core.participantCount(now),
+    })
     this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
 
     // Echo the negotiated subprotocol NAME only (never the proof tokens) so the
@@ -1187,7 +1272,8 @@ export class RoomDurableObject {
         event: {
           type: frame.event.type.slice(0, 64),
           envelope:
-            typeof frame.event.envelope === "string" && frame.event.envelope.length <= MAX_ENVELOPE_CHARS
+            typeof frame.event.envelope === "string" &&
+            frame.event.envelope.length <= MAX_ENVELOPE_CHARS
               ? frame.event.envelope
               : undefined,
           participantId: session.participantId,

@@ -34,6 +34,7 @@ export interface TypingUser {
 export interface UploadState {
   id: string
   filename: string
+  messageId: string
   status: UploadStatus
   progress: number
 }
@@ -59,9 +60,7 @@ export interface RoomController {
   /** Whether cover-traffic (decoy messages) is currently being emitted. */
   decoyEnabled: boolean
   typing: TypingUser[]
-  othersSeenUpTo: number
-  /** participantId -> latest message timestamp that peer has read (per-person receipts). */
-  seenBy: Record<string, number>
+  readByMessage: Record<string, string[]>
   /** participantId -> best-known display name, for rendering read receipts. */
   names: Record<string, string>
   uploads: UploadState[]
@@ -69,11 +68,12 @@ export interface RoomController {
   deleted: boolean
   sendText: (text: string, opts?: SendOpts) => Promise<void>
   sendMedia: (files: File[], caption: string, opts?: SendOpts) => Promise<void>
+  cancelUpload: (messageId: string) => void
   retrySend: (id: string) => Promise<void>
   editMessage: (id: string, text: string) => Promise<void>
   deleteMessage: (id: string) => Promise<void>
   reportMessage: (id: string, category: AbuseReportCategory) => Promise<void>
-  markSeen: (lastSeen: number) => void
+  markSeen: (messageIds: string[]) => void
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
   pruneAll: () => Promise<void>
@@ -109,8 +109,6 @@ export function useRoom(session: RoomSession): RoomController {
     () => !!vault.get(session.invite.roomId)?.decoyEnabled,
   )
   const [typing, setTyping] = useState<TypingUser[]>([])
-  const [othersSeenUpTo, setOthersSeenUpTo] = useState(0)
-  const [seenBy, setSeenBy] = useState<Record<string, number>>({})
   const [names, setNames] = useState<Record<string, string>>({})
   const [uploads, setUploads] = useState<UploadState[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -147,7 +145,18 @@ export function useRoom(session: RoomSession): RoomController {
   const rt = useRef<Realtime | null>(null)
   const sinceRef = useRef(0)
   const lastTypingSent = useRef(0)
-  const lastSeenSent = useRef(0)
+  const uploadControllers = useRef(new Map<string, AbortController>())
+  const cancelUpload = useCallback((id: string) => uploadControllers.current.get(id)?.abort(), [])
+  useEffect(
+    () => () => {
+      uploadControllers.current.forEach((c) => c.abort())
+      uploadControllers.current.clear()
+    },
+    [],
+  )
+  const readSent = useRef(new Set<string>())
+  const readInFlight = useRef(new Set<string>())
+  const [readByMessage, setReadByMessage] = useState<Record<string, string[]>>({})
 
   const recompute = useCallback(async () => {
     const all = Array.from(storedById.current.values()).sort((a, b) => a.createdAt - b.createdAt)
@@ -190,7 +199,8 @@ export function useRoom(session: RoomSession): RoomController {
         if (m.kind !== "system" && m.verified === "ok" && m.signerKey) {
           const pinned = signerKeys.current.get(m.participantId)
           if (!pinned) signerKeys.current.set(m.participantId, m.signerKey)
-          else if (pinned !== m.signerKey) out = out === m ? { ...m, keyChanged: true } : { ...out, keyChanged: true }
+          else if (pinned !== m.signerKey)
+            out = out === m ? { ...m, keyChanged: true } : { ...out, keyChanged: true }
         }
         return out
       })
@@ -199,7 +209,8 @@ export function useRoom(session: RoomSession): RoomController {
     // winning) so per-person read receipts can show real names.
     const nameMap: Record<string, string> = {}
     for (const m of final) {
-      if (m.kind !== "system" && m.username && m.username !== "anon") nameMap[m.participantId] = m.username
+      if (m.kind !== "system" && m.username && m.username !== "anon")
+        nameMap[m.participantId] = m.username
     }
     for (const [pid, nm] of nameOverrides.current) nameMap[pid] = nm
     setNames(nameMap)
@@ -265,14 +276,6 @@ export function useRoom(session: RoomSession): RoomController {
     [recompute],
   )
 
-  // mark peer activity -> drives "Seen" on my messages
-  const markPeerActive = useCallback(
-    (participantId: string) => {
-      if (participantId !== session.participantId) setOthersSeenUpTo(Date.now())
-    },
-    [session.participantId],
-  )
-
   // Surface a local OS/PWA notification for an incoming message from someone
   // else while the tab is hidden. The message is decrypted on-device and only
   // the already-visible sender name + a short preview are shown; nothing extra
@@ -280,7 +283,7 @@ export function useRoom(session: RoomSession): RoomController {
   // suppressed entirely for rooms the user muted on this device.
   const maybeNotify = useCallback(
     (m: StoredMessage) => {
-      if (m.participantId === session.participantId || m.kind === "system") return
+      if (m.participantId === session.participantId || m.kind === "system" || m.burn) return
       if (typeof document !== "undefined" && document.visibilityState === "visible") return
       if (!notificationsEnabled()) return
       if (vault.get(session.invite.roomId)?.muted) return
@@ -316,7 +319,6 @@ export function useRoom(session: RoomSession): RoomController {
           roomId: session.invite.roomId,
           accessProof: session.keys.accessProof,
           ...participantAuth(session),
-          markReadFor: session.participantId,
         })
         if (cancelled) return
         for (const m of res.messages) storedById.current.set(m.id, m)
@@ -339,7 +341,6 @@ export function useRoom(session: RoomSession): RoomController {
 
     const realtime = new Realtime(session, {
       onMessage: (m) => {
-        markPeerActive(m.participantId)
         maybeNotify(m)
         ingest(m)
       },
@@ -349,7 +350,7 @@ export function useRoom(session: RoomSession): RoomController {
         // without notifying or reordering.
         storedById.current.set(m.id, m)
         decodeCache.current.delete(m.id)
-        markPeerActive(m.participantId)
+
         void recompute()
       },
       onPrune: (ids, all) => {
@@ -375,13 +376,13 @@ export function useRoom(session: RoomSession): RoomController {
         if (f.envelope === null) delete reactions[f.reactionId]
         else reactions[f.reactionId] = { participantId: f.participantId, envelope: f.envelope }
         storedById.current.set(f.messageId, { ...stored, reactions })
-        markPeerActive(f.participantId)
+
         void recompute()
       },
       onPresence: (count) => applyPresence(count),
       onSignal: (f) => {
         const ev = f.event
-        markPeerActive(ev.participantId)
+
         if (ev.participantId === session.participantId) return
         if (ev.type === "typing" && ev.envelope) {
           void decryptString(session.channelKey, ev.envelope, aad(session, "channel"))
@@ -414,13 +415,15 @@ export function useRoom(session: RoomSession): RoomController {
             .catch(() => {})
         }
       },
-      onSeen: (participantId, lastSeen) => {
-        if (participantId === session.participantId) return
-        markPeerActive(participantId)
-        setSeenBy((prev) => {
-          const cur = prev[participantId] ?? 0
-          if (lastSeen <= cur) return prev
-          return { ...prev, [participantId]: lastSeen }
+      onSeen: (participantId, _lastSeen, messageIds) => {
+        if (participantId === session.participantId || !messageIds?.length) return
+        setReadByMessage((prev) => {
+          const next = { ...prev }
+          for (const id of messageIds) {
+            if (storedById.current.has(id))
+              next[id] = [...new Set([...(prev[id] ?? []), participantId])]
+          }
+          return next
         })
       },
       onRoomUpdated: (r) => applyRoomState(r),
@@ -533,6 +536,7 @@ export function useRoom(session: RoomSession): RoomController {
       const trimmed = text.trim()
       if (!trimmed) return
       const id = randomId()
+      setError(null)
       const now = Date.now()
       const optimistic: DecryptedMessage = {
         id,
@@ -592,85 +596,111 @@ export function useRoom(session: RoomSession): RoomController {
   // late-landing original can't duplicate it.
   const doSendMedia = useCallback(
     async (id: string, files: File[], caption: string, opts?: SendOpts) => {
-      const now = Date.now()
-      const optimistic: DecryptedMessage = {
-        id,
-        participantId: session.participantId,
-        kind: "media",
-        createdAt: now,
-        expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
-        mine: true,
-        username: session.username,
-        text: caption.trim(),
-        items: [],
-        replyTo: opts?.replyTo,
-        burn: opts?.burn,
-        reactions: [],
-        pending: true,
-      }
-      pendingById.current.set(id, optimistic)
-      pendingMediaById.current.set(id, { files, caption, opts })
-      void recompute()
+      if (uploadControllers.current.has(id)) return
+      const controller = new AbortController()
+      uploadControllers.current.set(id, controller)
+      try {
+        setError(null)
+        const now = Date.now()
+        const optimistic: DecryptedMessage = {
+          id,
+          participantId: session.participantId,
+          kind: "media",
+          createdAt: now,
+          expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+          mine: true,
+          username: session.username,
+          text: caption.trim(),
+          items: [],
+          replyTo: opts?.replyTo,
+          burn: opts?.burn,
+          reactions: [],
+          pending: true,
+        }
+        pendingById.current.set(id, optimistic)
+        pendingMediaById.current.set(id, { files, caption, opts })
+        void recompute()
 
-      const items: MediaManifestItem[] = []
-      const refs = []
-      for (const file of files) {
-        const uploadId = randomId(6)
-        setUploads((prev) => [
-          ...prev,
-          { id: uploadId, filename: file.name, status: "encrypting", progress: 0 },
-        ])
+        const items: MediaManifestItem[] = []
+        const refs = []
+        for (const file of files) {
+          const uploadId = randomId(6)
+          setUploads((prev) => [
+            ...prev,
+            { id: uploadId, messageId: id, filename: file.name, status: "encrypting", progress: 0 },
+          ])
+          try {
+            controller.signal.throwIfAborted()
+            const { ref, manifest } = await encryptAndUpload(
+              session,
+              file,
+              (status, progress) =>
+                setUploads((prev) =>
+                  prev.map((u) =>
+                    u.id === uploadId ? { ...u, status, progress: progress ?? u.progress } : u,
+                  ),
+                ),
+              controller.signal,
+            )
+            items.push(manifest)
+            refs.push(ref)
+          } catch (e) {
+            markSendFailed(id)
+            setError(
+              controller.signal.aborted
+                ? "Upload cancelled. You can retry the message to send it again."
+                : e instanceof Error
+                  ? e.message
+                  : "Upload failed",
+            )
+            return
+          } finally {
+            setTimeout(() => setUploads((prev) => prev.filter((u) => u.id !== uploadId)), 1500)
+          }
+        }
+        // Keep the encrypted envelope comfortably under the server size cap: the
+        // manifest travels inside the message, and inline thumbnails are by far
+        // its largest field. If the total grows too large, drop thumbs first.
+        let manifestSize = JSON.stringify(items).length
+        for (const it of items) {
+          if (manifestSize <= 100_000) break
+          if (it.thumb) {
+            manifestSize -= it.thumb.length
+            delete it.thumb
+          }
+        }
         try {
-          const { ref, manifest } = await encryptAndUpload(session, file, (status, progress) =>
-            setUploads((prev) =>
-              prev.map((u) => (u.id === uploadId ? { ...u, status, progress: progress ?? u.progress } : u)),
-            ),
-          )
-          items.push(manifest)
-          refs.push(ref)
+          controller.signal.throwIfAborted()
+          const envelope = await encodeMedia(session, id, caption.trim(), items, opts?.replyTo)
+          controller.signal.throwIfAborted()
+          const res = await api.postMessage({
+            roomId: session.invite.roomId,
+            accessProof: session.keys.accessProof,
+            participantProof: session.participantProof,
+            message: {
+              id,
+              participantId: session.participantId,
+              envelope,
+              kind: "media",
+              media: refs,
+              ttlMs: opts?.ttlMs,
+              burn: opts?.burn,
+            },
+          })
+          pendingMediaById.current.delete(id)
+          ingest(res.message)
         } catch (e) {
           markSendFailed(id)
-          setError(e instanceof Error ? e.message : "Upload failed")
-          return
-        } finally {
-          setTimeout(
-            () => setUploads((prev) => prev.filter((u) => u.id !== uploadId)),
-            1500,
+          setError(
+            controller.signal.aborted
+              ? "Upload cancelled."
+              : e instanceof ApiError
+                ? e.message
+                : "Failed to send media",
           )
         }
-      }
-      // Keep the encrypted envelope comfortably under the server size cap: the
-      // manifest travels inside the message, and inline thumbnails are by far
-      // its largest field. If the total grows too large, drop thumbs first.
-      let manifestSize = JSON.stringify(items).length
-      for (const it of items) {
-        if (manifestSize <= 100_000) break
-        if (it.thumb) {
-          manifestSize -= it.thumb.length
-          delete it.thumb
-        }
-      }
-      try {
-        const envelope = await encodeMedia(session, id, caption.trim(), items, opts?.replyTo)
-        const res = await api.postMessage({
-          roomId: session.invite.roomId,
-          accessProof: session.keys.accessProof,
-          participantProof: session.participantProof,
-          message: {
-            id,
-            participantId: session.participantId,
-            envelope,
-            kind: "media",
-            media: refs,
-            ttlMs: opts?.ttlMs,
-            burn: opts?.burn,
-          },
-        })
-        pendingMediaById.current.delete(id)
-        ingest(res.message)
-      } catch (e) {
-        markSendFailed(id)
-        setError(e instanceof ApiError ? e.message : "Failed to send media")
+      } finally {
+        uploadControllers.current.delete(id)
       }
     },
     [session, ingest, recompute, markSendFailed],
@@ -802,16 +832,30 @@ export function useRoom(session: RoomSession): RoomController {
     [session, ingest, recompute],
   )
 
-  // Broadcast how far we've read so peers can show per-person read receipts.
-  // Throttled via lastSeenSent; sent over the live socket (silently dropped on
-  // the polling fallback, which is acceptable for ephemeral receipts).
+  // Acknowledge only message IDs actually visible to this reader.
   const markSeen = useCallback(
-    (lastSeen: number) => {
-      if (!lastSeen || lastSeen <= lastSeenSent.current) return
-      lastSeenSent.current = lastSeen
-      rt.current?.sendSignal({ t: "seen", participantId: session.participantId, lastSeen })
+    (ids: string[]) => {
+      const messageIds = ids
+        .filter((id) => !readSent.current.has(id) && !readInFlight.current.has(id))
+        .slice(0, 100)
+      if (!messageIds.length) return
+      messageIds.forEach((id) => readInFlight.current.add(id))
+      void api
+        .readMessages({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ...participantAuth(session),
+          messageIds,
+        })
+        .then(() => {
+          messageIds.forEach((id) => readSent.current.add(id))
+        })
+        .catch(() => {
+          /* The viewport observer retries while these messages remain visible. */
+        })
+        .finally(() => messageIds.forEach((id) => readInFlight.current.delete(id)))
     },
-    [session.participantId],
+    [session],
   )
 
   const toggleReaction = useCallback(
@@ -1024,8 +1068,7 @@ export function useRoom(session: RoomSession): RoomController {
       bannedSelf,
       decoyEnabled,
       typing,
-      othersSeenUpTo,
-      seenBy,
+      readByMessage,
       names,
       uploads,
       error,
@@ -1033,6 +1076,7 @@ export function useRoom(session: RoomSession): RoomController {
       sendText,
       sendMedia,
       retrySend,
+      cancelUpload,
       editMessage,
       deleteMessage,
       reportMessage,
@@ -1059,8 +1103,7 @@ export function useRoom(session: RoomSession): RoomController {
       bannedSelf,
       decoyEnabled,
       typing,
-      othersSeenUpTo,
-      seenBy,
+      readByMessage,
       names,
       uploads,
       error,
@@ -1068,6 +1111,7 @@ export function useRoom(session: RoomSession): RoomController {
       sendText,
       sendMedia,
       retrySend,
+      cancelUpload,
       editMessage,
       deleteMessage,
       reportMessage,

@@ -8,6 +8,8 @@ const EXACT_ROUTE_METHODS = new Map<string, string>([
   ["/api/messages/delete", "POST"],
   ["/api/messages/edit", "POST"],
   ["/api/messages/list", "POST"],
+  ["/api/messages/read", "POST"],
+  ["/api/messages/consume", "POST"],
   ["/api/messages/report", "POST"],
   ["/api/prune", "POST"],
   ["/api/push/subscribe", "POST"],

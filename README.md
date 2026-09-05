@@ -1,6 +1,6 @@
 # Vanish — Encrypted Anonymous Chat
 
-> Anonymous chat that vanishes without a trace.
+> Anonymous chat that disappears on your schedule.
 
 Vanish is a Cloudflare-native, end-to-end encrypted, anonymous group chat. There are no
 accounts, emails, phone numbers, or profiles. You pick a display name, create a room, and
@@ -10,6 +10,43 @@ ever sees opaque ciphertext plus the minimum operational metadata required to ro
 it.
 
 ---
+
+## Room setup and read-once behavior
+
+- Choose **Quick conversation** (five-minute messages, one-hour room, 24-hour invite),
+  **24-hour room** (24-hour messages, room, and invite), or customize each timer.
+  A destroyed room always ends invite access, even when the invite has time remaining.
+- The composer shows the effective room timer and lets you override it for a message.
+- **Read once** messages stay covered until a recipient chooses **Open once**. Small media
+  is downloaded and decrypted before the consumption acknowledgment deletes the message and
+  attachments for everyone. Large attachments must finish saving first. The loaded viewer
+  remains available until closed, backgrounded, its original timer expires, or one minute
+  passes. Unopened read-once messages also expire on their selected message timer.
+- Read receipts name the specific messages visible in the focused conversation. Fetching
+  history, background polling, and viewing a settings dialog do not mark messages read.
+- Voice recordings open a local playback preview. Choose **Send voice note** or **Discard**;
+  stopping a recording never sends it automatically.
+- Invite panels offer the native share sheet where supported, with copy-link and QR fallbacks.
+  Appearance, text size, compact mode, privacy blur, and notification controls are available
+  from **Room actions → Appearance & notifications** on desktop and mobile.
+- Uploads can be cancelled during encryption or transfer, including multipart uploads.
+  Network requests time out with an actionable error instead of waiting indefinitely.
+- Remembered rooms are stored locally. Without a device passphrase, their keys are **not
+  encrypted at rest**; the creation form states this beside the remember option. Device lock
+  enables passphrase protection. Recipients can still copy, screenshot, or save content, and
+  Cloudflare can process network metadata.
+
+### Deploying this update
+
+Deploy the companion Worker **before** Pages; the client now calls authenticated
+`POST /api/messages/read` and `POST /api/messages/consume` endpoints. Existing clients may
+continue listing messages, but only updated clients use explicit read-once consumption.
+Old persisted read-once messages receive a maximum lifetime from the room's default timer
+when their Durable Object is loaded again. This does not scan dormant rooms globally.
+
+For local full-stack testing, give both Wrangler processes the same absolute `--persist-to`
+directory. The Playwright configuration does this automatically so upload and deletion checks
+operate on the same local R2 bucket.
 
 ## Features
 

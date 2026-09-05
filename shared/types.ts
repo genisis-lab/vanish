@@ -175,9 +175,26 @@ export interface ListMessagesRequest {
   participantId: string
   participantProof: string
   since?: number
+  /** Legacy hint, ignored: listing never consumes messages. */
   markReadFor?: string
   /** Return buffered signalling frames (typing/seen) newer than this server time. */
   signalsSince?: number
+}
+
+export interface ReadReceiptRequest {
+  roomId: string
+  accessProof: string
+  participantId: string
+  participantProof: string
+  messageIds: string[]
+}
+
+export interface ConsumeMessagesRequest {
+  roomId: string
+  accessProof: string
+  participantId: string
+  participantProof: string
+  messageIds: string[]
 }
 
 export interface ListMessagesResponse {
@@ -320,10 +337,16 @@ export type RealtimeFrame =
   | { t: "message"; message: StoredMessage }
   | { t: "edit"; message: StoredMessage }
   | { t: "prune"; messageIds: string[]; all?: boolean }
-  | { t: "react"; messageId: string; reactionId: string; participantId: string; envelope: string | null }
+  | {
+      t: "react"
+      messageId: string
+      reactionId: string
+      participantId: string
+      envelope: string | null
+    }
   | { t: "presence"; participantCount: number }
   | { t: "signal"; event: { type: string; envelope?: string; participantId: string } }
-  | { t: "seen"; participantId: string; lastSeen: number }
+  | { t: "seen"; participantId: string; lastSeen: number; messageIds?: string[] }
   | { t: "room-updated"; room: PublicRoomState }
   | { t: "banned"; participantId: string }
   | { t: "room-deleted" }
