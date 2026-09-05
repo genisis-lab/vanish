@@ -2,12 +2,14 @@ import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import App from "./App"
 import { setupNativeShell } from "./lib/native"
+import { createUpdateReload } from "./lib/serviceWorkerUpdate"
 import "./styles/index.css"
 import "./styles/chat-refresh.css"
 import "./styles/enhancements.css"
 
 // Register the service worker for PWA/offline shell (best-effort), and surface a
 // gentle refresh prompt when a newer build has been deployed.
+const updateReload = createUpdateReload(() => window.location.reload())
 if ("serviceWorker" in navigator && import.meta.env.PROD && import.meta.env.VITE_DISABLE_SW !== "1") {
   window.addEventListener("load", () => {
     navigator.serviceWorker
@@ -44,13 +46,7 @@ if ("serviceWorker" in navigator && import.meta.env.PROD && import.meta.env.VITE
       })
       .catch(() => {})
 
-    // When the waiting worker activates, reload once to pick up the new assets.
-    let reloaded = false
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (reloaded) return
-      reloaded = true
-      window.location.reload()
-    })
+    navigator.serviceWorker.addEventListener("controllerchange", updateReload.controllerChanged)
   })
 }
 
@@ -68,6 +64,8 @@ function promptUpdate(reg: ServiceWorkerRegistration) {
   btn.style.cssText =
     "border:none;border-radius:8px;padding:6px 12px;background:#7c83fd;color:#fff;font:600 14px system-ui,sans-serif;cursor:pointer"
   btn.onclick = () => {
+    if (!reg.waiting) return
+    updateReload.request()
     reg.waiting?.postMessage({ type: "SKIP_WAITING" })
     btn.disabled = true
     btn.textContent = "Refreshing\u2026"
