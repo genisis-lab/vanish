@@ -24,25 +24,25 @@
     "verify": "tsx tests/manual/verify.ts"
   },
   "dependencies": {
-    "lucide-react": "^1.34.0",
+    "lucide-react": "^1.40.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260827.1",
+    "@cloudflare/workers-types": "^5.20260904.1",
     "@playwright/test": "^1.62.1",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
-    "@vitejs/plugin-react": "^6.1.0",
-    "happy-dom": "^20.11.12",
-    "tsx": "^4.23.12",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "happy-dom": "^20.14.0",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.127.0"
+    "wrangler": "^4.129.0"
   },
   "overrides": {
     "nanoid": "3.3.17"
