@@ -153,6 +153,15 @@ export class RoomDurableObject {
       if (snap) this.core = new RoomCore(snap)
       this.rate = new Map(Object.entries(rate ?? {}))
       this.uploadReservations = new Map(Object.entries(reservations ?? {}))
+      // Cloudflare retains accepted sockets while this object hibernates.
+      for (const ws of this.state.getWebSockets()) {
+        const attachment = ws.deserializeAttachment() as { participantId?: unknown } | null
+        if (typeof attachment?.participantId === "string") {
+          this.sessions.add({ ws, participantId: attachment.participantId })
+        } else {
+          ws.close(1011, "Missing session")
+        }
+      }
       this.loaded = true
       await this.scheduleSweep()
     })
@@ -1220,20 +1229,11 @@ export class RoomDurableObject {
     const pair = new WebSocketPair()
     const client = pair[0]
     const server = pair[1]
-    server.accept()
+    server.serializeAttachment({ participantId })
+    this.state.acceptWebSocket(server)
     const session: Session = { ws: server, participantId }
     this.sessions.add(session)
     this.core.touchParticipant(participantId, now)
-
-    server.addEventListener("message", (event: MessageEvent) => {
-      this.state.waitUntil(this.onClientFrame(session, event.data))
-    })
-    const drop = () => {
-      this.sessions.delete(session)
-      this.broadcast({ t: "presence", participantCount: this.core.participantCount(Date.now()) })
-    }
-    server.addEventListener("close", drop)
-    server.addEventListener("error", drop)
 
     this.send(session, {
       t: "hello",
@@ -1246,6 +1246,30 @@ export class RoomDurableObject {
     // browser completes the handshake. Legacy query-param clients get no header.
     const wsHeaders = usedSubprotocol ? { "Sec-WebSocket-Protocol": "vanish.v1" } : undefined
     return new Response(null, { status: 101, webSocket: client, headers: wsHeaders })
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await this.ensureLoaded()
+    if (await this.enforceLifetime(Date.now())) return
+    const session = [...this.sessions].find((candidate) => candidate.ws === ws)
+    if (session) await this.onClientFrame(session, message)
+  }
+
+  webSocketClose(ws: WebSocket, code: number): void {
+    this.dropSocket(ws)
+    ws.close([1005, 1006, 1015].includes(code) ? 1000 : code)
+  }
+
+  webSocketError(ws: WebSocket): void {
+    this.dropSocket(ws)
+    ws.close(1011, "Connection error")
+  }
+
+  private dropSocket(ws: WebSocket): void {
+    for (const session of this.sessions) {
+      if (session.ws === ws) this.sessions.delete(session)
+    }
+    this.broadcast({ t: "presence", participantCount: this.core.participantCount(Date.now()) })
   }
 
   // Client frames are opaque signalling (typing/presence/seen). Content stays
