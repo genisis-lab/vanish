@@ -112,6 +112,9 @@ const PUSH_KEY = "pushSubs"
 const RATE_KEY = "rateWindows"
 const UPLOAD_RESERVATIONS_KEY = "uploadReservations"
 const PUSH_FOREGROUND_SUPPRESS_MS = 30_000
+// Contact URI sent to push services when the VAPID_SUBJECT secret is unset.
+// Deployments should set VAPID_SUBJECT to their own mailto: or https: contact.
+const DEFAULT_VAPID_SUBJECT = "https://github.com/genisis-lab/vanish"
 // Signalling frames (typing/seen) are cheap, so they get a more generous rate
 // limit than message sends — but they are still bounded to stop floods.
 const SIGNAL_RATE_LIMIT = MESSAGE_RATE_LIMIT * 4
@@ -1086,7 +1089,7 @@ export class RoomDurableObject {
     const publicKey = this.env.VAPID_PUBLIC_KEY
     const privateKey = this.env.VAPID_PRIVATE_KEY
     if (!publicKey || !privateKey) return null
-    return { publicKey, privateKey, subject: this.env.VAPID_SUBJECT || "mailto:admin@vanish.app" }
+    return { publicKey, privateKey, subject: this.env.VAPID_SUBJECT || DEFAULT_VAPID_SUBJECT }
   }
 
   private async opPushSubscribe(req: PushSubscribeRequest): Promise<Response> {

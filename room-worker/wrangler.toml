@@ -54,7 +54,7 @@ retry_delay = 30
 #
 #   npx wrangler secret put VAPID_PUBLIC_KEY
 #   npx wrangler secret put VAPID_PRIVATE_KEY
-#   npx wrangler secret put VAPID_SUBJECT      # e.g. mailto:you@example.com
+#   npx wrangler secret put VAPID_SUBJECT      # your contact, e.g. mailto:you@example.com
 #
 # The Pages project also needs VAPID_PUBLIC_KEY (same value) so the client can
 # subscribe:  npx wrangler pages secret put VAPID_PUBLIC_KEY --project-name vanish
