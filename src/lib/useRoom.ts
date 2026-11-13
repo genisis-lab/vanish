@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { decryptString, encryptString } from "@shared/crypto"
 import type { AbuseReportCategory, PublicRoomState, StoredMessage } from "@shared/types"
+import { isNeverExpireTtl, NEVER_EXPIRE_TTL_MS } from "@shared/constants"
 import { api, ApiError } from "./api"
 import { Realtime, type ConnState } from "./realtime"
 import { aad, type RoomSession } from "./session"
@@ -564,6 +565,7 @@ export function useRoom(session: RoomSession): RoomController {
         kind: "text",
         createdAt: now,
         expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+        sendTtlMs: opts?.ttlMs,
         mine: true,
         username: session.username,
         text: trimmed,
@@ -628,6 +630,7 @@ export function useRoom(session: RoomSession): RoomController {
           kind: "media",
           createdAt: now,
           expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+          sendTtlMs: opts?.ttlMs,
           mine: true,
           username: session.username,
           text: caption.trim(),
@@ -749,7 +752,11 @@ export function useRoom(session: RoomSession): RoomController {
       pendingById.current.set(id, { ...p, failed: false, pending: true })
       void recompute()
       try {
-        const ttlMs = p.expiresAt ? Math.max(1000, p.expiresAt - Date.now()) : undefined
+        const ttlMs = isNeverExpireTtl(p.sendTtlMs)
+          ? NEVER_EXPIRE_TTL_MS
+          : p.expiresAt
+            ? Math.max(1000, p.expiresAt - Date.now())
+            : undefined
         const envelope = await encodeText(session, id, p.text, p.replyTo)
         const res = await api.postMessage({
           roomId: session.invite.roomId,

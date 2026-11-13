@@ -84,8 +84,8 @@ operate on the same local R2 bucket.
 - **Multi-device sync** — move a room to another device with a short-lived transfer code
   (shown as a QR or copyable string) that carries the room key, your participant identity,
   signing key, and — if you're the owner — owner rights. Nothing transits the server.
-- **Disappearing messages** — per-message timers, optional burn-after-read, and an optional
-  whole-room self-destruct.
+- **Disappearing messages** — per-message timers (or "Never" to keep messages until you
+  delete them), optional burn-after-read, and an optional whole-room self-destruct.
 - **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
   minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
   notifications stay silent and the in-app UI handles activity (see below).
@@ -287,7 +287,9 @@ What the suites cover:
    > `npx wrangler r2 bucket lifecycle list vanish-media`, and add one with
    > `npx wrangler r2 bucket lifecycle add vanish-media` (interactive) or via the R2 dashboard
    > (Bucket ▸ Settings ▸ Object lifecycle rules). Use an expiry comfortably longer than your
-   > longest message TTL (e.g. 7 days).
+   > longest message TTL (e.g. 7 days). Note that rooms or messages set to **Never** auto-delete
+   > keep their media indefinitely, so a lifecycle rule will remove attachments from those
+   > messages once it fires; skip the rule (or make it much longer) if you rely on "Never".
 3. **Deploy the Room Durable Object worker**
    ```bash
    npm run worker:deploy   # publishes the "vanish-room" worker that exports RoomDurableObject
@@ -383,9 +385,9 @@ required.
   signing identities are encrypted together in the local vault; legacy plaintext credentials
   are migrated on first use.
 - Anyone holding the invite key can join and decrypt, so share it only with people you trust.
-- Messages auto-delete on a per-room schedule (default 24 hours), with optional
-  burn-after-read; the whole room can also be set to self-destruct, and you can manually prune
-  or delete the entire room at any time.
+- Messages auto-delete on a per-room schedule (default 24 hours, or "Never" to keep them until
+  deleted), with optional burn-after-read; the whole room can also be set to self-destruct,
+  and you can manually prune or delete the entire room at any time.
 - Cloudflare may process transport metadata (IP addresses, timestamps, room IDs, object sizes)
   to operate the service.
 - Vanish uses strong, modern, secure-by-default cryptography, but it is **not** intended for

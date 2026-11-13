@@ -17,6 +17,12 @@ import {
 import type { SendOpts, UploadState } from "../lib/useRoom"
 import type { ReplyRef } from "../lib/messages"
 import { formatBytes } from "../lib/format"
+import {
+  formatTtlShort,
+  isNeverExpireTtl,
+  MAX_MESSAGE_TTL_MS,
+  NEVER_EXPIRE_TTL_MS,
+} from "@shared/constants"
 
 interface ComposerProps {
   uploads: UploadState[]
@@ -31,13 +37,16 @@ interface ComposerProps {
   onTyping: () => void
 }
 
-const TTL_OPTIONS = [
-  { label: "Room default", ms: 0 },
+// ms === null means "use the room default"; NEVER_EXPIRE_TTL_MS keeps the
+// message until someone deletes it or the room is destroyed.
+const TTL_OPTIONS: { label: string; ms: number | null }[] = [
+  { label: "Room default", ms: null },
   { label: "10s", ms: 10_000 },
   { label: "1m", ms: 60_000 },
   { label: "5m", ms: 300_000 },
   { label: "1h", ms: 3_600_000 },
   { label: "1d", ms: 86_400_000 },
+  { label: "Never", ms: NEVER_EXPIRE_TTL_MS },
 ]
 
 // Keep attachments to the media types the pipeline understands
@@ -115,15 +124,11 @@ export function Composer({
   const discardRef = useRef(false)
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
   const ttl = TTL_OPTIONS[ttlIdx]
-  const effectiveTtl = ttl.ms || defaultTtlMs
-  const effectiveLabel =
-    effectiveTtl < 60_000
-      ? `${Math.round(effectiveTtl / 1000)}s`
-      : effectiveTtl < 3_600_000
-        ? `${Math.round(effectiveTtl / 60_000)}m`
-        : effectiveTtl < 86_400_000
-          ? `${Math.round(effectiveTtl / 3_600_000)}h`
-          : `${Math.round(effectiveTtl / 86_400_000)}d`
+  const effectiveTtl = ttl.ms ?? defaultTtlMs
+  // Read-once messages always expire; "Never" caps them at the longest timer.
+  const burnLabel = formatTtlShort(
+    isNeverExpireTtl(effectiveTtl) ? MAX_MESSAGE_TTL_MS : effectiveTtl,
+  )
   useEffect(() => {
     setBurn(defaultBurn)
   }, [defaultBurn])
@@ -313,7 +318,7 @@ export function Composer({
     if (busy || recording || startingRecording) return
     const t = readEditorText().trim()
     const opts: SendOpts = {
-      ttlMs: ttl.ms > 0 ? ttl.ms : undefined,
+      ttlMs: ttl.ms ?? undefined,
       burn,
       replyTo: replyTo ?? undefined,
     }
@@ -590,9 +595,9 @@ export function Composer({
             onChange={(e) => setTtlIdx(Number(e.target.value))}
           >
             {TTL_OPTIONS.map((option, i) => (
-              <option key={option.ms} value={i}>
-                {i === 0
-                  ? `Room default: ${defaultTtlMs < 60_000 ? Math.round(defaultTtlMs / 1000) + "s" : defaultTtlMs < 3_600_000 ? Math.round(defaultTtlMs / 60_000) + "m" : defaultTtlMs < 86_400_000 ? Math.round(defaultTtlMs / 3_600_000) + "h" : Math.round(defaultTtlMs / 86_400_000) + "d"}`
+              <option key={option.label} value={i}>
+                {option.ms === null
+                  ? `Room default: ${formatTtlShort(defaultTtlMs)}`
                   : option.label}
               </option>
             ))}
@@ -602,7 +607,7 @@ export function Composer({
           type="button"
           className={`chip-toggle ${burn ? "on danger" : ""}`}
           onClick={() => setBurn((v) => !v)}
-          title={`Read once — expires after ${effectiveLabel} if unopened`}
+          title={`Read once — expires after ${burnLabel} if unopened`}
           aria-label="Read once"
           aria-pressed={burn}
         >

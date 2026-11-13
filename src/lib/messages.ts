@@ -98,6 +98,8 @@ export interface DecryptedMessage {
   decoy?: boolean
   /** transient client-only send state */
   pending?: boolean
+  /** client-only: the TTL requested at send time, so a retry keeps "never" */
+  sendTtlMs?: number
   failed?: boolean
   /** per-sender signature result: "ok" valid, "bad" present-but-invalid,
    * "none" unsigned (legacy/unsupported). undefined for system/undecryptable. */

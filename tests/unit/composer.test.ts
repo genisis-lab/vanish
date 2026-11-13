@@ -103,3 +103,38 @@ describe("voice-note review", () => {
     )
   })
 })
+
+describe("disappearing timer", () => {
+  async function chooseTimer(label: string) {
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
+    const index = [...select.options].findIndex((o) => o.textContent === label)
+    expect(index, label).toBeGreaterThan(-1)
+    await act(async () => {
+      select.value = String(index)
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })
+  }
+
+  it("offers Never and sends it as ttlMs 0", async () => {
+    const p = props()
+    await act(async () => root.render(createElement(Composer, p)))
+    await chooseTimer("Never")
+    await click("Record an encrypted voice note")
+    await click("Stop & preview")
+    await click("Send voice note")
+    expect(p.onSendMedia).toHaveBeenCalledOnce()
+    expect(p.onSendMedia.mock.calls[0][2]).toMatchObject({ ttlMs: 0 })
+  })
+
+  it("leaves ttlMs unset for the room default and labels a Never room", async () => {
+    const p = { ...props(), defaultTtlMs: 0 }
+    await act(async () => root.render(createElement(Composer, p)))
+    const first = host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
+      .options[0]
+    expect(first.textContent).toBe("Room default: Never")
+    await click("Record an encrypted voice note")
+    await click("Stop & preview")
+    await click("Send voice note")
+    expect(p.onSendMedia.mock.calls[0][2].ttlMs).toBeUndefined()
+  })
+})

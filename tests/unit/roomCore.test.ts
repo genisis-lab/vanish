@@ -3,8 +3,12 @@ import { RoomCore } from "@shared/roomCore"
 import { deriveKeys, hashAccessProof } from "@shared/crypto"
 import { createInvite } from "@shared/invite"
 import {
+  clampTtl,
+  DEFAULT_MESSAGE_TTL_MS,
   inviteExpiryToMs,
+  MAX_MESSAGE_TTL_MS,
   MAX_PARTICIPANTS_PER_ROOM,
+  NEVER_EXPIRE_TTL_MS,
   MAX_REACTIONS_PER_MESSAGE,
 } from "@shared/constants"
 
@@ -139,6 +143,54 @@ describe("RoomCore pruning + expiry + delete", () => {
     const swept = core.sweep(now + 61_000)
     expect(swept.removedIds).toContain("m1")
     expect(core.list(now + 61_000).length).toBe(0)
+  })
+
+  it("keeps messages forever when the room default is Never", async () => {
+    const { core, now } = await freshRoom({ ttlMs: NEVER_EXPIRE_TTL_MS })
+    expect(core.publicState(now)?.defaultTtlMs).toBe(NEVER_EXPIRE_TTL_MS)
+    const m = core.addMessage({ id: "m1", participantId: "p1", envelope: "e", kind: "text" }, now)
+    expect(m.expiresAt).toBeNull()
+    const later = now + 365 * 24 * 60 * 60 * 1000
+    expect(core.sweep(later).removedIds).toHaveLength(0)
+    expect(core.list(later).map((x) => x.id)).toEqual(["m1"])
+    expect(core.nextExpiry()).toBeNull()
+  })
+
+  it("lets a single message opt out of expiry in a timed room", async () => {
+    const { core, now } = await freshRoom({ ttlMs: 60_000 })
+    core.addMessage({ id: "timed", participantId: "p1", envelope: "e", kind: "text" }, now)
+    const kept = core.addMessage(
+      { id: "kept", participantId: "p1", envelope: "e", kind: "text", ttlMs: NEVER_EXPIRE_TTL_MS },
+      now,
+    )
+    expect(kept.expiresAt).toBeNull()
+    expect(core.sweep(now + 61_000).removedIds).toEqual(["timed"])
+    expect(core.list(now + 61_000).map((x) => x.id)).toEqual(["kept"])
+  })
+
+  it("still expires unopened read-once messages when the timer is Never", async () => {
+    const { core, now } = await freshRoom({ ttlMs: NEVER_EXPIRE_TTL_MS, burn: true })
+    const m = core.addMessage({ id: "m1", participantId: "p1", envelope: "e", kind: "text" }, now)
+    expect(m.expiresAt).toBe(now + MAX_MESSAGE_TTL_MS)
+  })
+
+  it("normalises TTL input, treating 0 as Never", () => {
+    expect(clampTtl(NEVER_EXPIRE_TTL_MS)).toBe(NEVER_EXPIRE_TTL_MS)
+    expect(clampTtl(undefined)).toBe(DEFAULT_MESSAGE_TTL_MS)
+    expect(clampTtl(-5)).toBe(DEFAULT_MESSAGE_TTL_MS)
+    expect(clampTtl(Number.NaN)).toBe(DEFAULT_MESSAGE_TTL_MS)
+    expect(clampTtl(1)).toBe(5_000)
+    expect(clampTtl(10 * MAX_MESSAGE_TTL_MS)).toBe(MAX_MESSAGE_TTL_MS)
+  })
+
+  it("can switch an existing room to Never and back", async () => {
+    const { core, now } = await freshRoom({ ttlMs: 60_000 })
+    const send = (id: string) =>
+      core.addMessage({ id, participantId: "p", envelope: "e", kind: "text" }, now)
+    core.updateRoom({ ttlMs: NEVER_EXPIRE_TTL_MS })
+    expect(send("a").expiresAt).toBeNull()
+    core.updateRoom({ ttlMs: 60_000 })
+    expect(send("b").expiresAt).toBe(now + 60_000)
   })
 
   it("burn-after-read removes on read by another participant", async () => {
