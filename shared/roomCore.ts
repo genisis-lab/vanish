@@ -6,6 +6,8 @@ import {
   clampRoomLifetime,
   clampTtl,
   DEFAULT_MESSAGE_TTL_MS,
+  isNeverExpireTtl,
+  MAX_MESSAGE_TTL_MS,
   MAX_PARTICIPANTS_PER_ROOM,
   MAX_REACTIONS_PER_MESSAGE,
 } from "./constants"
@@ -77,7 +79,10 @@ export class RoomCore {
       (snapshot?.messages ?? []).map((m) => [
         m.id,
         m.burn && m.expiresAt === null
-          ? { ...m, expiresAt: m.createdAt + (this.room?.defaultTtlMs ?? DEFAULT_MESSAGE_TTL_MS) }
+          ? {
+              ...m,
+              expiresAt: m.createdAt + burnTtl(this.room?.defaultTtlMs ?? DEFAULT_MESSAGE_TTL_MS),
+            }
           : m,
       ]),
     )
@@ -266,6 +271,10 @@ export class RoomCore {
     if (!this.room || this.room.deletedAt !== null) throw new Error("room not available")
     const burn = input.burn ?? this.room.burnAfterRead
     const ttl = clampTtl(input.ttlMs, this.room.defaultTtlMs)
+    // "Never" keeps a normal message until it is deleted, pruned, or the room
+    // is destroyed. Read-once messages still need a deadline so an unopened one
+    // cannot linger forever, so they fall back to the longest timed TTL.
+    const expiresAt = isNeverExpireTtl(ttl) ? (burn ? now + burnTtl(ttl) : null) : now + ttl
     const message: StoredMessage = {
       id: input.id,
       roomId: this.room.roomId,
@@ -275,7 +284,7 @@ export class RoomCore {
       media: input.media,
       kind: input.kind,
       createdAt: now,
-      expiresAt: now + ttl,
+      expiresAt,
       burn,
     }
     this.messages.set(message.id, message)
@@ -488,6 +497,11 @@ export class RoomCore {
       banned: [...this.room.banned],
     }
   }
+}
+
+/** Read-once messages always expire; "never" maps to the longest timed TTL. */
+function burnTtl(ttlMs: number): number {
+  return isNeverExpireTtl(ttlMs) ? MAX_MESSAGE_TTL_MS : ttlMs
 }
 
 // Constant-time-ish string comparison to avoid leaking verifier bytes via timing.

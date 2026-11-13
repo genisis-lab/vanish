@@ -3,6 +3,12 @@ import type { InviteExpiryOption } from "./types"
 export const DEFAULT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 export const MIN_MESSAGE_TTL_MS = 5 * 1000 // 5 seconds (burn-style)
 export const MAX_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+/**
+ * Message TTL meaning "never auto-delete". Sent on the wire as 0, matching the
+ * room-lifetime convention where 0 means "off". Older clients never send 0
+ * (they omit ttlMs to use the room default), so the value is backward compatible.
+ */
+export const NEVER_EXPIRE_TTL_MS = 0
 const MIB = 1024 * 1024
 const GIB = 1024 * MIB
 
@@ -79,6 +85,7 @@ export const TTL_PRESETS: { label: string; ms: number }[] = [
   { label: "8 hours", ms: 8 * 60 * 60 * 1000 },
   { label: "24 hours", ms: 24 * 60 * 60 * 1000 },
   { label: "7 days", ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: "Never", ms: NEVER_EXPIRE_TTL_MS },
 ]
 
 // ---------- whole-room auto-destruct ----------
@@ -113,7 +120,26 @@ export function inviteExpiryToMs(option: InviteExpiryOption, now: number): numbe
   }
 }
 
+/**
+ * Normalise a requested message TTL. Returns NEVER_EXPIRE_TTL_MS (0) when the
+ * caller explicitly asked for "never", the fallback when the value is missing
+ * or invalid, and otherwise a value clamped to [MIN, MAX].
+ */
 export function clampTtl(ms: number | undefined, fallback = DEFAULT_MESSAGE_TTL_MS): number {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return fallback
+  if (ms === NEVER_EXPIRE_TTL_MS) return NEVER_EXPIRE_TTL_MS
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return fallback
   return Math.min(MAX_MESSAGE_TTL_MS, Math.max(MIN_MESSAGE_TTL_MS, Math.floor(ms)))
+}
+
+export function isNeverExpireTtl(ms: number | null | undefined): boolean {
+  return ms === NEVER_EXPIRE_TTL_MS
+}
+
+/** Short human label for a TTL ("30s", "5m", "8h", "7d", "Never"). */
+export function formatTtlShort(ms: number): string {
+  if (isNeverExpireTtl(ms)) return "Never"
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`
+  return `${Math.round(ms / 86_400_000)}d`
 }
