@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import {
   ArrowRight,
   Clock,
+  CodeXml,
   Flame,
   KeyRound,
   Lock,
@@ -47,6 +48,7 @@ const EXPIRY_OPTIONS: { id: InviteExpiryOption; label: string }[] = [
   { id: "7d", label: "7 days" },
 ]
 
+const SOURCE_CODE_URL = "https://github.com/genisis-lab/vanish"
 const ONBOARD_KEY = "vanish.onboarded.v1"
 const INSTALL_DISMISS_KEY = "vanish.pwa-install.dismissed.v1"
 
@@ -150,11 +152,23 @@ export function Home({ prefs, onCreated, onJoinKey, onResume }: HomeProps) {
           </span>
           Vanish
         </div>
-        <IconButton
-          icon={prefs.theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
-          label={prefs.theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          onClick={prefs.toggleTheme}
-        />
+        <div className="brandbar-actions">
+          <a
+            className="source-link"
+            href={SOURCE_CODE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="View Vanish's source code on GitHub"
+          >
+            <CodeXml size={17} aria-hidden="true" />
+            Source code
+          </a>
+          <IconButton
+            icon={prefs.theme === "dark" ? <Sun size={19} /> : <Moon size={19} />}
+            label={prefs.theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            onClick={prefs.toggleTheme}
+          />
+        </div>
       </div>
 
       <div className="hero">
