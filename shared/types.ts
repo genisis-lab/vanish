@@ -52,6 +52,10 @@ export interface PublicRoomState {
   hasOwner: boolean
   /** Participant ids the owner has banned. Opaque pseudonymous ids. */
   banned: string[]
+  /** Opaque encrypted pinned message (id + preview), set by the owner, or null. */
+  pinEnvelope: string | null
+  /** When true, only the owner can change the disappearing timer. */
+  timerLocked: boolean
 }
 
 // ---------- request/response payloads ----------
@@ -98,6 +102,8 @@ export interface UpdateInviteRequest {
   burnAfterRead?: boolean
   /** Reset the room auto-destruct lifetime (ms from now). 0 disables it. */
   roomLifetimeMs?: number
+  /** Lock (true) or unlock (false) the disappearing timer to the owner only. */
+  lockTimer?: boolean
 }
 
 /**
@@ -112,6 +118,8 @@ export interface SetTimerRequest {
   participantProof: string
   /** New room default TTL. NEVER_EXPIRE_TTL_MS (0) means never auto-delete. */
   ttlMs: number
+  /** Required only while the owner has locked the timer. */
+  ownerProof?: string
   notice?: { id: string; envelope: string }
 }
 
@@ -119,6 +127,14 @@ export interface SetTimerResponse {
   room: PublicRoomState
   /** The stored notice, when one was sent and the timer actually changed. */
   message?: StoredMessage
+}
+
+/** Owner-gated: pin a message (opaque envelope) or clear the pin with null. */
+export interface SetPinRequest {
+  roomId: string
+  accessProof: string
+  ownerProof: string
+  pinEnvelope: string | null
 }
 
 /** Owner-gated: set or clear the encrypted room topic/name. */
@@ -365,7 +381,12 @@ export type RealtimeFrame =
       participantId: string
       envelope: string | null
     }
-  | { t: "presence"; participantCount: number }
+  | {
+      t: "presence"
+      participantCount: number
+      /** Participant ids that just dropped out of the presence window. */
+      left?: string[]
+    }
   | { t: "signal"; event: { type: string; envelope?: string; participantId: string } }
   | { t: "seen"; participantId: string; lastSeen: number; messageIds?: string[] }
   | { t: "room-updated"; room: PublicRoomState }

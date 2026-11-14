@@ -14,7 +14,8 @@ export interface RealtimeHandlers {
   onPrune: (ids: string[], all?: boolean) => void
   onSnapshot: (ids: string[]) => void
   onReact: (f: Extract<RealtimeFrame, { t: "react" }>) => void
-  onPresence: (count: number) => void
+  /** `left` names participants who just dropped out, when the server knows. */
+  onPresence: (count: number, left?: string[]) => void
   onSignal: (f: Extract<RealtimeFrame, { t: "signal" }>) => void
   onSeen: (participantId: string, lastSeen: number, messageIds?: string[]) => void
   onRoomUpdated: (room: PublicRoomState) => void
@@ -154,7 +155,7 @@ export class Realtime {
         this.handlers.onReact(frame)
         break
       case "presence":
-        this.handlers.onPresence(frame.participantCount)
+        this.handlers.onPresence(frame.participantCount, frame.left)
         break
       case "hello":
         this.handlers.onPresence(frame.participantCount)

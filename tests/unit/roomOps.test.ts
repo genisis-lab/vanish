@@ -27,8 +27,10 @@ async function setup() {
   const internals = room as unknown as Record<string, unknown> & {
     core: { createRoom(input: object): void; getRoom(): { defaultTtlMs: number } | null }
   }
+  let ownerOk = true
   internals.verifyProof = async () => true
   internals.verifyParticipantProof = async () => true
+  internals.verifyOwnerProof = async (proof?: string) => ownerOk && proof === "owner"
   internals.core.createRoom({
     roomId: "room-1",
     accessProofHash: "hash",
@@ -36,14 +38,18 @@ async function setup() {
     ttlMs: 24 * 3_600_000,
     now: Date.now(),
   })
-  const setTimer = async (body: object) => {
+  const call = async (op: string, body: object) => {
     const res = await room.fetch(
-      new Request("https://room/set-timer", { method: "POST", body: JSON.stringify(body) }),
+      new Request(`https://room/${op}`, { method: "POST", body: JSON.stringify(body) }),
     )
     return { status: res.status, body: (await res.json()) as Record<string, any> }
   }
+  const setTimer = (body: object) => call("set-timer", body)
   const frames = () => peer.send.mock.calls.map(([data]) => JSON.parse(data as string))
-  return { internals, setTimer, frames, state }
+  const notOwner = () => {
+    ownerOk = false
+  }
+  return { internals, setTimer, call, frames, state, notOwner, peer }
 }
 
 const base = {
@@ -90,6 +96,71 @@ describe("chat-wide disappearing timer", () => {
     ).toBe(400)
     ;(internals.core as unknown as { banParticipant(id: string): void }).banParticipant("changer")
     expect((await setTimer({ ...base, ttlMs: 60_000 })).status).toBe(403)
+  })
+})
+
+describe("owner timer lock", () => {
+  it("blocks members but not the owner while locked, and broadcasts the lock", async () => {
+    const { call, setTimer, frames } = await setup()
+    const lock = await call("update", { ...base, ownerProof: "owner", lockTimer: true })
+    expect(lock.status).toBe(200)
+    expect(lock.body.room.timerLocked).toBe(true)
+    expect(frames().at(-1)).toMatchObject({ t: "room-updated", room: { timerLocked: true } })
+    expect((await setTimer({ ...base, ttlMs: 60_000 })).status).toBe(403)
+    const owner = await setTimer({ ...base, ttlMs: 60_000, ownerProof: "owner" })
+    expect(owner.status).toBe(200)
+    expect(owner.body.room.defaultTtlMs).toBe(60_000)
+  })
+
+  it("only lets the owner lock it", async () => {
+    const { call, notOwner } = await setup()
+    notOwner()
+    expect((await call("update", { ...base, ownerProof: "x", lockTimer: true })).status).toBe(403)
+  })
+})
+
+describe("pinned message", () => {
+  it("lets the owner pin and unpin, and tells everyone", async () => {
+    const { call, frames } = await setup()
+    const pin = await call("set-pin", { ...base, ownerProof: "owner", pinEnvelope: "opaque-pin" })
+    expect(pin.status).toBe(200)
+    expect(pin.body.room.pinEnvelope).toBe("opaque-pin")
+    expect(frames().at(-1)).toMatchObject({ t: "room-updated", room: { pinEnvelope: "opaque-pin" } })
+    const unpin = await call("set-pin", { ...base, ownerProof: "owner", pinEnvelope: null })
+    expect(unpin.body.room.pinEnvelope).toBeNull()
+  })
+
+  it("rejects non-owners and bad envelopes", async () => {
+    const { call, notOwner } = await setup()
+    expect((await call("set-pin", { ...base, ownerProof: "owner", pinEnvelope: 5 })).status).toBe(400)
+    notOwner()
+    expect((await call("set-pin", { ...base, ownerProof: "x", pinEnvelope: "p" })).status).toBe(403)
+  })
+})
+
+describe("named leave notices", () => {
+  it("names participants who drop out of the presence window", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000_000)
+      const { internals, frames } = await setup()
+      const core = internals.core as unknown as {
+        touchParticipant(id: string, now: number): void
+      }
+      const presence = internals as unknown as { presenceFrame(now: number): unknown }
+      core.touchParticipant("alice", 1_000_000)
+      core.touchParticipant("bob", 1_000_000)
+      expect(presence.presenceFrame(1_000_000)).toEqual({ t: "presence", participantCount: 2 })
+      core.touchParticipant("alice", 1_040_000)
+      expect(presence.presenceFrame(1_050_000)).toEqual({
+        t: "presence",
+        participantCount: 1,
+        left: ["bob"],
+      })
+      expect(frames()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

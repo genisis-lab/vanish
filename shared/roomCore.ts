@@ -30,6 +30,10 @@ export interface RoomRecord {
   topicEnvelope: string | null
   /** Participant ids the owner has banned from the room. */
   banned: string[]
+  /** Opaque encrypted pinned-message envelope (owner-set), or null. */
+  pinEnvelope?: string | null
+  /** When true, only the owner may change the disappearing timer. */
+  timerLocked?: boolean
 }
 
 export interface ParticipantRecord {
@@ -182,6 +186,7 @@ export class RoomCore {
     ttlMs?: number
     burnAfterRead?: boolean
     destroyAt?: number | null
+    timerLocked?: boolean
   }): RoomRecord | null {
     if (!this.room || this.room.deletedAt !== null) return null
     if (input.inviteExpiresAt !== undefined) this.room.inviteExpiresAt = input.inviteExpiresAt
@@ -189,6 +194,14 @@ export class RoomCore {
       this.room.defaultTtlMs = clampTtl(input.ttlMs, this.room.defaultTtlMs)
     if (input.burnAfterRead !== undefined) this.room.burnAfterRead = input.burnAfterRead
     if (input.destroyAt !== undefined) this.room.destroyAt = input.destroyAt
+    if (input.timerLocked !== undefined) this.room.timerLocked = input.timerLocked
+    return this.room
+  }
+
+  /** Owner-only: set or clear the opaque encrypted pinned message. */
+  setPin(pinEnvelope: string | null): RoomRecord | null {
+    if (!this.room || this.room.deletedAt !== null) return null
+    this.room.pinEnvelope = pinEnvelope
     return this.room
   }
 
@@ -258,11 +271,16 @@ export class RoomCore {
   }
 
   participantCount(now: number, windowMs = 45 * 1000): number {
-    let count = 0
-    for (const { lastSeen } of this.participants.values()) {
-      if (now - lastSeen <= windowMs) count++
+    return this.activeParticipantIds(now, windowMs).size
+  }
+
+  /** Participants seen within the presence window (the ones counted as here). */
+  activeParticipantIds(now: number, windowMs = 45 * 1000): Set<string> {
+    const active = new Set<string>()
+    for (const [id, { lastSeen }] of this.participants) {
+      if (now - lastSeen <= windowMs) active.add(id)
     }
-    return count
+    return active
   }
 
   // ---------- messages ----------
@@ -495,6 +513,8 @@ export class RoomCore {
       topicEnvelope: this.room.topicEnvelope ?? null,
       hasOwner: !!this.room.ownerKeyHash,
       banned: [...this.room.banned],
+      pinEnvelope: this.room.pinEnvelope ?? null,
+      timerLocked: !!this.room.timerLocked,
     }
   }
 }

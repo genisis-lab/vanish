@@ -7,6 +7,7 @@ import {
   CornerDownRight,
   Flame,
   Pencil,
+  Pin,
   Reply,
   RotateCw,
   ShieldAlert,
@@ -18,6 +19,8 @@ import type { DecryptedMessage } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
 import { formatCountdown, formatTime, hueFromString } from "../lib/format"
 import { MediaTile } from "./MediaTile"
+import { RichText } from "./RichText"
+import { mentionsName } from "../lib/richText"
 
 const QUICK_EMOJI = [
   "\u{1F525}",
@@ -51,6 +54,11 @@ interface Props {
   onOpenMedia: (item: MediaManifestItem) => void
   onRetry?: (id: string) => void
   onJumpTo?: (id: string) => void
+  /** Known display names for @mentions, longest first. Keep the array stable. */
+  names: string[]
+  onOpenLink: (href: string) => void
+  /** Owner-only: pin this message for everyone. */
+  onPin?: (msg: DecryptedMessage) => void
 }
 
 // Re-render once per second while a message carries a live disappearing-timer,
@@ -85,6 +93,9 @@ function MessageItemInner({
   onOpenOnce,
   onRetry,
   onJumpTo,
+  names,
+  onOpenLink,
+  onPin,
 }: Props) {
   const [picker, setPicker] = useState(false)
   const [actions, setActions] = useState(false)
@@ -146,6 +157,7 @@ function MessageItemInner({
     )
   }
 
+  const mentionsMe = !msg.mine && !msg.deleted && mentionsName(msg.text, session.username)
   const hue = hueFromString(msg.username)
   const whoStyle = { color: `hsl(${hue} 55% 60%)` }
   const ttl = formatCountdown(msg.expiresAt)
@@ -227,6 +239,18 @@ function MessageItemInner({
           <Trash2 size={15} />
         </button>
       )}
+      {onPin && !msg.pending && !msg.failed && (
+        <button
+          className="icon-btn mini"
+          aria-label="Pin message"
+          onClick={() => {
+            onPin(msg)
+            setActions(false)
+          }}
+        >
+          <Pin size={15} />
+        </button>
+      )}
       {!msg.mine && onReport && (
         <button
           className="icon-btn mini"
@@ -255,7 +279,7 @@ function MessageItemInner({
 
   return (
     <div
-      className={`msg ${msg.mine ? "mine" : ""} ${selected ? "selected" : ""}`}
+      className={`msg ${msg.mine ? "mine" : ""} ${selected ? "selected" : ""} ${mentionsMe ? "mentions-me" : ""}`}
       data-mid={msg.id}
     >
       {showWho && !msg.mine && (
@@ -296,7 +320,14 @@ function MessageItemInner({
                   <span>{msg.replyTo.preview}</span>
                 </div>
               )}
-              {msg.text && <span>{msg.text}</span>}
+              {msg.text && (
+                <RichText
+                  text={msg.text}
+                  names={names}
+                  myName={session.username}
+                  onOpenLink={onOpenLink}
+                />
+              )}
               {msg.items && msg.items.length > 0 && (
                 <div className="media-grid">
                   {msg.items.map((it) => (

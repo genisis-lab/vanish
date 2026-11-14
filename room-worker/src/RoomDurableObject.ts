@@ -36,6 +36,7 @@ import type {
   RealtimeFrame,
   ReserveUploadRequest,
   SessionRequest,
+  SetPinRequest,
   SetTimerRequest,
   SetTopicRequest,
   StoredMessage,
@@ -144,6 +145,10 @@ export class RoomDurableObject {
   // survive hibernation; null until first read.
   private pushSubs: Map<string, PushRecord> | null = null
   private loaded = false
+  // Participants counted as present at the last presence broadcast, so the next
+  // one can name who dropped out. In-memory only: after hibernation the first
+  // broadcast just re-seeds it (clients fall back to a generic leave notice).
+  private lastActive: Set<string> | null = null
 
   constructor(state: DurableObjectState, env: RoomEnv) {
     this.state = state
@@ -218,6 +223,8 @@ export class RoomDurableObject {
           return this.opUpdate(body as unknown as UpdateInviteRequest)
         case "set-timer":
           return this.opSetTimer(body as unknown as SetTimerRequest)
+        case "set-pin":
+          return this.opSetPin(body as unknown as SetPinRequest)
         case "set-topic":
           return this.opSetTopic(body as unknown as SetTopicRequest)
         case "owner-action":
@@ -493,7 +500,7 @@ export class RoomDurableObject {
       return json({ error: "bad participant proof" }, 403)
     }
     await this.persist()
-    this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
+    this.broadcast(this.presenceFrame(now))
     return json({ room: this.core.publicState(now) })
   }
 
@@ -510,6 +517,9 @@ export class RoomDurableObject {
     if (req.burnAfterRead !== undefined && typeof req.burnAfterRead !== "boolean") {
       return json({ error: "bad room policy" }, 400)
     }
+    if (req.lockTimer !== undefined && typeof req.lockTimer !== "boolean") {
+      return json({ error: "bad room policy" }, 400)
+    }
     let destroyAt: number | null | undefined
     if (req.roomLifetimeMs !== undefined) {
       const lifetime = clampRoomLifetime(req.roomLifetimeMs)
@@ -521,6 +531,7 @@ export class RoomDurableObject {
       ttlMs: req.ttlMs,
       burnAfterRead: req.burnAfterRead,
       destroyAt,
+      timerLocked: req.lockTimer,
     })
     if (!room) return json({ error: "not found" }, 404)
     await this.persist()
@@ -561,6 +572,9 @@ export class RoomDurableObject {
     }
     const room = this.core.getRoom()
     if (!room || room.deletedAt !== null) return json({ error: "not found" }, 404)
+    if (room.timerLocked && !(await this.verifyOwnerProof(req.ownerProof))) {
+      return json({ error: "Only the room owner can change the timer" }, 403)
+    }
     const ttlMs = clampTtl(req.ttlMs, room.defaultTtlMs)
     // Picking the current value changes nothing, so it posts no notice either.
     if (ttlMs === room.defaultTtlMs) return json({ room: this.core.publicState(now) })
@@ -593,6 +607,26 @@ export class RoomDurableObject {
     await this.persist()
     await this.scheduleSweep()
     return json({ room: state, message })
+  }
+
+  // Owner-gated: pin a message or clear the pin. The envelope (message id and a
+  // short preview) is encrypted on the device; the server only stores and
+  // rebroadcasts it.
+  private async opSetPin(req: SetPinRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!(await this.verifyOwnerProof(req.ownerProof))) return json({ error: "not owner" }, 403)
+    const now = Date.now()
+    const envelope = req.pinEnvelope ?? null
+    if (envelope !== null && (typeof envelope !== "string" || !envelope)) {
+      return json({ error: "bad pin" }, 400)
+    }
+    if (envelope && envelope.length > MAX_ENVELOPE_CHARS) return json({ error: "too large" }, 413)
+    const room = this.core.setPin(envelope)
+    if (!room) return json({ error: "not found" }, 404)
+    await this.persist()
+    const state = this.core.publicState(now)
+    if (state) this.broadcast({ t: "room-updated", room: state })
+    return json({ room: state })
   }
 
   // Owner-gated: set or clear the opaque encrypted room topic, then notify peers.
@@ -641,7 +675,7 @@ export class RoomDurableObject {
             this.sessions.delete(s)
           }
         }
-        this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
+        this.broadcast(this.presenceFrame(now))
         const state = this.core.publicState(now)
         if (state) this.broadcast({ t: "room-updated", room: state })
         return json({ room: state })
@@ -1317,7 +1351,7 @@ export class RoomDurableObject {
       serverTime: now,
       participantCount: this.core.participantCount(now),
     })
-    this.broadcast({ t: "presence", participantCount: this.core.participantCount(now) })
+    this.broadcast(this.presenceFrame(now))
 
     // Echo the negotiated subprotocol NAME only (never the proof tokens) so the
     // browser completes the handshake. Legacy query-param clients get no header.
@@ -1346,7 +1380,18 @@ export class RoomDurableObject {
     for (const session of this.sessions) {
       if (session.ws === ws) this.sessions.delete(session)
     }
-    this.broadcast({ t: "presence", participantCount: this.core.participantCount(Date.now()) })
+    this.broadcast(this.presenceFrame(Date.now()))
+  }
+
+  private presenceFrame(now: number): RealtimeFrame {
+    const active = this.core.activeParticipantIds(now)
+    const left = this.lastActive
+      ? [...this.lastActive].filter((id) => !active.has(id) && !this.core.isBanned(id))
+      : []
+    this.lastActive = active
+    return left.length
+      ? { t: "presence", participantCount: active.size, left }
+      : { t: "presence", participantCount: active.size }
   }
 
   // Client frames are opaque signalling (typing/presence/seen). Content stays

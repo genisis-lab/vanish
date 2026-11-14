@@ -78,7 +78,8 @@ operate on the same local R2 bucket.
   participant counts over WebSockets, with an automatic polling fallback.
 - **Room owner controls** — the room creator holds a device-only owner secret (the server keeps
   only its hash) that gates moderation: set an **encrypted room topic/name**, view the
-  **member list**, **ban/unban** participants, clear the room, or destroy it entirely.
+  **member list**, **ban/unban** participants, **pin a message** for everyone, **lock the
+  disappearing timer** so only the owner can change it, clear the room, or destroy it entirely.
 - **Decoy messages (traffic masking)** — an optional mode that sends harmless fake messages in
   the background, byte-for-byte indistinguishable from real ones (same envelope + size padding)
   and silently dropped by recipients, so an outside observer can't tell when you're actually
@@ -86,8 +87,15 @@ operate on the same local R2 bucket.
 - **Multi-device sync** — move a room to another device with a short-lived transfer code
   (shown as a QR or copyable string) that carries the room key, your participant identity,
   signing key, and — if you're the owner — owner rights. Nothing transits the server.
+- **Message formatting** — **bold**, *italics*, `code`, and **@mentions** (highlighted for the
+  person mentioned). Links are clickable but never fetched or previewed by Vanish; opening one
+  asks first, shows the full address, and strips the referrer.
+- **Catch-up tools** — a "New messages" divider marks where you left off, and a jump-to-latest
+  button appears when you scroll up. Leave notices name who left when the server can tell.
 - **Disappearing messages** — a chat-wide timer any member can change (or "Never" to keep
   messages until you delete them), optional burn-after-read, and an optional whole-room self-destruct.
+- **Per-room alerts** — all messages, only @mentions, or muted, per device. (Background Web
+  Push stays content-free, so it can't tell mentions apart.)
 - **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
   minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
   notifications stay silent and the in-app UI handles activity (see below).
