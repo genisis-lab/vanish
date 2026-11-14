@@ -33,6 +33,8 @@ interface ComposerProps {
   defaultBurn: boolean
   /** Change the chat-wide timer; resolves once the server has applied it. */
   onChangeTimer: (ttlMs: number) => Promise<void>
+  /** The owner has locked the timer and this device isn't the owner. */
+  timerLocked?: boolean
   onCancelUpload: (messageId: string) => void
   replyTo: ReplyRef | null
   onCancelReply: () => void
@@ -95,6 +97,7 @@ export function Composer({
   defaultTtlMs,
   defaultBurn,
   onChangeTimer,
+  timerLocked = false,
   onCancelUpload,
   replyTo,
   onCancelReply,
@@ -592,9 +595,13 @@ export function Composer({
           <span className="sr-only">Disappearing timer</span>
           <select
             aria-label="Disappearing timer"
-            title="Disappearing timer for everyone in this chat"
+            title={
+              timerLocked
+                ? "Only the room owner can change the timer"
+                : "Disappearing timer for everyone in this chat"
+            }
             value={String(effectiveTtl)}
-            disabled={pendingTtl !== null}
+            disabled={pendingTtl !== null || timerLocked}
             onChange={(e) => {
               const next = Number(e.target.value)
               if (next === defaultTtlMs) return

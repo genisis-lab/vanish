@@ -19,6 +19,7 @@ import type {
   PushUnsubscribeRequest,
   ReactRequest,
   ReportMessageRequest,
+  SetPinRequest,
   SetTimerRequest,
   SetTimerResponse,
   SetTopicRequest,
@@ -158,6 +159,9 @@ export const api = {
   },
   updateInvite(body: UpdateInviteRequest) {
     return post<{ room: PublicRoomState }>("/api/invites/update", body)
+  },
+  setPin(body: SetPinRequest) {
+    return post<{ room: PublicRoomState }>("/api/rooms/pin", body)
   },
   setTimer(body: SetTimerRequest) {
     return post<SetTimerResponse>("/api/rooms/timer", body)

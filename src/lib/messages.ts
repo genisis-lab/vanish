@@ -302,6 +302,35 @@ export async function encodeTopic(session: RoomSession, topic: string): Promise<
   return encryptString(session.keys.msgKey, JSON.stringify({ topic }), aad(session, "topic"))
 }
 
+// ---------- encrypted pinned message ----------
+//
+// Owner-set; opaque to the server (own AAD context). Carries the message id so
+// members can jump to it, plus a short preview that survives if the message
+// itself expires.
+export interface PinnedRef {
+  id: string
+  username: string
+  preview: string
+}
+
+export async function encodePin(session: RoomSession, pin: PinnedRef): Promise<string> {
+  return encryptString(session.keys.msgKey, JSON.stringify(pin), aad(session, "pin"))
+}
+
+export async function decodePin(session: RoomSession, envelope: string): Promise<PinnedRef | null> {
+  try {
+    const p = await decryptJson<PinnedRef>(session.keys.msgKey, envelope, aad(session, "pin"))
+    if (typeof p.id !== "string" || typeof p.preview !== "string") return null
+    return {
+      id: p.id,
+      username: String(p.username ?? "").slice(0, 32),
+      preview: p.preview.slice(0, 140),
+    }
+  } catch {
+    return null
+  }
+}
+
 export async function decodeTopic(session: RoomSession, envelope: string): Promise<string> {
   try {
     const p = await decryptJson<{ topic: string }>(

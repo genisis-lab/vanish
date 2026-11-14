@@ -40,6 +40,10 @@ export interface RememberedRoom {
   pinned?: boolean
   /** Muted rooms make no sound and show no pop-up alerts on this device. */
   muted?: boolean
+  /** Only alert (sound / pop-up) on this device when someone @mentions you. */
+  mentionsOnly?: boolean
+  /** Newest message time this device had seen when it last left the room. */
+  lastReadAt?: number
   /** Local preference: emit cover-traffic decoy messages in this room. */
   decoyEnabled?: boolean
 }
@@ -360,6 +364,24 @@ export const vault = {
     const r = rooms.find((x) => x.roomId === roomId)
     if (r) {
       r.muted = muted
+      write(rooms)
+    }
+  },
+  setLastRead(roomId: string, at: number): void {
+    const rooms = read()
+    const r = rooms.find((x) => x.roomId === roomId)
+    if (r && (r.lastReadAt ?? 0) < at) {
+      r.lastReadAt = at
+      write(rooms)
+    }
+  },
+  /** Alert level on this device: every message, @mentions only, or none. */
+  setAlertMode(roomId: string, mode: "all" | "mentions" | "none"): void {
+    const rooms = read()
+    const r = rooms.find((x) => x.roomId === roomId)
+    if (r) {
+      r.muted = mode === "none"
+      r.mentionsOnly = mode === "mentions"
       write(rooms)
     }
   },

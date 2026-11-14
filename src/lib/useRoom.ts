@@ -11,9 +11,11 @@ import { aad, type RoomSession } from "./session"
 import { randomId } from "./clientCrypto"
 import {
   decodeMessage,
+  decodePin,
   decodeTopic,
   encodeDecoy,
   encodeMedia,
+  encodePin,
   encodeReaction,
   encodeSystem,
   encodeText,
@@ -21,8 +23,10 @@ import {
   reactionId as makeReactionId,
   timerNoticeText,
   type DecryptedMessage,
+  type PinnedRef,
   type ReplyRef,
 } from "./messages"
+import { mentionsName, plainText } from "./richText"
 import { encryptAndUpload, type MediaManifestItem, type UploadStatus } from "./media"
 import { vault } from "./vault"
 import { ensureNotificationPrompt, notificationsEnabled, showMessageNotification } from "./notify"
@@ -56,6 +60,8 @@ export interface RoomController {
   room: PublicRoomState | null
   /** Decrypted room topic/name ("" when unset). */
   topic: string
+  /** Decrypted pinned message reference, or null. */
+  pinned: PinnedRef | null
   /** True when this device holds the owner secret for the room. */
   isOwner: boolean
   /** True once the owner has removed (banned) this participant. */
@@ -86,8 +92,12 @@ export interface RoomController {
   rename: (name: string) => void
   /** Owner-only: set (or clear, with "") the encrypted room topic. */
   setTopic: (topic: string) => Promise<void>
-  /** Any member: change the disappearing-message timer for everyone. */
+  /** Any member (owner only while locked): change the timer for everyone. */
   setMessageTimer: (ttlMs: number) => Promise<void>
+  /** Owner-only: let only the owner change the timer (true) or anyone (false). */
+  setTimerLocked: (locked: boolean) => Promise<void>
+  /** Owner-only: pin a message for everyone, or clear the pin with null. */
+  setPinned: (msg: DecryptedMessage | null) => Promise<void>
   /** Owner-only: ban a participant by id (server-enforced). */
   banMember: (participantId: string) => Promise<void>
   /** Owner-only: lift a ban. */
@@ -109,6 +119,7 @@ export function useRoom(session: RoomSession): RoomController {
   const [participantCount, setParticipantCount] = useState(1)
   const [room, setRoom] = useState<PublicRoomState | null>(null)
   const [topic, setTopicState] = useState("")
+  const [pinned, setPinnedState] = useState<PinnedRef | null>(null)
   const [bannedSelf, setBannedSelf] = useState(false)
   const [decoyEnabled, setDecoyEnabled] = useState(
     () => !!vault.get(session.invite.roomId)?.decoyEnabled,
@@ -148,6 +159,8 @@ export function useRoom(session: RoomSession): RoomController {
   // flag a sender whose signing key later changes mid-session.
   const signerKeys = useRef(new Map<string, string>())
   const prevCountRef = useRef<number | null>(null)
+  // Latest participantId -> name map, readable from realtime callbacks.
+  const namesRef = useRef<Record<string, string>>({})
   const rt = useRef<Realtime | null>(null)
   const sinceRef = useRef(0)
   const lastTypingSent = useRef(0)
@@ -228,6 +241,7 @@ export function useRoom(session: RoomSession): RoomController {
         nameMap[m.participantId] = m.username
     }
     for (const [pid, nm] of nameOverrides.current) nameMap[pid] = nm
+    namesRef.current = nameMap
     setNames(nameMap)
     sinceRef.current = all.reduce((mx, m) => Math.max(mx, m.createdAt), sinceRef.current)
   }, [session])
@@ -264,6 +278,11 @@ export function useRoom(session: RoomSession): RoomController {
       } else {
         setTopicState("")
       }
+      if (r.pinEnvelope) {
+        void decodePin(session, r.pinEnvelope).then((p) => setPinnedState(p))
+      } else {
+        setPinnedState(null)
+      }
     },
     [session],
   )
@@ -272,15 +291,23 @@ export function useRoom(session: RoomSession): RoomController {
   // "join" signal (see onSignal), so we only surface a generic notice when
   // someone leaves — leavers can't be named from a bare count.
   const applyPresence = useCallback(
-    (count: number) => {
+    (count: number, left?: string[]) => {
       setParticipantCount(count)
       const prev = prevCountRef.current
       prevCountRef.current = count
-      if (prev === null || count >= prev) return
+      // The server names who dropped out when it can; use the best-known name.
+      const named = (left ?? []).filter((pid) => pid !== session.participantId)
+      for (const pid of named) {
+        const name = nameOverrides.current.get(pid) || namesRef.current[pid]
+        pushNotice(name ? `${name} left the room` : "Someone left the room")
+      }
+      // Without names (polling, or right after the server woke up) fall back to
+      // a generic notice from the count drop.
+      if (named.length > 0 || prev === null || count >= prev) return
       const n = prev - count
       pushNotice(n === 1 ? "Someone left the room" : n + " people left")
     },
-    [pushNotice],
+    [pushNotice, session.participantId],
   )
 
   const ingest = useCallback(
@@ -301,10 +328,12 @@ export function useRoom(session: RoomSession): RoomController {
       if (m.participantId === session.participantId || m.kind === "system" || m.burn) return
       if (typeof document !== "undefined" && document.visibilityState === "visible") return
       if (!notificationsEnabled()) return
-      if (vault.get(session.invite.roomId)?.muted) return
+      const saved = vault.get(session.invite.roomId)
+      if (saved?.muted) return
       void decodeMessage(session, m)
         .then((d) => {
           if (d.decoy) return
+          if (saved?.mentionsOnly && !mentionsName(d.text, session.username)) return
           const name = nameOverrides.current.get(d.participantId) || d.username || "Someone"
           const body =
             d.kind === "media"
@@ -419,7 +448,7 @@ export function useRoom(session: RoomSession): RoomController {
 
         void recompute()
       },
-      onPresence: (count) => applyPresence(count),
+      onPresence: (count, left) => applyPresence(count, left),
       onSignal: (f) => {
         const ev = f.event
 
@@ -1032,6 +1061,7 @@ export function useRoom(session: RoomSession): RoomController {
           accessProof: session.keys.accessProof,
           ...participantAuth(session),
           ttlMs,
+          ownerProof: session.ownerSecret,
           notice: { id, envelope },
         })
         applyRoomState(res.room)
@@ -1041,6 +1071,53 @@ export function useRoom(session: RoomSession): RoomController {
       }
     },
     [session, applyRoomState, ingest],
+  )
+
+  const setTimerLocked = useCallback(
+    async (locked: boolean) => {
+      if (!session.ownerSecret) return
+      try {
+        const res = await api.updateInvite({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ownerProof: session.ownerSecret,
+          lockTimer: locked,
+        })
+        applyRoomState(res.room)
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to update the timer setting")
+      }
+    },
+    [session, applyRoomState],
+  )
+
+  // Owner-only: the pin (message id + short preview) is encrypted here; the
+  // server stores the opaque envelope and rebroadcasts the room state.
+  const setPinned = useCallback(
+    async (msg: DecryptedMessage | null) => {
+      if (!session.ownerSecret) return
+      try {
+        const preview =
+          msg?.text && !msg.text.startsWith("\u26a0")
+            ? plainText(msg.text).slice(0, 140)
+            : msg?.items?.length
+              ? "\u{1F4CE} Attachment"
+              : "Message"
+        const pinEnvelope = msg
+          ? await encodePin(session, { id: msg.id, username: msg.username, preview })
+          : null
+        const res = await api.setPin({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ownerProof: session.ownerSecret,
+          pinEnvelope,
+        })
+        applyRoomState(res.room)
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to update the pinned message")
+      }
+    },
+    [session, applyRoomState],
   )
 
   // Owner-only moderation. The server verifies the owner secret independently;
@@ -1159,6 +1236,9 @@ export function useRoom(session: RoomSession): RoomController {
       rename,
       setTopic: updateTopic,
       setMessageTimer,
+      setTimerLocked,
+      setPinned,
+      pinned,
       banMember,
       unbanMember,
       toggleDecoy,
@@ -1195,6 +1275,9 @@ export function useRoom(session: RoomSession): RoomController {
       rename,
       updateTopic,
       setMessageTimer,
+      setTimerLocked,
+      setPinned,
+      pinned,
       banMember,
       unbanMember,
       toggleDecoy,

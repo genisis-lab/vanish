@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowDown,
   Ban,
@@ -19,17 +19,23 @@ import {
   Moon,
   MoreVertical,
   Pencil,
+  Pin,
+  PinOff,
   QrCode,
   Search,
   Share2,
   ShieldCheck,
   Sun,
+  Timer,
   Tag,
   Trash2,
   Type,
   Users,
   Volume2,
   VolumeX,
+  AtSign,
+  ExternalLink,
+  Copy,
   X,
   Zap,
 } from "lucide-react"
@@ -52,6 +58,14 @@ import { SafetyPanel } from "./SafetyPanel"
 import { SecurityTransparency } from "./SecurityTransparency"
 import { ReadOnceViewer } from "./ReadOnceViewer"
 import { MediaViewer } from "./MediaViewer"
+import { mentionNames, mentionsName } from "../lib/richText"
+
+type AlertMode = "all" | "mentions" | "none"
+const ALERT_LABEL: Record<AlertMode, string> = {
+  all: "All messages",
+  mentions: "Only @mentions",
+  none: "Muted",
+}
 
 type Panel =
   "settings" | "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | null
@@ -80,7 +94,18 @@ export function ChatRoom({
   const [unread, setUnread] = useState(0)
   const [savePrompt, setSavePrompt] = useState(() => !vault.get(session.invite.roomId))
   const [notifOn, setNotifOn] = useState(() => notificationsEnabled())
-  const [muted, setMuted] = useState(() => !!vault.get(session.invite.roomId)?.muted)
+  const [alertMode, setAlertMode] = useState<AlertMode>(() => {
+    const saved = vault.get(session.invite.roomId)
+    return saved?.muted ? "none" : saved?.mentionsOnly ? "mentions" : "all"
+  })
+  // Link the user tapped, waiting for them to confirm before leaving Vanish.
+  const [linkToOpen, setLinkToOpen] = useState<string | null>(null)
+  // "New messages" divider: id of the first message that arrived unseen.
+  const [dividerId, setDividerId] = useState<string | null>(null)
+  // Incoming messages that arrived while scrolled up (for the jump pill).
+  const [newWhileUp, setNewWhileUp] = useState(0)
+  const lastReadAt = useRef(vault.get(session.invite.roomId)?.lastReadAt ?? null)
+  const dividerSeeded = useRef(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [matchIdx, setMatchIdx] = useState(-1)
@@ -129,9 +154,75 @@ export function ChatRoom({
     if (incoming.length === 0) return
     if (document.visibilityState === "hidden") {
       setUnread((u) => u + incoming.length)
-      if (prefs.sound && !muted) playChime()
+      const alert =
+        alertMode === "all" ||
+        (alertMode === "mentions" && incoming.some((m) => mentionsName(m.text, session.username)))
+      if (prefs.sound && alert) playChime()
     }
-  }, [room.messages, prefs.sound, muted])
+  }, [room.messages, prefs.sound, alertMode, session.username])
+
+  // Place the "New messages" divider. On first load it goes before the first
+  // message from someone else that is newer than what this device last read;
+  // afterwards, before the first one that arrives while the tab is hidden or
+  // the user is scrolled up. Sending a message clears it.
+  const prevIds = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    const msgs = room.messages
+    const fromOthers = (m: DecryptedMessage) => !m.mine && m.kind !== "system" && !m.deleted
+    if (!dividerSeeded.current) {
+      // Wait for history: local join/leave notices can render before it loads.
+      if (!msgs.some((m) => !m.id.startsWith("notice-"))) return
+      dividerSeeded.current = true
+      prevIds.current = new Set(msgs.map((m) => m.id))
+      const since = lastReadAt.current
+      if (since !== null) {
+        const first = msgs.find((m) => fromOthers(m) && m.createdAt > since)
+        if (first) setDividerId(first.id)
+      }
+      return
+    }
+    const seen = prevIds.current ?? new Set<string>()
+    const added = msgs.filter((m) => !seen.has(m.id))
+    prevIds.current = new Set(msgs.map((m) => m.id))
+    if (added.length === 0) return
+    if (added.some((m) => m.mine && m.kind !== "system")) {
+      setDividerId(null)
+      return
+    }
+    const incoming = added.filter(fromOthers)
+    if (incoming.length === 0) return
+    const away = document.visibilityState === "hidden" || !nearBottom.current
+    if (away) setDividerId((d) => d ?? incoming[0].id)
+    if (!nearBottom.current) setNewWhileUp((n) => n + incoming.length)
+  }, [room.messages])
+
+  // Remember how far this device has read, so the divider can be placed the
+  // next time the room opens. Saved when the tab hides or the room closes.
+  const latestAt = room.messages.length ? room.messages[room.messages.length - 1].createdAt : 0
+  const latestAtRef = useRef(latestAt)
+  latestAtRef.current = latestAt
+  useEffect(() => {
+    const roomId = session.invite.roomId
+    const save = () => {
+      if (latestAtRef.current && nearBottom.current) vault.setLastRead(roomId, latestAtRef.current)
+    }
+    const onVis = () => {
+      if (document.visibilityState === "hidden") save()
+    }
+    document.addEventListener("visibilitychange", onVis)
+    window.addEventListener("pagehide", save)
+    return () => {
+      save()
+      document.removeEventListener("visibilitychange", onVis)
+      window.removeEventListener("pagehide", save)
+    }
+  }, [session.invite.roomId])
+
+  // Display names that can be @mentioned, longest first (stable between renders).
+  const mentionList = useMemo(
+    () => mentionNames([...Object.values(room.names), session.username]),
+    [room.names, session.username],
+  )
 
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) Vanish` : "Vanish"
@@ -224,12 +315,19 @@ export function ChatRoom({
     if (!el) return
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight
     nearBottom.current = gap < 120
-    if (nearBottom.current) setShowJump(false)
+    if (nearBottom.current) {
+      setShowJump(false)
+      setNewWhileUp(0)
+    } else if (gap > Math.max(400, el.clientHeight * 0.75)) {
+      // Far enough up to need a shortcut back, even without new messages.
+      setShowJump(true)
+    }
   }
 
   function jumpToBottom() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
     setShowJump(false)
+    setNewWhileUp(0)
   }
 
   // Scroll to a quoted message and briefly highlight it (inline style only, so
@@ -277,12 +375,41 @@ export function ChatRoom({
     setMatchIdx(-1)
   }
 
-  function toggleMute() {
-    const next = !muted
-    setMuted(next)
-    vault.setMuted(session.invite.roomId, next)
-    setPanel(null)
-    toast(next ? "Room muted on this device — no sounds or pop-up alerts" : "Room unmuted")
+  function cycleAlerts() {
+    const next: AlertMode =
+      alertMode === "all" ? "mentions" : alertMode === "mentions" ? "none" : "all"
+    setAlertMode(next)
+    vault.setAlertMode(session.invite.roomId, next)
+    toast(
+      next === "mentions"
+        ? "Alerts only when someone @mentions you (this device)"
+        : next === "none"
+          ? "Room muted on this device — no sounds or pop-up alerts"
+          : "Alerts on for every message",
+    )
+  }
+
+  const pinMessage = useCallback(
+    (m: DecryptedMessage) => {
+      void room.setPinned(m).then(() => toast("Message pinned for everyone"))
+    },
+    [room.setPinned, toast],
+  )
+
+  function openPinned() {
+    const id = room.pinned?.id
+    if (!id) return
+    if (scrollRef.current?.querySelector(`[data-mid="${id}"]`)) jumpToMessage(id)
+    else toast("That message is no longer in the chat")
+  }
+
+  async function copyLink(href: string) {
+    try {
+      await navigator.clipboard.writeText(href)
+      toast("Link copied")
+    } catch {
+      toast("Could not copy the link")
+    }
   }
 
   const toggleSelect = useCallback(
@@ -616,6 +743,28 @@ export function ChatRoom({
         )}
       </div>
 
+      {room.pinned && !selecting && (
+        <div className="pin-banner">
+          <button type="button" className="pin-banner-body" onClick={openPinned}>
+            <Pin size={14} aria-hidden="true" />
+            <span className="pin-label">Pinned</span>
+            <span className="pin-text">
+              {room.pinned.username ? <b>{room.pinned.username}: </b> : null}
+              {room.pinned.preview}
+            </span>
+          </button>
+          {isOwner && (
+            <IconButton
+              icon={<PinOff size={15} />}
+              label="Unpin message"
+              onClick={() => {
+                void room.setPinned(null).then(() => toast("Message unpinned"))
+              }}
+            />
+          )}
+        </div>
+      )}
+
       {searchOpen && !selecting && (
         <div className="search-bar" style={SEARCH_BAR}>
           <Search size={15} style={SEARCH_ICON} />
@@ -702,28 +851,37 @@ export function ChatRoom({
                     .map((pid) => room.names[pid] || "someone")
                 : undefined
             return (
-              <MessageItem
-                key={m.id}
-                session={session}
-                msg={m}
-                showWho={showWho}
-                selecting={selecting}
-                selected={selected.has(m.id)}
-                seen={seen}
-                seenByNames={seenByNames}
-                replyCount={replyInfo.counts.get(m.id) ?? 0}
-                firstReplyId={replyInfo.firstReply.get(m.id)}
-                onToggleSelect={toggleSelect}
-                onReact={room.toggleReaction}
-                onReply={startReply}
-                onEdit={editMessage}
-                onDelete={deleteMessage}
-                onReport={reportMessage}
-                onOpenMedia={setViewer}
-                onOpenOnce={setReadOnce}
-                onRetry={room.retrySend}
-                onJumpTo={jumpToMessage}
-              />
+              <Fragment key={m.id}>
+                {m.id === dividerId && (
+                  <div className="new-divider" role="separator" aria-label="New messages">
+                    <span>New messages</span>
+                  </div>
+                )}
+                <MessageItem
+                  session={session}
+                  msg={m}
+                  showWho={showWho}
+                  selecting={selecting}
+                  selected={selected.has(m.id)}
+                  seen={seen}
+                  seenByNames={seenByNames}
+                  replyCount={replyInfo.counts.get(m.id) ?? 0}
+                  firstReplyId={replyInfo.firstReply.get(m.id)}
+                  onToggleSelect={toggleSelect}
+                  onReact={room.toggleReaction}
+                  onReply={startReply}
+                  onEdit={editMessage}
+                  onDelete={deleteMessage}
+                  onReport={reportMessage}
+                  onOpenMedia={setViewer}
+                  onOpenOnce={setReadOnce}
+                  onRetry={room.retrySend}
+                  onJumpTo={jumpToMessage}
+                  names={mentionList}
+                  onOpenLink={setLinkToOpen}
+                  onPin={isOwner ? pinMessage : undefined}
+                />
+              </Fragment>
             )
           })}
         </div>
@@ -737,7 +895,10 @@ export function ChatRoom({
 
         {showJump && (
           <button className="jump-pill" onClick={jumpToBottom}>
-            <ArrowDown size={15} /> {unread > 0 ? `${unread} new` : "New messages"}
+            <ArrowDown size={15} />{" "}
+            {newWhileUp > 0
+              ? `${newWhileUp} new message${newWhileUp === 1 ? "" : "s"}`
+              : "Jump to latest"}
           </button>
         )}
       </div>
@@ -765,6 +926,7 @@ export function ChatRoom({
         onCancelUpload={room.cancelUpload}
         defaultTtlMs={room.room?.defaultTtlMs ?? 86_400_000}
         onChangeTimer={room.setMessageTimer}
+        timerLocked={!!room.room?.timerLocked && !isOwner}
         defaultBurn={room.room?.burnAfterRead ?? false}
         roomId={session.invite.roomId}
         replyTo={replyTo}
@@ -905,10 +1067,41 @@ export function ChatRoom({
               you’re actually chatting. Recipients silently ignore them — only the timing pattern of
               your traffic is masked.
             </p>
-            <button className="btn btn-block" onClick={toggleMute}>
-              {muted ? <Volume2 size={16} /> : <VolumeX size={16} />}{" "}
-              {muted ? "Unmute this room" : "Mute this room (this device)"}
+            <button
+              className="btn btn-block"
+              onClick={cycleAlerts}
+              title="Sounds and pop-up alerts on this device. Tap to change."
+            >
+              {alertMode === "none" ? (
+                <VolumeX size={16} />
+              ) : alertMode === "mentions" ? (
+                <AtSign size={16} />
+              ) : (
+                <Volume2 size={16} />
+              )}{" "}
+              Alerts (this device): {ALERT_LABEL[alertMode]}
             </button>
+            {isOwner && (
+              <button
+                className="btn btn-block"
+                aria-pressed={!!room.room?.timerLocked}
+                onClick={() => {
+                  const next = !room.room?.timerLocked
+                  void room
+                    .setTimerLocked(next)
+                    .then(() =>
+                      toast(
+                        next
+                          ? "Only you can change the disappearing timer now"
+                          : "Anyone in the room can change the timer again",
+                      ),
+                    )
+                }}
+              >
+                <Timer size={16} /> Timer changes:{" "}
+                {room.room?.timerLocked ? "only you" : "anyone in the room"}
+              </button>
+            )}
             <button className="btn btn-block" onClick={exportTranscript}>
               <Download size={16} /> Export transcript (this device)
             </button>
@@ -956,6 +1149,38 @@ export function ChatRoom({
                 </p>
               </>
             )}
+          </div>
+        </Sheet>
+      )}
+
+      {linkToOpen && (
+        <Sheet
+          title="Open this link?"
+          icon={<ExternalLink size={18} />}
+          onClose={() => setLinkToOpen(null)}
+        >
+          <div className="stack">
+            <code className="link-preview-url">{linkToOpen}</code>
+            <p className="hint">
+              This opens a site outside Vanish in a new tab. Like any link, that site will see your
+              IP address. Vanish never loads links on its own, so nobody else is exposed.
+            </p>
+            <a
+              className="btn btn-primary btn-block"
+              href={linkToOpen}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              referrerPolicy="no-referrer"
+              onClick={() => setLinkToOpen(null)}
+            >
+              <ExternalLink size={16} /> Open link
+            </a>
+            <button className="btn btn-block" onClick={() => void copyLink(linkToOpen)}>
+              <Copy size={16} /> Copy link
+            </button>
+            <button className="btn btn-ghost btn-block" onClick={() => setLinkToOpen(null)}>
+              Cancel
+            </button>
           </div>
         </Sheet>
       )}

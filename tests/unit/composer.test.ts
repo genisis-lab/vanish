@@ -153,3 +153,12 @@ describe("disappearing timer", () => {
     expect([...timerSelect().options].map((o) => o.textContent).at(-1)).toBe("Never")
   })
 })
+
+describe("locked timer", () => {
+  it("is read-only for members when the owner locks it", async () => {
+    await act(async () => root.render(createElement(Composer, { ...props(), timerLocked: true })))
+    const select = host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
+    expect(select.disabled).toBe(true)
+    expect(select.title).toBe("Only the room owner can change the timer")
+  })
+})

@@ -156,6 +156,35 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await expect(bob.getByText(/^You turned off disappearing messages/)).toBeVisible()
   await expect(bobTimer).toHaveValue("0")
 
+  // Mentions, formatting and links. Ember mentions Ash with a link; Ash sees the
+  // mention highlighted and must confirm before the link opens.
+  await bob
+    .getByRole("textbox", { name: "Encrypted message" })
+    .fill(`@${PRIVATE_VALUES.username} look **now** https://example.com/page`)
+  await bob.keyboard.press("Enter")
+  const mention = alice.locator(".msg.mentions-me")
+  await expect(mention).toBeVisible()
+  await expect(mention.locator("strong")).toHaveText("now")
+  await mention.getByRole("link", { name: "https://example.com/page" }).click()
+  await expect(alice.getByText("Open this link?")).toBeVisible()
+  await expect(alice.getByRole("link", { name: "Open link" })).toHaveAttribute(
+    "rel",
+    "noopener noreferrer nofollow",
+  )
+  await alice.getByRole("button", { name: "Cancel" }).click()
+  expect(ctx.pages()).toHaveLength(2)
+
+  // Ash (the owner) pins Ember's message; Ember sees the pinned banner.
+  await mention.hover()
+  await mention.getByRole("button", { name: "Pin message" }).click()
+  await expect(bob.locator(".pin-banner")).toContainText("look now")
+
+  // Ash locks the timer; Ember's timer becomes read-only.
+  await alice.getByRole("button", { name: "Room actions" }).click()
+  await alice.getByRole("button", { name: /timer changes: anyone/i }).click()
+  await alice.keyboard.press("Escape")
+  await expect(bobTimer).toBeDisabled({ timeout: 10_000 })
+
   // Prune all visible messages from Ash's side.
   await alice.getByRole("button", { name: "Room actions" }).click()
   await alice.getByRole("button", { name: /clear all visible/i }).click()
