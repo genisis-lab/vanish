@@ -36,6 +36,7 @@ import type {
   RealtimeFrame,
   ReserveUploadRequest,
   SessionRequest,
+  SetTimerRequest,
   SetTopicRequest,
   StoredMessage,
   UpdateInviteRequest,
@@ -43,6 +44,7 @@ import type {
 } from "../../shared/types"
 import {
   clampRoomLifetime,
+  clampTtl,
   inviteExpiryToMs,
   isValidObjectKey,
   isValidProof,
@@ -214,6 +216,8 @@ export class RoomDurableObject {
           return this.opSession(body as unknown as SessionRequest)
         case "update":
           return this.opUpdate(body as unknown as UpdateInviteRequest)
+        case "set-timer":
+          return this.opSetTimer(body as unknown as SetTimerRequest)
         case "set-topic":
           return this.opSetTopic(body as unknown as SetTopicRequest)
         case "owner-action":
@@ -521,7 +525,74 @@ export class RoomDurableObject {
     if (!room) return json({ error: "not found" }, 404)
     await this.persist()
     await this.scheduleSweep()
-    return json({ room: this.core.publicState(now) })
+    // Tell connected members so their timer and countdowns update live.
+    const state = this.core.publicState(now)
+    if (state) this.broadcast({ t: "room-updated", room: state })
+    return json({ room: state })
+  }
+
+  // Any member (not only the owner) can change the room's disappearing-message
+  // timer, like the chat-wide timer in other messengers. Connected members get
+  // the new room state at once, plus an optional encrypted system notice so the
+  // change shows in the conversation. The notice never triggers Web Push.
+  private async opSetTimer(req: SetTimerRequest): Promise<Response> {
+    if (!(await this.verifyProof(req.accessProof))) return json({ error: "forbidden" }, 403)
+    if (!this.validId(req.participantId)) return json({ error: "bad participant" }, 400)
+    if (!(await this.verifyParticipantProof(req))) {
+      return json({ error: "bad participant proof" }, 403)
+    }
+    if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
+    const now = Date.now()
+    if (this.core.isInviteExpired(now)) return json({ error: "expired" }, 410)
+    if (typeof req.ttlMs !== "number" || !Number.isFinite(req.ttlMs)) {
+      return json({ error: "bad ttl" }, 400)
+    }
+    const notice = req.notice
+    if (notice !== undefined) {
+      if (
+        !notice ||
+        !this.validId(notice.id) ||
+        typeof notice.envelope !== "string" ||
+        !notice.envelope
+      ) {
+        return json({ error: "bad notice" }, 400)
+      }
+      if (notice.envelope.length > MAX_ENVELOPE_CHARS) return json({ error: "too large" }, 413)
+    }
+    const room = this.core.getRoom()
+    if (!room || room.deletedAt !== null) return json({ error: "not found" }, 404)
+    const ttlMs = clampTtl(req.ttlMs, room.defaultTtlMs)
+    // Picking the current value changes nothing, so it posts no notice either.
+    if (ttlMs === room.defaultTtlMs) return json({ room: this.core.publicState(now) })
+    if (notice && this.core.hasMessage(notice.id)) {
+      return json({ error: "message already exists" }, 409)
+    }
+    if (!(await this.allowRate(req.participantId, now))) {
+      return json({ error: "rate limited" }, 429)
+    }
+    this.core.updateRoom({ ttlMs })
+    const message = notice
+      ? this.core.addMessage(
+          {
+            id: notice.id,
+            participantId: req.participantId,
+            envelope: notice.envelope,
+            kind: "system",
+            ttlMs,
+            burn: false,
+          },
+          now,
+        )
+      : undefined
+    const state = this.core.publicState(now)
+    if (state) this.broadcast({ t: "room-updated", room: state })
+    if (message) {
+      this.broadcast({ t: "message", message })
+      await this.enforceMessageCap(now)
+    }
+    await this.persist()
+    await this.scheduleSweep()
+    return json({ room: state, message })
   }
 
   // Owner-gated: set or clear the opaque encrypted room topic, then notify peers.
@@ -689,17 +760,20 @@ export class RoomDurableObject {
     // Wake background/closed devices via Web Push. Fire-and-forget so it never
     // blocks the send; only real content triggers it.
     this.state.waitUntil(this.sendPushNotifications(message))
-    // Rolling per-room cap: prune the oldest messages beyond the ceiling.
-    const all = this.core.list(now)
-    if (all.length > MAX_MESSAGES_PER_ROOM) {
-      const overflow = all.slice(0, all.length - MAX_MESSAGES_PER_ROOM).map((m) => m.id)
-      const pr = this.core.prune(overflow)
-      if (pr.orphanObjectKeys.length) await this.deleteObjects(pr.orphanObjectKeys)
-      if (pr.removedIds.length) this.broadcast({ t: "prune", messageIds: pr.removedIds })
-    }
+    await this.enforceMessageCap(now)
     await this.persist()
     await this.scheduleSweep()
     return json({ message })
+  }
+
+  // Rolling per-room cap: prune the oldest messages beyond the ceiling.
+  private async enforceMessageCap(now: number): Promise<void> {
+    const all = this.core.list(now)
+    if (all.length <= MAX_MESSAGES_PER_ROOM) return
+    const overflow = all.slice(0, all.length - MAX_MESSAGES_PER_ROOM).map((m) => m.id)
+    const pr = this.core.prune(overflow)
+    if (pr.orphanObjectKeys.length) await this.deleteObjects(pr.orphanObjectKeys)
+    if (pr.removedIds.length) this.broadcast({ t: "prune", messageIds: pr.removedIds })
   }
 
   // Replace the caller's own message envelope (edit-your-own). The plaintext is

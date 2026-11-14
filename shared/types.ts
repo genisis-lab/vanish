@@ -100,6 +100,27 @@ export interface UpdateInviteRequest {
   roomLifetimeMs?: number
 }
 
+/**
+ * Any member: change the room's disappearing-message timer for everyone. The
+ * optional notice is an encrypted system message ("Sam set messages to
+ * disappear after 1h") that the server stores and relays like any message.
+ */
+export interface SetTimerRequest {
+  roomId: string
+  accessProof: string
+  participantId: string
+  participantProof: string
+  /** New room default TTL. NEVER_EXPIRE_TTL_MS (0) means never auto-delete. */
+  ttlMs: number
+  notice?: { id: string; envelope: string }
+}
+
+export interface SetTimerResponse {
+  room: PublicRoomState
+  /** The stored notice, when one was sent and the timer actually changed. */
+  message?: StoredMessage
+}
+
 /** Owner-gated: set or clear the encrypted room topic/name. */
 export interface SetTopicRequest {
   roomId: string

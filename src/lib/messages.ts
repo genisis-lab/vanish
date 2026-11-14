@@ -25,6 +25,7 @@ import {
   utf8,
   verifyEd25519,
 } from "@shared/crypto"
+import { formatTtlShort, isNeverExpireTtl } from "@shared/constants"
 import { padText } from "@shared/padding"
 import type { EncryptedMediaRef, MessageKind, StoredMessage } from "@shared/types"
 import type { MediaManifestItem } from "./media"
@@ -57,9 +58,18 @@ export interface MediaPayload {
   sig?: string
 }
 export interface SystemPayload {
-  event: "join" | "leave" | "notice"
+  event: "join" | "leave" | "notice" | "timer"
   username?: string
   text: string
+  /** event "timer": the room's new disappearing-message timer. */
+  ttlMs?: number
+}
+
+/** Chat line for a timer change, built from the TTL rather than trusting text. */
+export function timerNoticeText(who: string, ttlMs: number): string {
+  return isNeverExpireTtl(ttlMs)
+    ? `${who} turned off disappearing messages.`
+    : `${who} set messages to disappear after ${formatTtlShort(ttlMs)}.`
 }
 export interface ReactionPayload {
   emoji: string
@@ -334,8 +344,11 @@ export async function decodeMessage(
     if (stored.kind === "system") {
       const p = await decryptJson<SystemPayload>(session.keys.msgKey, stored.envelope, aad(session, "msg"))
       base.system = p
-      base.username = p.username || "system"
-      base.text = p.text
+      base.username = (p.username || "Someone").slice(0, 32)
+      base.text =
+        p.event === "timer" && typeof p.ttlMs === "number"
+          ? timerNoticeText(mine ? "You" : base.username, p.ttlMs)
+          : p.text
     } else if (stored.kind === "media") {
       const p = await decryptMsgJson<MediaPayload>(session, stored.envelope, aad(session, "msg"))
       const refs = new Map((stored.media ?? []).map((ref) => [ref.objectKey, ref.size]))

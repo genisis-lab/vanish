@@ -18,6 +18,7 @@ const EXACT_ROUTE_METHODS = new Map<string, string>([
   ["/api/react", "POST"],
   ["/api/rooms", "POST"],
   ["/api/rooms/owner", "POST"],
+  ["/api/rooms/timer", "POST"],
   ["/api/rooms/topic", "POST"],
   ["/api/session", "POST"],
   ["/api/uploads/download", "POST"],

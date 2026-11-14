@@ -15,9 +15,11 @@ import {
   encodeDecoy,
   encodeMedia,
   encodeReaction,
+  encodeSystem,
   encodeText,
   encodeTopic,
   reactionId as makeReactionId,
+  timerNoticeText,
   type DecryptedMessage,
   type ReplyRef,
 } from "./messages"
@@ -84,6 +86,8 @@ export interface RoomController {
   rename: (name: string) => void
   /** Owner-only: set (or clear, with "") the encrypted room topic. */
   setTopic: (topic: string) => Promise<void>
+  /** Any member: change the disappearing-message timer for everyone. */
+  setMessageTimer: (ttlMs: number) => Promise<void>
   /** Owner-only: ban a participant by id (server-enforced). */
   banMember: (participantId: string) => Promise<void>
   /** Owner-only: lift a ban. */
@@ -198,6 +202,15 @@ export function useRoom(session: RoomSession): RoomController {
         let out = m
         const o = nameOverrides.current.get(m.participantId)
         if (o && m.kind !== "system" && m.username !== o) out = { ...out, username: o }
+        // Timer notices name their author; keep that in step with renames too.
+        if (
+          o &&
+          !m.mine &&
+          m.system?.event === "timer" &&
+          typeof m.system.ttlMs === "number" &&
+          m.username !== o
+        )
+          out = { ...out, username: o, text: timerNoticeText(o, m.system.ttlMs) }
         if (m.kind !== "system" && m.verified === "ok" && m.signerKey) {
           const pinned = signerKeys.current.get(m.participantId)
           if (!pinned) signerKeys.current.set(m.participantId, m.signerKey)
@@ -1001,6 +1014,35 @@ export function useRoom(session: RoomSession): RoomController {
     [session, applyRoomState],
   )
 
+  // Any member can change the chat-wide disappearing timer. The server applies
+  // it, rebroadcasts the room state to everyone, and stores the encrypted
+  // notice as a system message so the change shows in the conversation.
+  const setMessageTimer = useCallback(
+    async (ttlMs: number) => {
+      try {
+        const id = randomId()
+        const envelope = await encodeSystem(session, {
+          event: "timer",
+          username: session.username,
+          text: "",
+          ttlMs,
+        })
+        const res = await api.setTimer({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ...participantAuth(session),
+          ttlMs,
+          notice: { id, envelope },
+        })
+        applyRoomState(res.room)
+        if (res.message) ingest(res.message)
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : "Failed to change the timer")
+      }
+    },
+    [session, applyRoomState, ingest],
+  )
+
   // Owner-only moderation. The server verifies the owner secret independently;
   // a non-owner calling this is rejected server-side.
   const ownerAction = useCallback(
@@ -1116,6 +1158,7 @@ export function useRoom(session: RoomSession): RoomController {
       notifyTyping,
       rename,
       setTopic: updateTopic,
+      setMessageTimer,
       banMember,
       unbanMember,
       toggleDecoy,
@@ -1151,6 +1194,7 @@ export function useRoom(session: RoomSession): RoomController {
       notifyTyping,
       rename,
       updateTopic,
+      setMessageTimer,
       banMember,
       unbanMember,
       toggleDecoy,
