@@ -36,6 +36,9 @@ export class Realtime {
   private stopped = false
   private state: ConnState = "connecting"
   private signalsSince = 0
+  // Room settings last seen on the polling path, so a poll only re-applies the
+  // room state (timer, topic, bans) when something other than presence changed.
+  private polledRoomKey = ""
 
   constructor(session: RoomSession, handlers: RealtimeHandlers) {
     this.session = session
@@ -226,6 +229,15 @@ export class Realtime {
         if (res.signals) for (const f of res.signals) this.dispatch(f)
         this.signalsSince = res.serverTime
         this.handlers.onPresence(res.room.participantCount)
+        // Without a socket there are no "room-updated" frames, so pick up timer
+        // and topic changes from the polled room state instead.
+        const { participantCount: _count, ...settings } = res.room
+        void _count
+        const key = JSON.stringify(settings)
+        if (key !== this.polledRoomKey) {
+          this.polledRoomKey = key
+          this.handlers.onRoomUpdated(res.room)
+        }
       } catch (error) {
         if (error instanceof ApiError && error.status === 410) {
           this.handlers.onRoomDeleted()

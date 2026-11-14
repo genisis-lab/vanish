@@ -45,6 +45,7 @@ function props() {
     onSendMedia: vi.fn(),
     onTyping: vi.fn(),
     onCancelUpload: vi.fn(),
+    onChangeTimer: vi.fn(async () => {}),
   }
 }
 beforeEach(() => {
@@ -105,36 +106,50 @@ describe("voice-note review", () => {
 })
 
 describe("disappearing timer", () => {
+  const timerSelect = () =>
+    host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
+  const selectedLabel = () => timerSelect().selectedOptions[0]?.textContent
   async function chooseTimer(label: string) {
-    const select = host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
-    const index = [...select.options].findIndex((o) => o.textContent === label)
-    expect(index, label).toBeGreaterThan(-1)
+    const select = timerSelect()
+    const option = [...select.options].find((o) => o.textContent === label)
+    expect(option, label).toBeTruthy()
     await act(async () => {
-      select.value = String(index)
+      select.value = option!.value
       select.dispatchEvent(new Event("change", { bubbles: true }))
     })
   }
 
-  it("offers Never and sends it as ttlMs 0", async () => {
+  it("shows the chat's timer and changes it for everyone instead of per message", async () => {
     const p = props()
     await act(async () => root.render(createElement(Composer, p)))
+    expect(selectedLabel()).toBe("5m")
     await chooseTimer("Never")
-    await click("Record an encrypted voice note")
-    await click("Stop & preview")
-    await click("Send voice note")
-    expect(p.onSendMedia).toHaveBeenCalledOnce()
-    expect(p.onSendMedia.mock.calls[0][2]).toMatchObject({ ttlMs: 0 })
-  })
-
-  it("leaves ttlMs unset for the room default and labels a Never room", async () => {
-    const p = { ...props(), defaultTtlMs: 0 }
-    await act(async () => root.render(createElement(Composer, p)))
-    const first = host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
-      .options[0]
-    expect(first.textContent).toBe("Room default: Never")
+    expect(p.onChangeTimer).toHaveBeenCalledWith(0)
     await click("Record an encrypted voice note")
     await click("Stop & preview")
     await click("Send voice note")
     expect(p.onSendMedia.mock.calls[0][2].ttlMs).toBeUndefined()
+  })
+
+  it("follows a timer change made by someone else", async () => {
+    const p = props()
+    await act(async () => root.render(createElement(Composer, p)))
+    await act(async () => root.render(createElement(Composer, { ...p, defaultTtlMs: 0 })))
+    expect(selectedLabel()).toBe("Never")
+  })
+
+  it("does nothing when the current timer is picked again", async () => {
+    const p = props()
+    await act(async () => root.render(createElement(Composer, p)))
+    await chooseTimer("5m")
+    expect(p.onChangeTimer).not.toHaveBeenCalled()
+  })
+
+  it("still shows a room timer that is not in the list", async () => {
+    await act(async () =>
+      root.render(createElement(Composer, { ...props(), defaultTtlMs: 2 * 3_600_000 })),
+    )
+    expect(selectedLabel()).toBe("2h")
+    expect([...timerSelect().options].map((o) => o.textContent).at(-1)).toBe("Never")
   })
 })

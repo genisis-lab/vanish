@@ -764,6 +764,7 @@ export function ChatRoom({
         uploads={room.uploads}
         onCancelUpload={room.cancelUpload}
         defaultTtlMs={room.room?.defaultTtlMs ?? 86_400_000}
+        onChangeTimer={room.setMessageTimer}
         defaultBurn={room.room?.burnAfterRead ?? false}
         roomId={session.invite.roomId}
         replyTo={replyTo}

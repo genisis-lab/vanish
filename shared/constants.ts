@@ -135,6 +135,19 @@ export function isNeverExpireTtl(ms: number | null | undefined): boolean {
   return ms === NEVER_EXPIRE_TTL_MS
 }
 
+/** Timer choices offered in the chat composer, shortest first. */
+export const CHAT_TIMER_OPTIONS_MS: number[] = [
+  10 * 1000,
+  30 * 1000,
+  60 * 1000,
+  5 * 60 * 1000,
+  60 * 60 * 1000,
+  8 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  7 * 24 * 60 * 60 * 1000,
+  NEVER_EXPIRE_TTL_MS,
+]
+
 /** Short human label for a TTL ("30s", "5m", "8h", "7d", "Never"). */
 export function formatTtlShort(ms: number): string {
   if (isNeverExpireTtl(ms)) return "Never"

@@ -18,6 +18,7 @@ import type { SendOpts, UploadState } from "../lib/useRoom"
 import type { ReplyRef } from "../lib/messages"
 import { formatBytes } from "../lib/format"
 import {
+  CHAT_TIMER_OPTIONS_MS,
   formatTtlShort,
   isNeverExpireTtl,
   MAX_MESSAGE_TTL_MS,
@@ -27,8 +28,11 @@ import {
 interface ComposerProps {
   uploads: UploadState[]
   roomId: string
+  /** The room's disappearing timer, shared by everyone in the chat. */
   defaultTtlMs: number
   defaultBurn: boolean
+  /** Change the chat-wide timer; resolves once the server has applied it. */
+  onChangeTimer: (ttlMs: number) => Promise<void>
   onCancelUpload: (messageId: string) => void
   replyTo: ReplyRef | null
   onCancelReply: () => void
@@ -37,17 +41,14 @@ interface ComposerProps {
   onTyping: () => void
 }
 
-// ms === null means "use the room default"; NEVER_EXPIRE_TTL_MS keeps the
-// message until someone deletes it or the room is destroyed.
-const TTL_OPTIONS: { label: string; ms: number | null }[] = [
-  { label: "Room default", ms: null },
-  { label: "10s", ms: 10_000 },
-  { label: "1m", ms: 60_000 },
-  { label: "5m", ms: 300_000 },
-  { label: "1h", ms: 3_600_000 },
-  { label: "1d", ms: 86_400_000 },
-  { label: "Never", ms: NEVER_EXPIRE_TTL_MS },
-]
+// The timer is chat-wide: picking one changes it for everyone and posts a
+// notice in the chat. A room created with a value not in the list (older rooms)
+// still shows it, so the select never lies about the current timer.
+function timerOptions(current: number): number[] {
+  if (CHAT_TIMER_OPTIONS_MS.includes(current)) return CHAT_TIMER_OPTIONS_MS
+  const timed = [...CHAT_TIMER_OPTIONS_MS.filter((ms) => !isNeverExpireTtl(ms)), current]
+  return [...timed.sort((a, b) => a - b), NEVER_EXPIRE_TTL_MS]
+}
 
 // Keep attachments to the media types the pipeline understands
 // (image/video/audio). Files with no reported type (some pastes) are allowed.
@@ -93,6 +94,7 @@ export function Composer({
   roomId,
   defaultTtlMs,
   defaultBurn,
+  onChangeTimer,
   onCancelUpload,
   replyTo,
   onCancelReply,
@@ -103,7 +105,8 @@ export function Composer({
   const draftKey = `vanish.draft.${roomId}`
   const [text, setText] = useState("")
   const [files, setFiles] = useState<File[]>([])
-  const [ttlIdx, setTtlIdx] = useState(0)
+  // Optimistic choice while the server applies it; cleared once it settles.
+  const [pendingTtl, setPendingTtl] = useState<number | null>(null)
   const [burn, setBurn] = useState(defaultBurn)
   const [justSent, setJustSent] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -123,8 +126,7 @@ export function Composer({
   const recSecsRef = useRef(0)
   const discardRef = useRef(false)
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
-  const ttl = TTL_OPTIONS[ttlIdx]
-  const effectiveTtl = ttl.ms ?? defaultTtlMs
+  const effectiveTtl = pendingTtl ?? defaultTtlMs
   // Read-once messages always expire; "Never" caps them at the longest timer.
   const burnLabel = formatTtlShort(
     isNeverExpireTtl(effectiveTtl) ? MAX_MESSAGE_TTL_MS : effectiveTtl,
@@ -318,7 +320,6 @@ export function Composer({
     if (busy || recording || startingRecording) return
     const t = readEditorText().trim()
     const opts: SendOpts = {
-      ttlMs: ttl.ms ?? undefined,
       burn,
       replyTo: replyTo ?? undefined,
     }
@@ -591,14 +592,21 @@ export function Composer({
           <span className="sr-only">Disappearing timer</span>
           <select
             aria-label="Disappearing timer"
-            value={ttlIdx}
-            onChange={(e) => setTtlIdx(Number(e.target.value))}
+            title="Disappearing timer for everyone in this chat"
+            value={String(effectiveTtl)}
+            disabled={pendingTtl !== null}
+            onChange={(e) => {
+              const next = Number(e.target.value)
+              if (next === defaultTtlMs) return
+              setPendingTtl(next)
+              void onChangeTimer(next).finally(() => {
+                if (mounted.current) setPendingTtl(null)
+              })
+            }}
           >
-            {TTL_OPTIONS.map((option, i) => (
-              <option key={option.label} value={i}>
-                {option.ms === null
-                  ? `Room default: ${formatTtlShort(defaultTtlMs)}`
-                  : option.label}
+            {timerOptions(defaultTtlMs).map((ms) => (
+              <option key={ms} value={String(ms)}>
+                {formatTtlShort(ms)}
               </option>
             ))}
           </select>

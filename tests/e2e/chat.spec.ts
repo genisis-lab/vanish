@@ -143,6 +143,19 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await encryptedAudio.click()
   await expect(bob.getByRole("button", { name: "Play voice note" })).toBeVisible({ timeout: 20_000 })
 
+  // Any member can change the chat-wide timer. Ember (not the owner) turns it
+  // off; Ash's timer updates live and a system line appears for both of them.
+  const bobTimer = bob.getByLabel("Disappearing timer")
+  const aliceTimer = alice.getByLabel("Disappearing timer")
+  await expect(aliceTimer).toHaveValue(String(24 * 60 * 60 * 1000))
+  await bobTimer.selectOption({ label: "Never" })
+  await expect(aliceTimer).toHaveValue("0", { timeout: 10_000 })
+  await expect(alice.getByText(/turned off disappearing messages/)).toBeVisible({
+    timeout: 10_000,
+  })
+  await expect(bob.getByText(/^You turned off disappearing messages/)).toBeVisible()
+  await expect(bobTimer).toHaveValue("0")
+
   // Prune all visible messages from Ash's side.
   await alice.getByRole("button", { name: "Room actions" }).click()
   await alice.getByRole("button", { name: /clear all visible/i }).click()

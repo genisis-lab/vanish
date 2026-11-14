@@ -16,7 +16,9 @@ it.
 - Choose **Quick conversation** (five-minute messages, one-hour room, 24-hour invite),
   **24-hour room** (24-hour messages, room, and invite), or customize each timer.
   A destroyed room always ends invite access, even when the invite has time remaining.
-- The composer shows the effective room timer and lets you override it for a message.
+- The composer's timer is shared by the whole chat. Any member can change it; everyone's
+  timer updates live and an encrypted system line ("Sam set messages to disappear after 1h")
+  appears in the conversation. It applies to messages sent after the change.
 - **Read once** messages stay covered until a recipient chooses **Open once**. Small media
   is downloaded and decrypted before the consumption acknowledgment deletes the message and
   attachments for everyone. Large attachments must finish saving first. The loaded viewer
@@ -84,8 +86,8 @@ operate on the same local R2 bucket.
 - **Multi-device sync** — move a room to another device with a short-lived transfer code
   (shown as a QR or copyable string) that carries the room key, your participant identity,
   signing key, and — if you're the owner — owner rights. Nothing transits the server.
-- **Disappearing messages** — per-message timers (or "Never" to keep messages until you
-  delete them), optional burn-after-read, and an optional whole-room self-destruct.
+- **Disappearing messages** — a chat-wide timer any member can change (or "Never" to keep
+  messages until you delete them), optional burn-after-read, and an optional whole-room self-destruct.
 - **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
   minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
   notifications stay silent and the in-app UI handles activity (see below).
