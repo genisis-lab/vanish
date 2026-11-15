@@ -4,7 +4,12 @@
 // Only static, non-sensitive build assets and the navigation shell are cached.
 // Push payloads never contain message content (the server is zero-knowledge),
 // so the notification shown here is a generic "new message" ping.
-const CACHE = "vanish-shell-v8"
+// The build replaces __VANISH_BUILD__ with a hash of the release (see
+// vite.config.ts), so sw.js changes on every deploy. That is what makes the
+// browser install the new worker and the app show its "update available" bar;
+// with identical bytes, open tabs and installed apps never heard about a deploy.
+const BUILD = "__VANISH_BUILD__"
+const CACHE = "vanish-shell-" + BUILD
 const SHELL = [
   "/",
   "/manifest.webmanifest",

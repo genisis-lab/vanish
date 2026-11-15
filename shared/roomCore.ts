@@ -10,6 +10,8 @@ import {
   MAX_MESSAGE_TTL_MS,
   MAX_PARTICIPANTS_PER_ROOM,
   MAX_REACTIONS_PER_MESSAGE,
+  messageExpiresAt,
+  shorterTtl,
 } from "./constants"
 import type { EncryptedMediaRef, MessageKind, PublicRoomState, StoredMessage } from "./types"
 
@@ -288,11 +290,15 @@ export class RoomCore {
   addMessage(input: AddMessageInput, now: number): StoredMessage {
     if (!this.room || this.room.deletedAt !== null) throw new Error("room not available")
     const burn = input.burn ?? this.room.burnAfterRead
-    const ttl = clampTtl(input.ttlMs, this.room.defaultTtlMs)
+    // The chat-wide timer is a ceiling: a per-message TTL may only shorten it.
+    // Otherwise any member (or a stale tab from before the timer went
+    // chat-wide) could keep messages longer than the chat allows, even when
+    // the owner has locked the timer.
+    const roomTtl = this.room.defaultTtlMs
+    const ttl = shorterTtl(clampTtl(input.ttlMs, roomTtl), roomTtl)
     // "Never" keeps a normal message until it is deleted, pruned, or the room
-    // is destroyed. Read-once messages still need a deadline so an unopened one
-    // cannot linger forever, so they fall back to the longest timed TTL.
-    const expiresAt = isNeverExpireTtl(ttl) ? (burn ? now + burnTtl(ttl) : null) : now + ttl
+    // is destroyed. Read-once messages still get a deadline.
+    const expiresAt = messageExpiresAt(now, ttl, burn)
     const message: StoredMessage = {
       id: input.id,
       roomId: this.room.roomId,

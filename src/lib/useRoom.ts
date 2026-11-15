@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { decryptString, encryptString } from "@shared/crypto"
 import type { AbuseReportCategory, PublicRoomState, StoredMessage } from "@shared/types"
-import { isNeverExpireTtl, NEVER_EXPIRE_TTL_MS } from "@shared/constants"
+import { messageExpiresAt, shorterTtl } from "@shared/constants"
 import { api, ApiError } from "./api"
 import { Realtime, type ConnState } from "./realtime"
 import { aad, type RoomSession } from "./session"
@@ -113,11 +113,27 @@ function participantAuth(session: RoomSession) {
   }
 }
 
+// Show the countdown on a just-sent message right away, using the timer the
+// server will apply: the chat-wide one, or a shorter per-message one.
+function optimisticExpiryFor(
+  now: number,
+  room: PublicRoomState | null,
+  opts?: { ttlMs?: number; burn?: boolean },
+): number | null {
+  const roomTtl = room?.defaultTtlMs
+  const ttl = opts?.ttlMs ?? roomTtl
+  if (ttl === undefined) return null
+  const burn = opts?.burn ?? room?.burnAfterRead ?? false
+  return messageExpiresAt(now, roomTtl === undefined ? ttl : shorterTtl(ttl, roomTtl), burn)
+}
+
 export function useRoom(session: RoomSession): RoomController {
   const [messages, setMessages] = useState<DecryptedMessage[]>([])
   const [connState, setConnState] = useState<ConnState>("connecting")
   const [participantCount, setParticipantCount] = useState(1)
   const [room, setRoom] = useState<PublicRoomState | null>(null)
+  // Latest room state for callbacks that shouldn't re-create on every update.
+  const roomRef = useRef<PublicRoomState | null>(null)
   const [topic, setTopicState] = useState("")
   const [pinned, setPinnedState] = useState<PinnedRef | null>(null)
   const [bannedSelf, setBannedSelf] = useState(false)
@@ -270,6 +286,7 @@ export function useRoom(session: RoomSession): RoomController {
   // it. Used both on initial load and on every "room-updated" realtime frame.
   const applyRoomState = useCallback(
     (r: PublicRoomState) => {
+      roomRef.current = r
       setRoom(r)
       if (r.topicEnvelope) {
         void decodeTopic(session, r.topicEnvelope)
@@ -606,7 +623,7 @@ export function useRoom(session: RoomSession): RoomController {
         participantId: session.participantId,
         kind: "text",
         createdAt: now,
-        expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+        expiresAt: optimisticExpiryFor(now, roomRef.current, opts),
         sendTtlMs: opts?.ttlMs,
         mine: true,
         username: session.username,
@@ -671,7 +688,7 @@ export function useRoom(session: RoomSession): RoomController {
           participantId: session.participantId,
           kind: "media",
           createdAt: now,
-          expiresAt: opts?.ttlMs ? now + opts.ttlMs : null,
+          expiresAt: optimisticExpiryFor(now, roomRef.current, opts),
           sendTtlMs: opts?.ttlMs,
           mine: true,
           username: session.username,
@@ -794,11 +811,9 @@ export function useRoom(session: RoomSession): RoomController {
       pendingById.current.set(id, { ...p, failed: false, pending: true })
       void recompute()
       try {
-        const ttlMs = isNeverExpireTtl(p.sendTtlMs)
-          ? NEVER_EXPIRE_TTL_MS
-          : p.expiresAt
-            ? Math.max(1000, p.expiresAt - Date.now())
-            : undefined
+        // A retry follows the chat's current timer (the server applies it
+        // when ttlMs is omitted) unless the send asked for its own.
+        const ttlMs = p.sendTtlMs
         const envelope = await encodeText(session, id, p.text, p.replyTo)
         const res = await api.postMessage({
           roomId: session.invite.roomId,
