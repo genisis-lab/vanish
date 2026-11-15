@@ -1,13 +1,33 @@
-name: Deploy Pages
+name: Deploy
 
+# Deploys the Durable Object worker (vanish-room) first, then Pages, whenever CI
+# passes on main. Pages Functions and the worker must ship together: new API
+# routes (e.g. /api/rooms/timer) forward ops the old worker doesn't know.
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    # Only deploy CI runs from pushes to this repo's main. A fork PR from a branch
+    # named "main" also matches the branch filter, so check event and repository.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -22,13 +42,24 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Deploy Durable Object worker (vanish-room)
+        run: npx wrangler deploy -c room-worker/wrangler.toml
+        env:
+          # Needs Workers Scripts:Edit (plus the DO, R2 and Queues bindings it
+          # declares). Create CLOUDFLARE_WORKERS_TOKEN, or widen the Pages token.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN || secrets.CLOUDFLARE_PAGES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       - run: >
           npx wrangler pages deploy dist
           --project-name vanish
           --branch main
-          --commit-hash "${{ github.sha }}"
-          --commit-message "${{ github.event.head_commit.message || github.sha }}"
+          --commit-hash "$COMMIT_SHA"
+          --commit-message "$COMMIT_MSG"
           --commit-dirty=false
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # Passed through env, never pasted into the script: a commit title
+          # containing $(...) or backticks must not execute.
+          COMMIT_MSG: ${{ github.event.workflow_run.display_title || github.sha }}
+          COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
