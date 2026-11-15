@@ -19,6 +19,8 @@ export interface RealtimeHandlers {
   onSignal: (f: Extract<RealtimeFrame, { t: "signal" }>) => void
   onSeen: (participantId: string, lastSeen: number, messageIds?: string[]) => void
   onRoomUpdated: (room: PublicRoomState) => void
+  /** Messages whose countdown was cleared (chat switched to "never" and kept them). */
+  onKept: (messageIds: string[]) => void
   onBanned: (participantId: string) => void
   onRoomDeleted: () => void
   onState: (s: ConnState) => void
@@ -168,6 +170,9 @@ export class Realtime {
         break
       case "room-updated":
         this.handlers.onRoomUpdated(frame.room)
+        break
+      case "kept":
+        this.handlers.onKept(frame.messageIds)
         break
       case "banned":
         this.handlers.onBanned(frame.participantId)

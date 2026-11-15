@@ -38,6 +38,7 @@ import {
   Copy,
   X,
   Zap,
+  Infinity as InfinityIcon,
 } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
@@ -47,6 +48,7 @@ import type { AbuseReportCategory } from "@shared/types"
 import type { MediaManifestItem } from "../lib/media"
 import { revokeAllObjectUrls } from "../lib/media"
 import { formatCountdown } from "../lib/format"
+import { formatTtlShort, isNeverExpireTtl, MAX_MESSAGES_PER_ROOM } from "@shared/constants"
 import { vault } from "../lib/vault"
 import { enableNotifications, notificationsEnabled, setNotificationsEnabled } from "../lib/notify"
 import { subscribePush, unsubscribePush } from "../lib/push"
@@ -598,6 +600,26 @@ export function ChatRoom({
     }
   }
 
+  // Messages still counting down that "Never" could keep (read-once messages
+  // and deleted placeholders always expire, so they don't count).
+  // room.messages never includes decoys, so hidden cover traffic is never kept.
+  const keepableIds = useMemo(
+    () =>
+      room.messages
+        .filter((m) => m.expiresAt !== null && !m.burn && !m.deleted && !m.pending)
+        .map((m) => m.id),
+    [room.messages],
+  )
+  const changeTimer = useCallback(
+    (ttlMs: number, opts?: { keepExisting?: boolean }) =>
+      room.setMessageTimer(ttlMs, opts?.keepExisting ? { keepIds: keepableIds } : undefined),
+    [room.setMessageTimer, keepableIds],
+  )
+  // The room keeps at most MAX_MESSAGES_PER_ROOM; warn before old ones go.
+  const [capWarningDismissed, setCapWarningDismissed] = useState(false)
+  const nearCap =
+    !capWarningDismissed && room.messages.length >= Math.floor(MAX_MESSAGES_PER_ROOM * 0.9)
+
   const typingText = useMemo(() => {
     const names = room.typing.map((t) => t.username)
     if (names.length === 0) return ""
@@ -712,6 +734,7 @@ export function ChatRoom({
                 <span className={`dot ${room.connState}`} />
                 {labelFor(room.connState)}
                 <MemberDots count={room.participantCount} onClick={() => setPanel("members")} />
+                {room.room && <ChatTimerChip ttlMs={room.room.defaultTtlMs} />}
                 <RoomTimer destroyAt={room.room?.destroyAt ?? null} />
               </span>
             </div>
@@ -762,6 +785,20 @@ export function ChatRoom({
               }}
             />
           )}
+        </div>
+      )}
+
+      {nearCap && !selecting && (
+        <div className="cap-banner" role="status">
+          <span>
+            This chat keeps the latest {MAX_MESSAGES_PER_ROOM.toLocaleString()} messages. Older ones
+            are removed as new ones arrive{room.room && isNeverExpireTtl(room.room.defaultTtlMs) ? ", even with the timer off" : ""}.
+          </span>
+          <IconButton
+            icon={<X size={15} />}
+            label="Dismiss"
+            onClick={() => setCapWarningDismissed(true)}
+          />
         </div>
       )}
 
@@ -925,7 +962,8 @@ export function ChatRoom({
         uploads={room.uploads}
         onCancelUpload={room.cancelUpload}
         defaultTtlMs={room.room?.defaultTtlMs ?? 86_400_000}
-        onChangeTimer={room.setMessageTimer}
+        onChangeTimer={changeTimer}
+        keepableCount={keepableIds.length}
         timerLocked={!!room.room?.timerLocked && !isOwner}
         defaultBurn={room.room?.burnAfterRead ?? false}
         roomId={session.invite.roomId}
@@ -1210,6 +1248,21 @@ function MemberDots({ count, onClick }: { count: number; onClick?: () => void })
 }
 
 // Ticks once a second to show how long until the whole room self-destructs.
+// The chat-wide disappearing timer, always visible in the header so nobody has
+// to open the composer to know whether messages here are kept.
+function ChatTimerChip({ ttlMs }: { ttlMs: number }) {
+  const never = isNeverExpireTtl(ttlMs)
+  const label = never ? "Kept" : formatTtlShort(ttlMs)
+  const title = never
+    ? "Disappearing messages are off: messages stay until deleted"
+    : `Messages disappear ${formatTtlShort(ttlMs)} after they're sent`
+  return (
+    <span className={`chat-timer-chip${never ? " kept" : ""}`} title={title} aria-label={title}>
+      {never ? <InfinityIcon size={11} /> : <Timer size={11} />} {label}
+    </span>
+  )
+}
+
 function RoomTimer({ destroyAt }: { destroyAt: number | null }) {
   const [, setTick] = useState(0)
   useEffect(() => {

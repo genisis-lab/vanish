@@ -154,11 +154,71 @@ describe("disappearing timer", () => {
   })
 })
 
+describe("switching to Never with messages already here", () => {
+  const timerSelect = () =>
+    host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
+  async function render(keepableCount: number) {
+    const p = { ...props(), keepableCount }
+    await act(async () => root.render(createElement(Composer, p)))
+    return p
+  }
+  async function chooseNever() {
+    const select = timerSelect()
+    await act(async () => {
+      select.value = "0"
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })
+  }
+
+  it("asks whether to keep them, and keeps them on request", async () => {
+    const p = await render(3)
+    await chooseNever()
+    expect(p.onChangeTimer).not.toHaveBeenCalled()
+    expect(host.textContent).toContain("Also keep the 3 messages already here?")
+    await click("Keep them too")
+    expect(p.onChangeTimer).toHaveBeenCalledWith(0, { keepExisting: true })
+  })
+
+  it("can apply Never to new messages only", async () => {
+    const p = await render(1)
+    await chooseNever()
+    expect(host.textContent).toContain("Also keep the 1 message already here?")
+    await click("Only new messages")
+    expect(p.onChangeTimer).toHaveBeenCalledWith(0)
+  })
+
+  it("can be cancelled without changing the timer", async () => {
+    const p = await render(2)
+    await chooseNever()
+    await click("Cancel")
+    expect(p.onChangeTimer).not.toHaveBeenCalled()
+    expect(timerSelect().selectedOptions[0]?.textContent).toBe("5m")
+    expect(host.textContent).not.toContain("already here?")
+  })
+
+  it("doesn't ask when nothing is counting down", async () => {
+    const p = await render(0)
+    await chooseNever()
+    expect(p.onChangeTimer).toHaveBeenCalledWith(0)
+  })
+})
+
 describe("locked timer", () => {
   it("is read-only for members when the owner locks it", async () => {
     await act(async () => root.render(createElement(Composer, { ...props(), timerLocked: true })))
     const select = host.querySelector<HTMLSelectElement>('select[aria-label="Disappearing timer"]')!
     expect(select.disabled).toBe(true)
     expect(select.title).toBe("Only the room owner can change the timer")
+  })
+})
+
+describe("keeping older messages once the timer is already Never", () => {
+  it("offers to keep messages still counting down", async () => {
+    const p = { ...props(), defaultTtlMs: 0, keepableCount: 4 }
+    await act(async () => root.render(createElement(Composer, p)))
+    await click("Keep 4 older")
+    expect(host.textContent).toContain("Keep the 4 older messages that are still counting down?")
+    await click("Keep them")
+    expect(p.onChangeTimer).toHaveBeenCalledWith(0, { keepExisting: true })
   })
 })

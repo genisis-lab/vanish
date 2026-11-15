@@ -121,12 +121,20 @@ export interface SetTimerRequest {
   /** Required only while the owner has locked the timer. */
   ownerProof?: string
   notice?: { id: string; envelope: string }
+  /**
+   * With ttlMs "never": also stop the countdown on these messages already in
+   * the chat, the ones the client shows (read-once messages and deleted
+   * placeholders still expire; hidden decoy traffic is never listed).
+   */
+  keepIds?: string[]
 }
 
 export interface SetTimerResponse {
   room: PublicRoomState
   /** The stored notice, when one was sent and the timer actually changed. */
   message?: StoredMessage
+  /** Messages whose countdown was cleared by keepIds. */
+  keptIds?: string[]
 }
 
 /** Owner-gated: pin a message (opaque envelope) or clear the pin with null. */
@@ -390,5 +398,7 @@ export type RealtimeFrame =
   | { t: "signal"; event: { type: string; envelope?: string; participantId: string } }
   | { t: "seen"; participantId: string; lastSeen: number; messageIds?: string[] }
   | { t: "room-updated"; room: PublicRoomState }
+  /** These messages no longer expire (the chat switched to "never" and kept them). */
+  | { t: "kept"; messageIds: string[] }
   | { t: "banned"; participantId: string }
   | { t: "room-deleted" }

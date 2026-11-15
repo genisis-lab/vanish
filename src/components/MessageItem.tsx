@@ -13,6 +13,7 @@ import {
   ShieldAlert,
   SmilePlus,
   Trash2,
+  Infinity as InfinityIcon,
 } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
@@ -406,6 +407,11 @@ function MessageItemInner({
         {!msg.deleted && ttl && (
           <span className="ttl">
             <Clock size={10} /> {ttl}
+          </span>
+        )}
+        {!msg.deleted && !msg.pending && msg.expiresAt === null && (
+          <span className="ttl kept" title="Kept until deleted" aria-label="Kept until deleted">
+            <InfinityIcon size={10} />
           </span>
         )}
         {msg.mine && !msg.deleted && (

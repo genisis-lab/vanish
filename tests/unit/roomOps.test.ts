@@ -123,6 +123,55 @@ describe("room storage budget on edits and reactions", () => {
     expect((await call("react", { ...reaction, envelope: "r" })).status).toBe(200)
     // Removing a reaction always works.
     expect((await call("react", { ...reaction, envelope: null })).status).toBe(200)
+
+describe("keeping existing messages when switching to Never", () => {
+  const seed = (internals: Record<string, unknown>) => {
+    const core = internals.core as {
+      addMessage(input: object, now: number): { expiresAt: number | null }
+    }
+    const now = Date.now()
+    core.addMessage({ id: "old", participantId: "p", envelope: "e", kind: "text" }, now)
+    core.addMessage({ id: "burn", participantId: "p", envelope: "e", kind: "text", burn: true }, now)
+    // cover traffic: never shown, so the client never lists it
+    core.addMessage({ id: "decoy", participantId: "p", envelope: "e", kind: "text", ttlMs: 45_000 }, now)
+  }
+  const keepIds = ["old", "burn"]
+
+  it("clears the countdown on existing messages and tells everyone", async () => {
+    const { internals, setTimer, frames } = await setup()
+    seed(internals)
+    const res = await setTimer({
+      ...base,
+      ttlMs: NEVER_EXPIRE_TTL_MS,
+      keepIds,
+      notice: { id: "notice-1", envelope: "opaque" },
+    })
+    expect(res.status).toBe(200)
+    expect(res.body.keptIds).toEqual(["old"])
+    expect(frames().map((f) => f.t)).toEqual(["room-updated", "kept", "message"])
+    expect(frames()[1].messageIds).toEqual(["old"])
+  })
+
+  it("can keep them later, once the chat is already on Never", async () => {
+    const { internals, setTimer, frames } = await setup()
+    seed(internals)
+    await setTimer({ ...base, ttlMs: NEVER_EXPIRE_TTL_MS })
+    const res = await setTimer({ ...base, ttlMs: NEVER_EXPIRE_TTL_MS, keepIds })
+    expect(res.body.keptIds).toEqual(["old"])
+    expect(frames().filter((f) => f.t === "kept")).toHaveLength(1)
+  })
+
+  it("ignores keepIds for timed values, validates them, and respects the owner lock", async () => {
+    const { internals, call, setTimer, notOwner } = await setup()
+    seed(internals)
+    const timed = await setTimer({ ...base, ttlMs: 60_000, keepIds })
+    expect(timed.body.keptIds).toEqual([])
+    expect((await setTimer({ ...base, ttlMs: NEVER_EXPIRE_TTL_MS, keepIds: "old" })).status).toBe(400)
+    expect((await setTimer({ ...base, ttlMs: NEVER_EXPIRE_TTL_MS, keepIds: [""] })).status).toBe(400)
+    await call("update", { ...base, ownerProof: "owner", lockTimer: true })
+    notOwner()
+    const locked = await setTimer({ ...base, ttlMs: NEVER_EXPIRE_TTL_MS, keepIds })
+    expect(locked.status).toBe(403)
   })
 })
 
@@ -196,6 +245,9 @@ describe("timer notice text", () => {
     expect(timerNoticeText("Sam", 3_600_000)).toBe("Sam set messages to disappear after 1h.")
     expect(timerNoticeText("You", NEVER_EXPIRE_TTL_MS)).toBe(
       "You turned off disappearing messages.",
+    )
+    expect(timerNoticeText("Sam", NEVER_EXPIRE_TTL_MS, true)).toBe(
+      "Sam turned off disappearing messages and kept the ones already here.",
     )
   })
 })
