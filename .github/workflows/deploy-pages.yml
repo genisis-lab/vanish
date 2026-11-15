@@ -38,6 +38,12 @@ jobs:
             echo "::error::Set the CLOUDFLARE_ACCOUNT_ID repository variable (Settings > Secrets and variables > Actions > Variables)."
             exit 1
           fi
+          if [ -z "$HAS_TOKEN" ]; then
+            echo "::error::Add a CLOUDFLARE_API_TOKEN repository secret (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_PAGES_TOKEN }}
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -45,9 +51,9 @@ jobs:
       - name: Deploy Durable Object worker (vanish-room)
         run: npx wrangler deploy -c room-worker/wrangler.toml
         env:
-          # Needs Workers Scripts:Edit (plus the DO, R2 and Queues bindings it
-          # declares). Create CLOUDFLARE_WORKERS_TOKEN, or widen the Pages token.
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN || secrets.CLOUDFLARE_PAGES_TOKEN }}
+          # One token for both steps: the "Edit Cloudflare Workers" template plus
+          # Queues:Edit (the worker consumes a moderation queue) and Pages:Edit.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_PAGES_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       - run: >
           npx wrangler pages deploy dist
@@ -57,7 +63,7 @@ jobs:
           --commit-message "$COMMIT_MSG"
           --commit-dirty=false
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN || secrets.CLOUDFLARE_PAGES_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Passed through env, never pasted into the script: a commit title
           # containing $(...) or backticks must not execute.
