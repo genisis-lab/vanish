@@ -39,6 +39,16 @@ export const MAX_JSON_BODY_BYTES = 256 * 1024
 export const MAX_ENVELOPE_CHARS = 200_000
 /** Rolling per-room message cap; oldest messages are pruned beyond this. */
 export const MAX_MESSAGES_PER_ROOM = 2000
+/**
+ * Rolling per-room cap on stored ciphertext (message + reaction envelopes, in
+ * base64url chars). Oldest messages are pruned beyond it, like the count cap.
+ * Bounds what one Durable Object loads into memory on wake: without it 2000
+ * max-size messages would be ~400 MB. Typical chat text is ~1 KB per message,
+ * so ordinary rooms reach the 2000-message cap long before this.
+ */
+export const MAX_ROOM_STORED_CHARS = 24_000_000
+/** A reaction is one encrypted emoji + name, padded to a small bucket. */
+export const MAX_REACTION_ENVELOPE_CHARS = 4096
 /** Per-participant send rate limit. */
 export const MESSAGE_RATE_LIMIT = 30
 export const MESSAGE_RATE_WINDOW_MS = 10_000

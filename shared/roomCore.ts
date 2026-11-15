@@ -310,6 +310,11 @@ export class RoomCore {
     return message
   }
 
+  /** Drop a message from memory without freeing its media (failed-save rollback). */
+  forgetMessage(messageId: string): void {
+    this.messages.delete(messageId)
+  }
+
   hasMessage(messageId: string): boolean {
     return this.messages.has(messageId)
   }
@@ -443,6 +448,25 @@ export class RoomCore {
     return this.prune(ownIds)
   }
 
+  /**
+   * Oldest message ids to drop so the room keeps at most `maxCount` messages
+   * and `maxChars` of stored ciphertext. Newest messages are always kept.
+   */
+  overflowIds(maxCount: number, maxChars: number): string[] {
+    const sorted = [...this.messages.values()].sort((a, b) => a.createdAt - b.createdAt)
+    let total = 0
+    for (const m of sorted) total += storedChars(m)
+    const drop: string[] = []
+    let remaining = sorted.length
+    for (const m of sorted) {
+      if (remaining <= maxCount && total <= maxChars) break
+      drop.push(m.id)
+      total -= storedChars(m)
+      remaining--
+    }
+    return drop
+  }
+
   pruneAll(): { removedIds: string[]; orphanObjectKeys: string[] } {
     return this.prune([...this.messages.keys()])
   }
@@ -517,6 +541,13 @@ export class RoomCore {
       timerLocked: !!this.room.timerLocked,
     }
   }
+}
+
+/** Ciphertext a message keeps in storage: its envelope plus reaction envelopes. */
+export function storedChars(m: StoredMessage): number {
+  let n = m.envelope.length
+  for (const r of Object.values(m.reactions ?? {})) n += r.envelope.length
+  return n
 }
 
 /** Read-once messages always expire; "never" maps to the longest timed TTL. */

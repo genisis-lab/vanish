@@ -13,7 +13,8 @@
 // All chat content is opaque to this object. It only ever sees ciphertext and
 // operational metadata (ids, timestamps, sizes, verifier hashes).
 
-import { RoomCore, type RoomSnapshot } from "../../shared/roomCore"
+import { RoomCore } from "../../shared/roomCore"
+import { RoomStore, type KvStorage } from "./roomStorage"
 import { fromBase64Url, hashAccessProof } from "../../shared/crypto"
 import type {
   BroadcastRequest,
@@ -54,6 +55,8 @@ import {
   MAX_ID_CHARS,
   MAX_MEDIA_BYTES,
   MAX_MESSAGES_PER_ROOM,
+  MAX_REACTION_ENVELOPE_CHARS,
+  MAX_ROOM_STORED_CHARS,
   MAX_PARTICIPANTS_PER_ROOM,
   MAX_PUSH_SUBSCRIPTIONS,
   MAX_ROOM_MEDIA_BYTES,
@@ -110,7 +113,6 @@ interface UploadReservation {
   completed?: boolean
 }
 
-const SNAPSHOT_KEY = "snapshot"
 const PUSH_KEY = "pushSubs"
 const RATE_KEY = "rateWindows"
 const UPLOAD_RESERVATIONS_KEY = "uploadReservations"
@@ -134,6 +136,7 @@ export class RoomDurableObject {
   private state: DurableObjectState
   private env: RoomEnv
   private core: RoomCore
+  private store: RoomStore
   private sessions = new Set<Session>()
   // Short-lived signalling frames (typing/seen) buffered so clients on the
   // polling fallback can receive them via the list response. In-memory only.
@@ -154,9 +157,10 @@ export class RoomDurableObject {
     this.state = state
     this.env = env
     this.core = new RoomCore()
+    this.store = new RoomStore(this.state.storage as unknown as KvStorage)
     this.state.blockConcurrencyWhile(async () => {
       const [snap, rate, reservations] = await Promise.all([
-        this.state.storage.get<RoomSnapshot>(SNAPSHOT_KEY),
+        this.store.load(),
         this.state.storage.get<Record<string, number[]>>(RATE_KEY),
         this.state.storage.get<Record<string, UploadReservation>>(UPLOAD_RESERVATIONS_KEY),
       ])
@@ -178,7 +182,7 @@ export class RoomDurableObject {
   }
 
   private async persist(): Promise<void> {
-    await this.state.storage.put(SNAPSHOT_KEY, this.core.toSnapshot())
+    await this.store.save(this.core.toSnapshot())
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -782,14 +786,22 @@ export class RoomDurableObject {
       },
       now,
     )
+    // Save before anyone sees it. Peers used to get the message first, so a
+    // failed save left them showing a message the room never stored. With one
+    // storage key per message the save is a single small write.
+    try {
+      await this.persist()
+    } catch (err) {
+      // Forget it in memory too, so the sender's retry (same id) is accepted
+      // instead of bouncing off "message already exists". Its media stays
+      // reserved and in R2 for that retry.
+      this.core.forgetMessage(message.id)
+      throw err
+    }
     if (req.message.media?.length) {
       for (const ref of req.message.media) this.uploadReservations.delete(ref.objectKey)
       await this.saveUploadReservations()
     }
-    // Deliver to connected peers immediately, before the storage round-trips
-    // (persist + alarm scheduling), so realtime delivery feels instant.
-    // Durability follows right after; a crash in the gap at worst drops a
-    // single just-sent message, which the sender can resend.
     this.broadcast({ t: "message", message })
     // Wake background/closed devices via Web Push. Fire-and-forget so it never
     // blocks the send; only real content triggers it.
@@ -802,9 +814,13 @@ export class RoomDurableObject {
 
   // Rolling per-room cap: prune the oldest messages beyond the ceiling.
   private async enforceMessageCap(now: number): Promise<void> {
-    const all = this.core.list(now)
-    if (all.length <= MAX_MESSAGES_PER_ROOM) return
-    const overflow = all.slice(0, all.length - MAX_MESSAGES_PER_ROOM).map((m) => m.id)
+    // Expired messages first, so they don't count against the caps. Their R2
+    // bytes are freed here too (list() used to sweep them silently).
+    const swept = this.core.sweep(now)
+    if (swept.orphanObjectKeys.length) await this.deleteObjects(swept.orphanObjectKeys)
+    if (swept.removedIds.length) this.broadcast({ t: "prune", messageIds: swept.removedIds })
+    const overflow = this.core.overflowIds(MAX_MESSAGES_PER_ROOM, MAX_ROOM_STORED_CHARS)
+    if (!overflow.length) return
     const pr = this.core.prune(overflow)
     if (pr.orphanObjectKeys.length) await this.deleteObjects(pr.orphanObjectKeys)
     if (pr.removedIds.length) this.broadcast({ t: "prune", messageIds: pr.removedIds })
@@ -1030,7 +1046,7 @@ export class RoomDurableObject {
     }
     if (this.core.isBanned(req.participantId)) return json({ error: "banned" }, 403)
     if (req.envelope != null) {
-      if (typeof req.envelope !== "string" || req.envelope.length > MAX_ENVELOPE_CHARS) {
+      if (typeof req.envelope !== "string" || req.envelope.length > MAX_REACTION_ENVELOPE_CHARS) {
         return json({ error: "bad envelope" }, 400)
       }
     }
