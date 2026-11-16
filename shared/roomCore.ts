@@ -454,6 +454,25 @@ export class RoomCore {
     return this.prune(ownIds)
   }
 
+  /** Stored ciphertext across the room (see MAX_ROOM_STORED_CHARS). */
+  storedTotal(): number {
+    let total = 0
+    for (const m of this.messages.values()) total += storedChars(m)
+    return total
+  }
+
+  /**
+   * How much stored ciphertext would grow if this message's envelope became
+   * `envelopeChars` long, or (with reactionId) if that reaction's envelope did.
+   * Null when the message doesn't exist.
+   */
+  storedGrowth(messageId: string, envelopeChars: number, reactionId?: string): number | null {
+    const m = this.messages.get(messageId)
+    if (!m) return null
+    if (reactionId === undefined) return envelopeChars - m.envelope.length
+    return envelopeChars - (m.reactions?.[reactionId]?.envelope.length ?? 0)
+  }
+
   /**
    * Oldest message ids to drop so the room keeps at most `maxCount` messages
    * and `maxChars` of stored ciphertext. Newest messages are always kept.
