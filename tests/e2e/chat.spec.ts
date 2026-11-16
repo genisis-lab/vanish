@@ -149,7 +149,7 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   const bobTimer = bob.getByLabel("Disappearing timer")
   const aliceTimer = alice.getByLabel("Disappearing timer")
   await expect(aliceTimer).toHaveValue(String(24 * 60 * 60 * 1000))
-  await expect(alice.locator(".chat-timer-chip")).toHaveText(/24h/)
+  await expect(alice.locator(".chat-timer-chip")).toHaveText(/1d/)
   const firstMessage = alice.locator(".msg", { hasText: PRIVATE_VALUES.message }).first()
   await expect(firstMessage.getByLabel("Kept until deleted")).toHaveCount(0)
   await bobTimer.selectOption({ label: "Never" })
