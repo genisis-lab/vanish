@@ -240,7 +240,11 @@ export function useRoom(session: RoomSession): RoomController {
           typeof m.system.ttlMs === "number" &&
           m.username !== o
         )
-          out = { ...out, username: o, text: timerNoticeText(o, m.system.ttlMs) }
+          out = {
+            ...out,
+            username: o,
+            text: timerNoticeText(o, m.system.ttlMs, m.system.keptExisting === true),
+          }
         if (m.kind !== "system" && m.verified === "ok" && m.signerKey) {
           const pinned = signerKeys.current.get(m.participantId)
           if (!pinned) signerKeys.current.set(m.participantId, m.signerKey)

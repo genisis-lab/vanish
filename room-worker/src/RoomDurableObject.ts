@@ -619,7 +619,13 @@ export class RoomDurableObject {
     await this.persist()
     const state = this.core.publicState(now)
     if (state) this.broadcast({ t: "room-updated", room: state })
-    if (keptIds.length) this.broadcast({ t: "kept", messageIds: keptIds })
+    if (keptIds.length) {
+      const kept: RealtimeFrame = { t: "kept", messageIds: keptIds }
+      this.broadcast(kept)
+      // Polling clients don't re-fetch messages they already have, so hand
+      // them the change through the signal buffer like typing/seen frames.
+      this.recordSignal(kept)
+    }
     if (message) {
       this.broadcast({ t: "message", message })
       await this.enforceMessageCap(now)
