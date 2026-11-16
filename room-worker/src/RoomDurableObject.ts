@@ -602,7 +602,7 @@ export class RoomDurableObject {
       return json({ error: "rate limited" }, 429)
     }
     this.core.updateRoom({ ttlMs })
-    const keptIds = keep ? this.core.keepMessages(keepIds) : []
+    const keptIds = keep ? this.core.keepMessages(keepIds, now) : []
     const message = notice
       ? this.core.addMessage(
           {
@@ -970,7 +970,12 @@ export class RoomDurableObject {
     if (swept.orphanObjectKeys.length) await this.deleteObjects(swept.orphanObjectKeys)
     let messages = this.core.list(now)
     const currentMessageIds = messages.map((message) => message.id)
-    if (typeof req.since === "number") messages = messages.filter((m) => m.createdAt > req.since!)
+    // Polling clients pass the newest server time they've seen; send them new
+    // messages and ones changed since (edits, reactions, deletes, kept).
+    if (typeof req.since === "number") {
+      const since = req.since
+      messages = messages.filter((m) => m.createdAt > since || (m.updatedAt ?? 0) > since)
+    }
 
     const signalsSince = typeof req.signalsSince === "number" ? req.signalsSince : now
     const signals = this.recentSignals.filter((s) => s.at > signalsSince).map((s) => s.frame)

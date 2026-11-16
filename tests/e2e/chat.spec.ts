@@ -170,6 +170,14 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await alice.screenshot({ path: "test-results/screens/kept-375.png" })
   if (desktop) await alice.setViewportSize(desktop)
 
+  // Reactions reach the other side whether it holds a socket or is on the
+  // polling fallback (which only asks for what changed since its last poll).
+  const bobsCopy = bob.locator(".msg", { hasText: PRIVATE_VALUES.message }).first()
+  await bobsCopy.hover()
+  await bobsCopy.getByRole("button", { name: "Add reaction" }).click()
+  await bobsCopy.locator(".emoji-pop").getByRole("button", { name: "\u{1F44D}" }).click()
+  await expect(firstMessage.locator(".react-row")).toContainText("\u{1F44D} 1", { timeout: 10_000 })
+
   // Mentions, formatting and links. Ember mentions Ash with a link; Ash sees the
   // mention highlighted and must confirm before the link opens.
   await bob

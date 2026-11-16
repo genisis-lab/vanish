@@ -177,6 +177,30 @@ describe("keeping existing messages when switching to Never", () => {
   })
 })
 
+describe("polling catch-up", () => {
+  it("returns messages changed since the last poll, not just new ones", async () => {
+    const { internals, call } = await setup()
+    const core = internals.core as unknown as { addMessage(input: object, now: number): unknown }
+    const sent = Date.now() - 5_000
+    core.addMessage({ id: "m1", participantId: "changer", envelope: "abc", kind: "text" }, sent)
+    core.addMessage({ id: "m2", participantId: "changer", envelope: "def", kind: "text" }, sent)
+    const list = async (since: number) =>
+      ((await call("list", { ...base, since })).body.messages as Array<{ id: string }>).map(
+        (m) => m.id,
+      )
+    expect(await list(sent)).toEqual([])
+    await call("react", { ...base, messageId: "m1", reactionId: "r1", envelope: "r" })
+    await call("edit", { ...base, messageId: "m2", envelope: "edited" })
+    expect(await list(sent)).toEqual(["m1", "m2"])
+    await call("delete-message", { ...base, messageId: "m1" })
+    const later = await call("list", { ...base, since: sent })
+    const tomb = (later.body.messages as Array<{ id: string; deletedAt?: number }>).find(
+      (m) => m.id === "m1",
+    )
+    expect(tomb?.deletedAt).toBeTruthy()
+  })
+})
+
 describe("owner timer lock", () => {
   it("blocks members but not the owner while locked, and broadcasts the lock", async () => {
     const { call, setTimer, frames } = await setup()
