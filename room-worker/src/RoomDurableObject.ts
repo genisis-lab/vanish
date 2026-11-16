@@ -813,6 +813,11 @@ export class RoomDurableObject {
   }
 
   // Rolling per-room cap: prune the oldest messages beyond the ceiling.
+  /** Would growing stored ciphertext by `growth` chars exceed the room budget? */
+  private wouldOverflow(growth: number | null): boolean {
+    return growth !== null && growth > 0 && this.core.storedTotal() + growth > MAX_ROOM_STORED_CHARS
+  }
+
   private async enforceMessageCap(now: number): Promise<void> {
     // Expired messages first, so they don't count against the caps. Their R2
     // bytes are freed here too (list() used to sweep them silently).
@@ -847,13 +852,19 @@ export class RoomDurableObject {
     if (!(await this.allowRate(req.participantId, now))) {
       return json({ error: "rate limited" }, 429)
     }
+    // Sends prune the oldest messages to stay under the room's storage budget,
+    // but an edit shouldn't silently delete history, so one that would push
+    // the room over is refused instead.
+    if (this.wouldOverflow(this.core.storedGrowth(req.messageId, req.envelope.length))) {
+      return json({ error: "room storage full" }, 413)
+    }
     const message = this.core.editMessage(
       { messageId: req.messageId, participantId: req.participantId, envelope: req.envelope },
       now,
     )
     if (!message) return json({ error: "not found" }, 404)
-    this.broadcast({ t: "edit", message })
     await this.persist()
+    this.broadcast({ t: "edit", message })
     return json({ message })
   }
 
@@ -1058,6 +1069,14 @@ export class RoomDurableObject {
     if (!reactionCapacity && req.envelope !== null) {
       return json({ error: "too many reactions" }, 413)
     }
+    // Like edits, a reaction that would push the room over its storage budget
+    // is refused rather than pruning history to make room for it.
+    if (
+      req.envelope != null &&
+      this.wouldOverflow(this.core.storedGrowth(req.messageId, req.envelope.length, req.reactionId))
+    ) {
+      return json({ error: "room storage full" }, 413)
+    }
     const m = this.core.setReaction({
       messageId: req.messageId,
       reactionId: req.reactionId,
@@ -1065,7 +1084,7 @@ export class RoomDurableObject {
       envelope: req.envelope,
     })
     if (!m) return json({ error: "not found" }, 404)
-    // Broadcast first for snappy delivery; persist the updated state after.
+    await this.persist()
     this.broadcast({
       t: "react",
       messageId: req.messageId,
@@ -1073,7 +1092,6 @@ export class RoomDurableObject {
       participantId: req.participantId,
       envelope: req.envelope,
     })
-    await this.persist()
     return json({ ok: true })
   }
 

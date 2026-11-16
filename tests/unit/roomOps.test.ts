@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { RoomDurableObject } from "../../room-worker/src/RoomDurableObject"
-import { NEVER_EXPIRE_TTL_MS } from "../../shared/constants"
+import { MAX_ROOM_STORED_CHARS, NEVER_EXPIRE_TTL_MS } from "../../shared/constants"
 import { timerNoticeText } from "../../src/lib/messages"
 
 // Builds a room object with one connected peer and proof checks stubbed out, so
@@ -96,6 +96,33 @@ describe("chat-wide disappearing timer", () => {
     ).toBe(400)
     ;(internals.core as unknown as { banParticipant(id: string): void }).banParticipant("changer")
     expect((await setTimer({ ...base, ttlMs: 60_000 })).status).toBe(403)
+  })
+})
+
+describe("room storage budget on edits and reactions", () => {
+  it("refuses an edit or reaction that would push the room over budget", async () => {
+    const { internals, call } = await setup()
+    const core = internals.core as unknown as {
+      addMessage(input: object, now: number): unknown
+      storedTotal(): number
+    }
+    core.addMessage({ id: "m1", participantId: "changer", envelope: "abc", kind: "text" }, Date.now())
+    const total = core.storedTotal.bind(core)
+    core.storedTotal = () => total() + MAX_ROOM_STORED_CHARS - 10
+
+    // Shrinking or growing within the remaining budget is fine.
+    expect((await call("edit", { ...base, messageId: "m1", envelope: "a" })).status).toBe(200)
+    expect((await call("edit", { ...base, messageId: "m1", envelope: "a".repeat(8) })).status).toBe(200)
+    // Growing past it is refused, and nothing changes.
+    const tooBig = await call("edit", { ...base, messageId: "m1", envelope: "a".repeat(40) })
+    expect(tooBig.status).toBe(413)
+    expect(tooBig.body.error).toBe("room storage full")
+
+    const reaction = { ...base, messageId: "m1", reactionId: "r1" }
+    expect((await call("react", { ...reaction, envelope: "r".repeat(40) })).status).toBe(413)
+    expect((await call("react", { ...reaction, envelope: "r" })).status).toBe(200)
+    // Removing a reaction always works.
+    expect((await call("react", { ...reaction, envelope: null })).status).toBe(200)
   })
 })
 

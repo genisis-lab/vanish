@@ -15,14 +15,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Never deploy anything but the current tip of main. CI runs can finish out of
+  # order, and an old run can be re-run by hand; deploying its commit would roll
+  # production back. Since #46 that also means an old worker over rooms already
+  # migrated to per-message storage, which it can't read.
+  guard:
     # Only deploy CI runs from pushes to this repo's main. A fork PR from a branch
     # named "main" also matches the branch filter, so check event and repository.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      current: ${{ steps.tip.outputs.current }}
+    steps:
+      - id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          tip=$(gh api "repos/$REPO/commits/main" --jq .sha)
+          if [ "$tip" = "$SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Not deploying $SHA: main is now at $tip, which deploys on its own."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: guard
+    if: needs.guard.outputs.current == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
