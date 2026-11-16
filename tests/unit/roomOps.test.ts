@@ -123,6 +123,8 @@ describe("room storage budget on edits and reactions", () => {
     expect((await call("react", { ...reaction, envelope: "r" })).status).toBe(200)
     // Removing a reaction always works.
     expect((await call("react", { ...reaction, envelope: null })).status).toBe(200)
+  })
+})
 
 describe("keeping existing messages when switching to Never", () => {
   const seed = (internals: Record<string, unknown>) => {
