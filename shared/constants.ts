@@ -145,6 +145,27 @@ export function isNeverExpireTtl(ms: number | null | undefined): boolean {
   return ms === NEVER_EXPIRE_TTL_MS
 }
 
+/**
+ * The shorter of two TTLs, where "never" (0) is the longest. A sender may ask
+ * for a shorter timer than the chat's (decoys, retries with the time left),
+ * but never a longer one: the chat-wide timer, and its owner lock, is a limit.
+ */
+export function shorterTtl(a: number, b: number): number {
+  if (isNeverExpireTtl(a)) return b
+  if (isNeverExpireTtl(b)) return a
+  return Math.min(a, b)
+}
+
+/**
+ * When a message sent at `now` with this TTL expires, or null for never.
+ * Read-once messages always get a deadline so an unopened one can't linger:
+ * under "never" they fall back to the longest timed TTL.
+ */
+export function messageExpiresAt(now: number, ttlMs: number, burn: boolean): number | null {
+  if (!isNeverExpireTtl(ttlMs)) return now + ttlMs
+  return burn ? now + MAX_MESSAGE_TTL_MS : null
+}
+
 /** Timer choices offered in the chat composer, shortest first. */
 export const CHAT_TIMER_OPTIONS_MS: number[] = [
   10 * 1000,

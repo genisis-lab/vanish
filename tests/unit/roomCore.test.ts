@@ -156,16 +156,34 @@ describe("RoomCore pruning + expiry + delete", () => {
     expect(core.nextExpiry()).toBeNull()
   })
 
-  it("lets a single message opt out of expiry in a timed room", async () => {
+  it("treats the chat timer as a ceiling: a message can shorten it, not extend it", async () => {
     const { core, now } = await freshRoom({ ttlMs: 60_000 })
-    core.addMessage({ id: "timed", participantId: "p1", envelope: "e", kind: "text" }, now)
-    const kept = core.addMessage(
-      { id: "kept", participantId: "p1", envelope: "e", kind: "text", ttlMs: NEVER_EXPIRE_TTL_MS },
+    const never = core.addMessage(
+      { id: "never", participantId: "p1", envelope: "e", kind: "text", ttlMs: NEVER_EXPIRE_TTL_MS },
       now,
     )
-    expect(kept.expiresAt).toBeNull()
-    expect(core.sweep(now + 61_000).removedIds).toEqual(["timed"])
-    expect(core.list(now + 61_000).map((x) => x.id)).toEqual(["kept"])
+    const longer = core.addMessage(
+      { id: "longer", participantId: "p1", envelope: "e", kind: "text", ttlMs: MAX_MESSAGE_TTL_MS },
+      now,
+    )
+    const shorter = core.addMessage(
+      { id: "shorter", participantId: "p1", envelope: "e", kind: "text", ttlMs: 45_000 },
+      now,
+    )
+    expect(never.expiresAt).toBe(now + 60_000)
+    expect(longer.expiresAt).toBe(now + 60_000)
+    expect(shorter.expiresAt).toBe(now + 45_000)
+  })
+
+  it("lets a message pick any timed TTL when the chat timer is Never", async () => {
+    const { core, now } = await freshRoom({ ttlMs: NEVER_EXPIRE_TTL_MS })
+    const decoy = core.addMessage(
+      { id: "decoy", participantId: "p1", envelope: "e", kind: "text", ttlMs: 45_000 },
+      now,
+    )
+    const plain = core.addMessage({ id: "plain", participantId: "p1", envelope: "e", kind: "text" }, now)
+    expect(decoy.expiresAt).toBe(now + 45_000)
+    expect(plain.expiresAt).toBeNull()
   })
 
   it("still expires unopened read-once messages when the timer is Never", async () => {

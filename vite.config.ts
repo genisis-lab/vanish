@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react"
 import { fileURLToPath, URL } from "node:url"
 import { dirname, join } from "node:path"
 import { createHash } from "node:crypto"
-import { writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 
 // Subresource Integrity (SRI): after the production bundle is generated, hash
 // each emitted script/style asset with SHA-384 and inject a matching
@@ -62,11 +62,35 @@ function subresourceIntegrity(): Plugin {
   }
 }
 
+// Stamp the service worker with a hash of this release. public/sw.js is copied
+// as-is, so without this its bytes never change between deploys and browsers
+// never install the new worker or show the update bar. The hash covers
+// index.html, which names every hashed asset and carries their SRI digests.
+function stampServiceWorker(): Plugin {
+  let outDir = "dist"
+  return {
+    name: "vanish-sw-build-stamp",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir
+    },
+    closeBundle() {
+      const swPath = join(outDir, "sw.js")
+      const indexPath = join(outDir, "index.html")
+      if (!existsSync(swPath) || !existsSync(indexPath)) return
+      const build = createHash("sha256").update(readFileSync(indexPath)).digest("hex").slice(0, 12)
+      const sw = readFileSync(swPath, "utf8")
+      if (!sw.includes("__VANISH_BUILD__")) throw new Error("sw.js is missing the __VANISH_BUILD__ placeholder")
+      writeFileSync(swPath, sw.replaceAll("__VANISH_BUILD__", build), "utf8")
+    },
+  }
+}
+
 // Vanish frontend build config.
 // Output goes to dist/ which Cloudflare Pages serves. Pages Functions live in
 // functions/ and are deployed alongside the static assets.
 export default defineConfig({
-  plugins: [react(), subresourceIntegrity()],
+  plugins: [react(), subresourceIntegrity(), stampServiceWorker()],
   resolve: {
     alias: {
       "@shared": fileURLToPath(new URL("./shared", import.meta.url)),
