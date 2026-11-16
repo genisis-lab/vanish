@@ -37,6 +37,12 @@ jobs:
         env:
           UPLOAD_SECRET: e2e-only-upload-secret
       - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-screens
+          path: test-results/screens
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
