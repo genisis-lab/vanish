@@ -328,12 +328,13 @@ export class RoomCore {
    * can't linger, and deleted-message placeholders still expire. Returns the
    * ids that changed.
    */
-  keepMessages(ids: Iterable<string>): string[] {
+  keepMessages(ids: Iterable<string>, now = Date.now()): string[] {
     const kept: string[] = []
     for (const id of ids) {
       const m = this.messages.get(id)
       if (!m || !isKeepable(m)) continue
       m.expiresAt = null
+      m.updatedAt = now
       kept.push(id)
     }
     return kept
@@ -375,6 +376,7 @@ export class RoomCore {
     if (m.deletedAt) return null
     m.envelope = input.envelope
     m.editedAt = now
+    m.updatedAt = now
     return m
   }
 
@@ -398,6 +400,7 @@ export class RoomCore {
       reactions: undefined,
       burn: false,
       deletedAt: now,
+      updatedAt: now,
     }
     this.messages.set(m.id, tomb)
     return { message: tomb, orphanObjectKeys }
@@ -430,15 +433,19 @@ export class RoomCore {
     return { burnedIds, orphanObjectKeys }
   }
 
-  setReaction(input: {
-    messageId: string
-    reactionId: string
-    participantId: string
-    envelope: string | null
-  }): StoredMessage | null {
+  setReaction(
+    input: {
+      messageId: string
+      reactionId: string
+      participantId: string
+      envelope: string | null
+    },
+    now = Date.now(),
+  ): StoredMessage | null {
     const m = this.messages.get(input.messageId)
     if (!m) return null
     if (m.deletedAt) return null
+    m.updatedAt = now
     m.reactions = m.reactions ?? {}
     if (input.envelope === null) {
       delete m.reactions[input.reactionId]

@@ -264,7 +264,12 @@ export function useRoom(session: RoomSession): RoomController {
     for (const [pid, nm] of nameOverrides.current) nameMap[pid] = nm
     namesRef.current = nameMap
     setNames(nameMap)
-    sinceRef.current = all.reduce((mx, m) => Math.max(mx, m.createdAt), sinceRef.current)
+    // Newest server time seen, counting changes, so a poll returns each
+    // update once instead of re-sending it until a newer message arrives.
+    sinceRef.current = all.reduce(
+      (mx, m) => Math.max(mx, m.createdAt, m.updatedAt ?? 0),
+      sinceRef.current,
+    )
   }, [session])
 
   const pushNotice = useCallback(
@@ -336,6 +341,18 @@ export function useRoom(session: RoomSession): RoomController {
     (stored: StoredMessage, recomputeNow = true) => {
       storedById.current.set(stored.id, stored)
       if (recomputeNow) void recompute()
+    },
+    [recompute],
+  )
+
+  // In-place envelope swap, reaction change or tombstone from a peer (or our
+  // own echo). Update the stored record, drop its decode cache, and recompute
+  // without notifying or reordering.
+  const applyUpdate = useCallback(
+    (m: StoredMessage) => {
+      storedById.current.set(m.id, m)
+      decodeCache.current.delete(m.id)
+      void recompute()
     },
     [recompute],
   )
@@ -453,18 +470,17 @@ export function useRoom(session: RoomSession): RoomController {
 
     const realtime = new Realtime(session, {
       onMessage: (m) => {
+        // Polling returns messages that changed since the last poll as well as
+        // new ones. One we already hold is an update (edit, reaction, delete,
+        // kept): apply it like an edit frame, without notifying again.
+        if (storedById.current.has(m.id)) {
+          applyUpdate(m)
+          return
+        }
         maybeNotify(m)
         ingest(m)
       },
-      onEdit: (m) => {
-        // In-place envelope swap or tombstone from a peer (or our own echo).
-        // Update the stored record, drop its decode cache, and recompute
-        // without notifying or reordering.
-        storedById.current.set(m.id, m)
-        decodeCache.current.delete(m.id)
-
-        void recompute()
-      },
+      onEdit: (m) => applyUpdate(m),
       onPrune: (ids, all) => {
         if (all) storedById.current.clear()
         else for (const id of ids) storedById.current.delete(id)

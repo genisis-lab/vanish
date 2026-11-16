@@ -34,6 +34,12 @@ export interface StoredMessage {
   editedAt?: number | null
   /** Soft-delete tombstone time: the author removed this message for everyone. */
   deletedAt?: number | null
+  /**
+   * Server time of the last change after sending (edit, reaction, delete,
+   * kept). Polling clients only ask for what changed since their last poll,
+   * so without this they never saw edits, reactions or deletions.
+   */
+  updatedAt?: number
 }
 
 export interface PublicRoomState {
