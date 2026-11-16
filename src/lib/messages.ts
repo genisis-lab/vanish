@@ -63,13 +63,16 @@ export interface SystemPayload {
   text: string
   /** event "timer": the room's new disappearing-message timer. */
   ttlMs?: number
+  /** event "timer" to "never": messages already in the chat were kept too. */
+  keptExisting?: boolean
 }
 
 /** Chat line for a timer change, built from the TTL rather than trusting text. */
-export function timerNoticeText(who: string, ttlMs: number): string {
-  return isNeverExpireTtl(ttlMs)
-    ? `${who} turned off disappearing messages.`
-    : `${who} set messages to disappear after ${formatTtlShort(ttlMs)}.`
+export function timerNoticeText(who: string, ttlMs: number, keptExisting = false): string {
+  if (!isNeverExpireTtl(ttlMs)) return `${who} set messages to disappear after ${formatTtlShort(ttlMs)}.`
+  return keptExisting
+    ? `${who} turned off disappearing messages and kept the ones already here.`
+    : `${who} turned off disappearing messages.`
 }
 export interface ReactionPayload {
   emoji: string
@@ -376,7 +379,7 @@ export async function decodeMessage(
       base.username = (p.username || "Someone").slice(0, 32)
       base.text =
         p.event === "timer" && typeof p.ttlMs === "number"
-          ? timerNoticeText(mine ? "You" : base.username, p.ttlMs)
+          ? timerNoticeText(mine ? "You" : base.username, p.ttlMs, p.keptExisting === true)
           : p.text
     } else if (stored.kind === "media") {
       const p = await decryptMsgJson<MediaPayload>(session, stored.envelope, aad(session, "msg"))

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { decryptString, encryptString } from "@shared/crypto"
 import type { AbuseReportCategory, PublicRoomState, StoredMessage } from "@shared/types"
-import { messageExpiresAt, shorterTtl } from "@shared/constants"
+import { isNeverExpireTtl, messageExpiresAt, shorterTtl } from "@shared/constants"
 import { api, ApiError } from "./api"
 import { Realtime, type ConnState } from "./realtime"
 import { aad, type RoomSession } from "./session"
@@ -93,7 +93,8 @@ export interface RoomController {
   /** Owner-only: set (or clear, with "") the encrypted room topic. */
   setTopic: (topic: string) => Promise<void>
   /** Any member (owner only while locked): change the timer for everyone. */
-  setMessageTimer: (ttlMs: number) => Promise<void>
+  /** keepIds: with "never", also stop the countdown on these shown messages. */
+  setMessageTimer: (ttlMs: number, opts?: { keepIds?: string[] }) => Promise<void>
   /** Owner-only: let only the owner change the timer (true) or anyone (false). */
   setTimerLocked: (locked: boolean) => Promise<void>
   /** Owner-only: pin a message for everyone, or clear the pin with null. */
@@ -239,7 +240,11 @@ export function useRoom(session: RoomSession): RoomController {
           typeof m.system.ttlMs === "number" &&
           m.username !== o
         )
-          out = { ...out, username: o, text: timerNoticeText(o, m.system.ttlMs) }
+          out = {
+            ...out,
+            username: o,
+            text: timerNoticeText(o, m.system.ttlMs, m.system.keptExisting === true),
+          }
         if (m.kind !== "system" && m.verified === "ok" && m.signerKey) {
           const pinned = signerKeys.current.get(m.participantId)
           if (!pinned) signerKeys.current.set(m.participantId, m.signerKey)
@@ -331,6 +336,27 @@ export function useRoom(session: RoomSession): RoomController {
     (stored: StoredMessage, recomputeNow = true) => {
       storedById.current.set(stored.id, stored)
       if (recomputeNow) void recompute()
+    },
+    [recompute],
+  )
+
+  // Clear the countdown on messages the chat chose to keep. The decrypted copy
+  // is patched in place so hundreds of kept messages don't all re-decrypt.
+  const applyKept = useCallback(
+    (ids: string[]) => {
+      let changed = false
+      for (const id of ids) {
+        const stored = storedById.current.get(id)
+        if (!stored || stored.expiresAt === null) continue
+        const next = { ...stored, expiresAt: null }
+        storedById.current.set(id, next)
+        const cached = decodeCache.current.get(id)
+        if (cached && cached.src === stored) {
+          decodeCache.current.set(id, { src: next, out: { ...cached.out, expiresAt: null } })
+        }
+        changed = true
+      }
+      if (changed) void recompute()
     },
     [recompute],
   )
@@ -519,6 +545,7 @@ export function useRoom(session: RoomSession): RoomController {
         })
       },
       onRoomUpdated: (r) => applyRoomState(r),
+      onKept: (ids) => applyKept(ids),
       onBanned: (participantId) => {
         if (participantId === session.participantId) {
           // The owner removed us: tear down realtime and surface a clear notice.
@@ -1062,14 +1089,17 @@ export function useRoom(session: RoomSession): RoomController {
   // it, rebroadcasts the room state to everyone, and stores the encrypted
   // notice as a system message so the change shows in the conversation.
   const setMessageTimer = useCallback(
-    async (ttlMs: number) => {
+    async (ttlMs: number, opts?: { keepIds?: string[] }) => {
       try {
         const id = randomId()
+        const keepIds = isNeverExpireTtl(ttlMs) ? (opts?.keepIds ?? []) : []
+        const keepExisting = keepIds.length > 0
         const envelope = await encodeSystem(session, {
           event: "timer",
           username: session.username,
           text: "",
           ttlMs,
+          ...(keepExisting ? { keptExisting: true } : {}),
         })
         const res = await api.setTimer({
           roomId: session.invite.roomId,
@@ -1078,14 +1108,16 @@ export function useRoom(session: RoomSession): RoomController {
           ttlMs,
           ownerProof: session.ownerSecret,
           notice: { id, envelope },
+          ...(keepExisting ? { keepIds } : {}),
         })
         applyRoomState(res.room)
+        if (res.keptIds?.length) applyKept(res.keptIds)
         if (res.message) ingest(res.message)
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to change the timer")
       }
     },
-    [session, applyRoomState, ingest],
+    [session, applyRoomState, applyKept, ingest],
   )
 
   const setTimerLocked = useCallback(

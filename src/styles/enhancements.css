@@ -475,3 +475,60 @@ button:focus-visible, a:focus-visible, summary:focus-visible, select:focus-visib
   user-select: all;
 }
 a.btn { text-decoration: none; }
+
+/* ---------- chat-wide timer chip (header) ---------- */
+.chat-timer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.chat-timer-chip.kept {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+}
+.msg .ttl.kept {
+  color: var(--ok);
+}
+
+/* ---------- "keep existing messages?" prompt (composer) ---------- */
+.keep-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+.keep-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* ---------- message-cap warning ---------- */
+.cap-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+.cap-banner > span {
+  flex: 1;
+  min-width: 0;
+}

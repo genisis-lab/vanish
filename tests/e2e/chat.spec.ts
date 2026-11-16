@@ -144,17 +144,31 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await expect(bob.getByRole("button", { name: "Play voice note" })).toBeVisible({ timeout: 20_000 })
 
   // Any member can change the chat-wide timer. Ember (not the owner) turns it
-  // off; Ash's timer updates live and a system line appears for both of them.
+  // off and keeps the messages already here; Ash's timer updates live, a
+  // system line appears for both, and the old messages stop counting down.
   const bobTimer = bob.getByLabel("Disappearing timer")
   const aliceTimer = alice.getByLabel("Disappearing timer")
   await expect(aliceTimer).toHaveValue(String(24 * 60 * 60 * 1000))
+  await expect(alice.locator(".chat-timer-chip")).toHaveText(/1d/)
+  const firstMessage = alice.locator(".msg", { hasText: PRIVATE_VALUES.message }).first()
+  await expect(firstMessage.getByLabel("Kept until deleted")).toHaveCount(0)
   await bobTimer.selectOption({ label: "Never" })
+  await expect(bob.getByText(/Also keep the \d+ messages? already here\?/)).toBeVisible()
+  await bob.screenshot({ path: "test-results/screens/keep-prompt.png" })
+  await bob.getByRole("button", { name: "Keep them too" }).click()
   await expect(aliceTimer).toHaveValue("0", { timeout: 10_000 })
-  await expect(alice.getByText(/turned off disappearing messages/)).toBeVisible({
-    timeout: 10_000,
-  })
+  await expect(
+    alice.getByText(/turned off disappearing messages and kept the ones already here/),
+  ).toBeVisible({ timeout: 10_000 })
   await expect(bob.getByText(/^You turned off disappearing messages/)).toBeVisible()
   await expect(bobTimer).toHaveValue("0")
+  await expect(alice.locator(".chat-timer-chip")).toHaveText(/Kept/)
+  await expect(firstMessage.getByLabel("Kept until deleted")).toBeVisible({ timeout: 10_000 })
+  await alice.screenshot({ path: "test-results/screens/kept-desktop.png" })
+  const desktop = alice.viewportSize()
+  await alice.setViewportSize({ width: 375, height: 812 })
+  await alice.screenshot({ path: "test-results/screens/kept-375.png" })
+  if (desktop) await alice.setViewportSize(desktop)
 
   // Mentions, formatting and links. Ember mentions Ash with a link; Ash sees the
   // mention highlighted and must confirm before the link opens.

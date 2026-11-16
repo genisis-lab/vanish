@@ -186,6 +186,23 @@ describe("RoomCore pruning + expiry + delete", () => {
     expect(plain.expiresAt).toBeNull()
   })
 
+  it("keeps the named messages, except read-once and deleted ones", async () => {
+    const { core, now } = await freshRoom({ ttlMs: 60_000 })
+    core.addMessage({ id: "a", participantId: "p1", envelope: "e", kind: "text" }, now)
+    core.addMessage({ id: "decoy", participantId: "p1", envelope: "e", kind: "text", ttlMs: 45_000 }, now)
+    core.addMessage({ id: "burn", participantId: "p1", envelope: "e", kind: "text", burn: true }, now)
+    core.addMessage({ id: "gone", participantId: "p1", envelope: "e", kind: "text" }, now)
+    core.deleteOwnMessage({ messageId: "gone", participantId: "p1" }, now)
+    const named = ["a", "burn", "gone", "missing"]
+    expect(core.canKeepAny(named)).toBe(true)
+    core.updateRoom({ ttlMs: NEVER_EXPIRE_TTL_MS })
+    expect(core.keepMessages(named)).toEqual(["a"])
+    expect(core.canKeepAny(named)).toBe(false)
+    const later = now + MAX_MESSAGE_TTL_MS + 1
+    expect(core.sweep(later).removedIds.sort()).toEqual(["burn", "decoy", "gone"])
+    expect(core.list(later).map((m) => m.id)).toEqual(["a"])
+  })
+
   it("still expires unopened read-once messages when the timer is Never", async () => {
     const { core, now } = await freshRoom({ ttlMs: NEVER_EXPIRE_TTL_MS, burn: true })
     const m = core.addMessage({ id: "m1", participantId: "p1", envelope: "e", kind: "text" }, now)

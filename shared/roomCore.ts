@@ -321,6 +321,33 @@ export class RoomCore {
     this.messages.delete(messageId)
   }
 
+  /**
+   * Stop the countdown on these messages, for "never, and keep what's here".
+   * The client names them (only messages it shows: hidden decoy traffic must
+   * keep expiring). Read-once messages keep their deadline so an unopened one
+   * can't linger, and deleted-message placeholders still expire. Returns the
+   * ids that changed.
+   */
+  keepMessages(ids: Iterable<string>): string[] {
+    const kept: string[] = []
+    for (const id of ids) {
+      const m = this.messages.get(id)
+      if (!m || !isKeepable(m)) continue
+      m.expiresAt = null
+      kept.push(id)
+    }
+    return kept
+  }
+
+  /** Whether keepMessages(ids) would change anything. */
+  canKeepAny(ids: Iterable<string>): boolean {
+    for (const id of ids) {
+      const m = this.messages.get(id)
+      if (m && isKeepable(m)) return true
+    }
+    return false
+  }
+
   hasMessage(messageId: string): boolean {
     return this.messages.has(messageId)
   }
@@ -566,6 +593,10 @@ export class RoomCore {
       timerLocked: !!this.room.timerLocked,
     }
   }
+}
+
+function isKeepable(m: StoredMessage): boolean {
+  return !m.burn && !m.deletedAt && m.expiresAt !== null
 }
 
 /** Ciphertext a message keeps in storage: its envelope plus reaction envelopes. */

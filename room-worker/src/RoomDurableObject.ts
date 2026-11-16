@@ -48,6 +48,7 @@ import {
   clampRoomLifetime,
   clampTtl,
   inviteExpiryToMs,
+  isNeverExpireTtl,
   isValidObjectKey,
   isValidProof,
   isValidRoomId,
@@ -579,9 +580,21 @@ export class RoomDurableObject {
     if (room.timerLocked && !(await this.verifyOwnerProof(req.ownerProof))) {
       return json({ error: "Only the room owner can change the timer" }, 403)
     }
+    if (
+      req.keepIds !== undefined &&
+      (!Array.isArray(req.keepIds) ||
+        req.keepIds.length > MAX_MESSAGES_PER_ROOM ||
+        !req.keepIds.every((id) => this.validId(id)))
+    ) {
+      return json({ error: "bad keepIds" }, 400)
+    }
     const ttlMs = clampTtl(req.ttlMs, room.defaultTtlMs)
-    // Picking the current value changes nothing, so it posts no notice either.
-    if (ttlMs === room.defaultTtlMs) return json({ room: this.core.publicState(now) })
+    // Keeping existing messages only makes sense with "never".
+    const keepIds = isNeverExpireTtl(ttlMs) ? (req.keepIds ?? []) : []
+    const keep = keepIds.length > 0 && this.core.canKeepAny(keepIds)
+    // Picking the current value changes nothing, so it posts no notice either
+    // (unless the chat is already "never" and they now ask to keep the rest).
+    if (ttlMs === room.defaultTtlMs && !keep) return json({ room: this.core.publicState(now) })
     if (notice && this.core.hasMessage(notice.id)) {
       return json({ error: "message already exists" }, 409)
     }
@@ -589,6 +602,7 @@ export class RoomDurableObject {
       return json({ error: "rate limited" }, 429)
     }
     this.core.updateRoom({ ttlMs })
+    const keptIds = keep ? this.core.keepMessages(keepIds) : []
     const message = notice
       ? this.core.addMessage(
           {
@@ -602,15 +616,23 @@ export class RoomDurableObject {
           now,
         )
       : undefined
+    await this.persist()
     const state = this.core.publicState(now)
     if (state) this.broadcast({ t: "room-updated", room: state })
+    if (keptIds.length) {
+      const kept: RealtimeFrame = { t: "kept", messageIds: keptIds }
+      this.broadcast(kept)
+      // Polling clients don't re-fetch messages they already have, so hand
+      // them the change through the signal buffer like typing/seen frames.
+      this.recordSignal(kept)
+    }
     if (message) {
       this.broadcast({ t: "message", message })
       await this.enforceMessageCap(now)
+      await this.persist()
     }
-    await this.persist()
     await this.scheduleSweep()
-    return json({ room: state, message })
+    return json({ room: state, message, keptIds })
   }
 
   // Owner-gated: pin a message or clear the pin. The envelope (message id and a

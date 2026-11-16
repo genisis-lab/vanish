@@ -32,7 +32,12 @@ interface ComposerProps {
   defaultTtlMs: number
   defaultBurn: boolean
   /** Change the chat-wide timer; resolves once the server has applied it. */
-  onChangeTimer: (ttlMs: number) => Promise<void>
+  onChangeTimer: (ttlMs: number, opts?: { keepExisting?: boolean }) => Promise<void>
+  /**
+   * Messages already in the chat that are still counting down (not read-once,
+   * not deleted). Switching to "Never" asks whether to keep these too.
+   */
+  keepableCount?: number
   /** The owner has locked the timer and this device isn't the owner. */
   timerLocked?: boolean
   onCancelUpload: (messageId: string) => void
@@ -97,6 +102,7 @@ export function Composer({
   defaultTtlMs,
   defaultBurn,
   onChangeTimer,
+  keepableCount = 0,
   timerLocked = false,
   onCancelUpload,
   replyTo,
@@ -110,6 +116,8 @@ export function Composer({
   const [files, setFiles] = useState<File[]>([])
   // Optimistic choice while the server applies it; cleared once it settles.
   const [pendingTtl, setPendingTtl] = useState<number | null>(null)
+  // Switching to "Never" with messages still counting down: ask about those.
+  const [askKeep, setAskKeep] = useState(false)
   const [burn, setBurn] = useState(defaultBurn)
   const [justSent, setJustSent] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -130,6 +138,7 @@ export function Composer({
   const discardRef = useRef(false)
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
   const effectiveTtl = pendingTtl ?? defaultTtlMs
+  const alreadyNever = isNeverExpireTtl(defaultTtlMs)
   // Read-once messages always expire; "Never" caps them at the longest timer.
   const burnLabel = formatTtlShort(
     isNeverExpireTtl(effectiveTtl) ? MAX_MESSAGE_TTL_MS : effectiveTtl,
@@ -319,6 +328,20 @@ export function Composer({
     stopRecording()
   }
 
+  function applyTimer(next: number, keepExisting: boolean) {
+    setAskKeep(false)
+    setPendingTtl(next)
+    const change = keepExisting ? onChangeTimer(next, { keepExisting: true }) : onChangeTimer(next)
+    void change.finally(() => {
+      if (mounted.current) setPendingTtl(null)
+    })
+  }
+
+  function cancelKeepPrompt() {
+    setAskKeep(false)
+    setPendingTtl(null)
+  }
+
   function submit() {
     if (busy || recording || startingRecording) return
     const t = readEditorText().trim()
@@ -498,6 +521,36 @@ export function Composer({
           {recordError}
         </p>
       )}
+      {askKeep && (
+        <div className="keep-prompt" role="group" aria-label="Keep existing messages">
+          <span>
+            {alreadyNever
+              ? `Keep the ${keepableCount} older ${keepableCount === 1 ? "message" : "messages"} that ${keepableCount === 1 ? "is" : "are"} still counting down?`
+              : `Stop disappearing messages. Also keep the ${keepableCount} ${keepableCount === 1 ? "message" : "messages"} already here?`}
+          </span>
+          <div className="keep-prompt-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => applyTimer(NEVER_EXPIRE_TTL_MS, true)}
+            >
+              {alreadyNever ? "Keep them" : "Keep them too"}
+            </button>
+            {!alreadyNever && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => applyTimer(NEVER_EXPIRE_TTL_MS, false)}
+              >
+                Only new messages
+              </button>
+            )}
+            <button type="button" className="btn btn-ghost" onClick={cancelKeepPrompt}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {voice && voiceUrl && (
         <div className="voice-preview">
           <span>Preview voice note</span>
@@ -601,14 +654,17 @@ export function Composer({
                 : "Disappearing timer for everyone in this chat"
             }
             value={String(effectiveTtl)}
-            disabled={pendingTtl !== null || timerLocked}
+            disabled={pendingTtl !== null || timerLocked || askKeep}
             onChange={(e) => {
               const next = Number(e.target.value)
+              if (isNeverExpireTtl(next) && keepableCount > 0) {
+                // Ask first; the select shows "Never" while the choice is open.
+                setPendingTtl(next)
+                setAskKeep(true)
+                return
+              }
               if (next === defaultTtlMs) return
-              setPendingTtl(next)
-              void onChangeTimer(next).finally(() => {
-                if (mounted.current) setPendingTtl(null)
-              })
+              applyTimer(next, false)
             }}
           >
             {timerOptions(defaultTtlMs).map((ms) => (
@@ -618,6 +674,16 @@ export function Composer({
             ))}
           </select>
         </label>
+        {isNeverExpireTtl(defaultTtlMs) && keepableCount > 0 && !timerLocked && !askKeep && (
+          <button
+            type="button"
+            className="chip-toggle"
+            onClick={() => setAskKeep(true)}
+            title="Some older messages are still counting down from before the timer was turned off"
+          >
+            Keep {keepableCount} older
+          </button>
+        )}
         <button
           type="button"
           className={`chip-toggle ${burn ? "on danger" : ""}`}
