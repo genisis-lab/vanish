@@ -3,6 +3,7 @@ import {
   ArrowDown,
   Ban,
   Bell,
+  CheckCheck,
   BellOff,
   BookmarkPlus,
   CheckSquare,
@@ -16,6 +17,7 @@ import {
   Flame,
   Ghost,
   Maximize2,
+  MessageSquareMore,
   Minimize2,
   Moon,
   MoreVertical,
@@ -323,7 +325,8 @@ export function ChatRoom({
 
   useEffect(() => {
     const scroller = scrollRef.current
-    if (!scroller || panel || viewer || readOnce) return
+    // With read receipts off, nothing tells the room what this device has read.
+    if (!scroller || panel || viewer || readOnce || !prefs.readReceipts) return
     const visible = new Set<string>()
     const eligible = new Set(
       room.messages
@@ -361,7 +364,7 @@ export function ChatRoom({
       window.removeEventListener("focus", flush)
       document.removeEventListener("visibilitychange", flush)
     }
-  }, [room.messages, room.markSeen, panel, viewer, readOnce])
+  }, [room.messages, room.markSeen, panel, viewer, readOnce, prefs.readReceipts])
 
   function onScroll() {
     const el = scrollRef.current
@@ -723,12 +726,14 @@ export function ChatRoom({
     !capWarningDismissed && room.messages.length >= Math.floor(MAX_MESSAGES_PER_ROOM * 0.9)
 
   const typingText = useMemo(() => {
+    // Like read receipts, typing is shared both ways or not at all.
+    if (!prefs.typingIndicator) return ""
     const names = room.typing.map((t) => t.username)
     if (names.length === 0) return ""
     if (names.length === 1) return `${names[0]} is typing…`
     if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
     return "Several people are typing…"
-  }, [room.typing])
+  }, [room.typing, prefs.typingIndicator])
 
   // Id of my most recent (non-deleted) message — the only one we annotate with
   // per-person read receipts, to avoid cluttering every bubble.
@@ -987,9 +992,10 @@ export function ChatRoom({
               !prev ||
               prev.participantId !== m.participantId ||
               prev.kind === "system"
-            const seen = (room.readByMessage[m.id]?.length ?? 0) > 0
+            // With read receipts off, I don't see others' either.
+            const seen = prefs.readReceipts && (room.readByMessage[m.id]?.length ?? 0) > 0
             const seenByNames =
-              m.id === lastMineId
+              prefs.readReceipts && m.id === lastMineId
                 ? (room.readByMessage[m.id] ?? [])
                     .filter((pid) => pid !== session.participantId)
                     .map((pid) => room.names[pid] || "someone")
@@ -1084,7 +1090,7 @@ export function ChatRoom({
         onCancelReply={() => setReplyTo(null)}
         onSend={sendText}
         onSendMedia={sendMedia}
-        onTyping={room.notifyTyping}
+        onTyping={prefs.typingIndicator ? room.notifyTyping : noop}
         editing={editing ? { id: editing.id, text: editing.text ?? "" } : null}
         onSaveEdit={saveEdit}
         onCancelEdit={() => setEditing(null)}
@@ -1174,6 +1180,26 @@ export function ChatRoom({
               {privacy ? <Eye size={18} /> : <EyeOff size={18} />} Privacy blur:{" "}
               {privacy ? "on" : "off"}
             </button>
+            <button
+              className="btn"
+              aria-pressed={prefs.readReceipts}
+              onClick={prefs.toggleReadReceipts}
+            >
+              <CheckCheck size={18} /> Read receipts: {prefs.readReceipts ? "on" : "off"}
+            </button>
+            <button
+              className="btn"
+              aria-pressed={prefs.typingIndicator}
+              onClick={prefs.toggleTypingIndicator}
+            >
+              <MessageSquareMore size={18} /> Typing indicator:{" "}
+              {prefs.typingIndicator ? "on" : "off"}
+            </button>
+            <p className="hint">
+              Turning these off on this device means nobody sees when you’ve read their messages
+              or are typing, and you don’t see theirs either. Read-once messages still disappear
+              once you open them.
+            </p>
             <button className="btn" aria-pressed={notifOn} onClick={toggleNotifications}>
               {notifOn ? <Bell size={18} /> : <BellOff size={18} />}{" "}
               {notifOn ? "Turn notifications off" : "Enable notifications"}
@@ -1192,7 +1218,7 @@ export function ChatRoom({
         >
           <div className="stack">
             <button className="btn btn-block" onClick={() => setPanel("settings")}>
-              Appearance & notifications
+              Appearance, privacy & notifications
             </button>
             <button className="btn btn-block" onClick={changeNickname}>
               <Pencil size={16} /> Change your nickname
@@ -1491,6 +1517,8 @@ function RoomTimer({ destroyAt }: { destroyAt: number | null }) {
     </span>
   )
 }
+
+function noop() {}
 
 function playChime() {
   try {

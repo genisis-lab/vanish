@@ -73,7 +73,9 @@ see [Staying safe and verifying who you're talking to](SAFETY-AND-IDENTITY.md).
 - **Edit & delete your own messages** — revise or retract anything you sent; edits and
   tombstones propagate in realtime and are enforced server-side by per-sender proof.
 - **Read receipts & presence** — per-person “seen” markers, live typing indicators, and
-  participant counts over WebSockets, with an automatic polling fallback.
+  participant counts over WebSockets, with an automatic polling fallback. Each device can turn
+  read receipts and the typing indicator off (Room actions → Appearance, privacy &
+  notifications). Turning one off also hides other people's.
 - **Room owner controls** — the room creator holds a device-only owner secret (the server keeps
   only its hash) that gates moderation: set an **encrypted room topic/name**, view the
   **member list**, **ban/unban** participants, **pin a message** for everyone, **lock the

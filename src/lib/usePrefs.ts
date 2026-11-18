@@ -7,6 +7,8 @@ const THEME_KEY = "vanish.theme"
 const COMPACT_KEY = "vanish.compact"
 const SOUND_KEY = "vanish.sound"
 const FONT_KEY = "vanish.fontscale"
+const RECEIPTS_KEY = "vanish.readReceipts"
+const TYPING_KEY = "vanish.typingIndicator"
 
 export interface Prefs {
   theme: Theme
@@ -17,6 +19,12 @@ export interface Prefs {
   toggleSound: () => void
   fontScale: FontScale
   cycleFontScale: () => void
+  /** Tell others when I've read their messages (and see when they've read mine). */
+  readReceipts: boolean
+  toggleReadReceipts: () => void
+  /** Tell others when I'm typing (and see when they are). */
+  typingIndicator: boolean
+  toggleTypingIndicator: () => void
 }
 
 function initialTheme(): Theme {
@@ -36,6 +44,12 @@ export function usePrefs(): Prefs {
   const [compact, setCompact] = useState<boolean>(() => localStorage.getItem(COMPACT_KEY) === "1")
   const [sound, setSound] = useState<boolean>(() => localStorage.getItem(SOUND_KEY) !== "0")
   const [fontScale, setFontScale] = useState<FontScale>(initialFontScale)
+  const [readReceipts, setReadReceipts] = useState<boolean>(
+    () => localStorage.getItem(RECEIPTS_KEY) !== "0",
+  )
+  const [typingIndicator, setTypingIndicator] = useState<boolean>(
+    () => localStorage.getItem(TYPING_KEY) !== "0",
+  )
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -54,6 +68,14 @@ export function usePrefs(): Prefs {
     localStorage.setItem(FONT_KEY, fontScale)
   }, [fontScale])
 
+  useEffect(() => {
+    localStorage.setItem(RECEIPTS_KEY, readReceipts ? "1" : "0")
+  }, [readReceipts])
+
+  useEffect(() => {
+    localStorage.setItem(TYPING_KEY, typingIndicator ? "1" : "0")
+  }, [typingIndicator])
+
   const toggleTheme = useCallback(() => setTheme((t) => (t === "dark" ? "light" : "dark")), [])
   const toggleCompact = useCallback(() => setCompact((c) => !c), [])
   const toggleSound = useCallback(() => setSound((v) => !v), [])
@@ -61,6 +83,8 @@ export function usePrefs(): Prefs {
     () => setFontScale((f) => (f === "sm" ? "md" : f === "md" ? "lg" : "sm")),
     [],
   )
+  const toggleReadReceipts = useCallback(() => setReadReceipts((v) => !v), [])
+  const toggleTypingIndicator = useCallback(() => setTypingIndicator((v) => !v), [])
 
   return {
     theme,
@@ -71,5 +95,9 @@ export function usePrefs(): Prefs {
     toggleSound,
     fontScale,
     cycleFontScale,
+    readReceipts,
+    toggleReadReceipts,
+    typingIndicator,
+    toggleTypingIndicator,
   }
 }
