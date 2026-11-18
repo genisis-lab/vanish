@@ -5,8 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { decryptString, encryptString } from "@shared/crypto"
 import type { AbuseReportCategory, PublicRoomState, StoredMessage } from "@shared/types"
 import { isNeverExpireTtl, messageExpiresAt, shorterTtl } from "@shared/constants"
-import { api, ApiError } from "./api"
-import { Realtime, type ConnState } from "./realtime"
+import { api, ApiError, isBannedError } from "./api"
+import { Realtime, RESUME_RECONNECT_MS, type ConnState } from "./realtime"
+import { MessageStore } from "./messageStore"
 import { aad, type RoomSession } from "./session"
 import { randomId } from "./clientCrypto"
 import {
@@ -79,26 +80,29 @@ export interface RoomController {
   sendMedia: (files: File[], caption: string, opts?: SendOpts) => Promise<void>
   cancelUpload: (messageId: string) => void
   retrySend: (id: string) => Promise<void>
-  editMessage: (id: string, text: string) => Promise<void>
-  deleteMessage: (id: string) => Promise<void>
+  /** Resolves true once the server has the edit. */
+  editMessage: (id: string, text: string) => Promise<boolean>
+  /** Resolves true once the message is deleted for everyone. */
+  deleteMessage: (id: string) => Promise<boolean>
   reportMessage: (id: string, category: AbuseReportCategory) => Promise<void>
   markSeen: (messageIds: string[]) => void
   toggleReaction: (messageId: string, emoji: string) => Promise<void>
   prune: (ids: string[]) => Promise<void>
-  pruneAll: () => Promise<void>
+  /** Owner-only: remove every message for everyone. Resolves true on success. */
+  pruneAll: () => Promise<boolean>
   wipeLocal: () => void
   deleteRoom: () => Promise<void>
   notifyTyping: () => void
   rename: (name: string) => void
-  /** Owner-only: set (or clear, with "") the encrypted room topic. */
-  setTopic: (topic: string) => Promise<void>
+  /** Owner-only: set (or clear, with "") the encrypted room topic. Resolves true on success. */
+  setTopic: (topic: string) => Promise<boolean>
   /** Any member (owner only while locked): change the timer for everyone. */
   /** keepIds: with "never", also stop the countdown on these shown messages. */
   setMessageTimer: (ttlMs: number, opts?: { keepIds?: string[] }) => Promise<void>
   /** Owner-only: let only the owner change the timer (true) or anyone (false). */
-  setTimerLocked: (locked: boolean) => Promise<void>
-  /** Owner-only: pin a message for everyone, or clear the pin with null. */
-  setPinned: (msg: DecryptedMessage | null) => Promise<void>
+  setTimerLocked: (locked: boolean) => Promise<boolean>
+  /** Owner-only: pin a message for everyone, or clear the pin with null. Resolves true on success. */
+  setPinned: (msg: DecryptedMessage | null) => Promise<boolean>
   /** Owner-only: ban a participant by id (server-enforced). */
   banMember: (participantId: string) => Promise<void>
   /** Owner-only: lift a ban. */
@@ -106,6 +110,11 @@ export interface RoomController {
   /** Toggle cover-traffic emission on/off. */
   toggleDecoy: () => void
 }
+
+// Shown while the first load keeps failing; cleared once it succeeds.
+const LOAD_ERROR = "Couldn\u2019t load messages. Retrying\u2026"
+// Back on the tab after at least this long: check for anything missed.
+const RESUME_SYNC_MS = 5_000
 
 function participantAuth(session: RoomSession) {
   return {
@@ -152,14 +161,20 @@ export function useRoom(session: RoomSession): RoomController {
   // secret on every owner action, so this only governs which controls we show.
   const isOwner = !!session.ownerSecret
 
-  const storedById = useRef(new Map<string, StoredMessage>())
+  // Encrypted messages as the server sent them. Merges out-of-order answers
+  // (see messageStore.ts) so a stale sync can't undo or resurrect anything.
+  const store = useRef(new MessageStore())
+  // True once the first sync has loaded the history (no alerts for that one).
+  const loadedRef = useRef(false)
+  // An error from opening the room, cleared once the history loads after all.
+  const bootErrorRef = useRef<string | null>(null)
   // Cache of already-decrypted messages keyed by id. Avoids re-running AES-GCM
   // over the entire history on every send/receive (the old hot path that made
   // sending feel slow as the room grew). A cache entry is reused only while the
   // underlying stored object is unchanged (reactions create a new object).
   const decodeCache = useRef(new Map<string, { src: StoredMessage; out: DecryptedMessage }>())
   // Optimistic, not-yet-acknowledged outgoing messages. Removed once the server
-  // echoes the same id back into storedById.
+  // echoes the same id back into the store.
   const pendingById = useRef(new Map<string, DecryptedMessage>())
   // Original File objects for in-flight/failed media sends, keyed by message id,
   // so a failed upload can be retried in place (same id, no duplicate).
@@ -179,7 +194,6 @@ export function useRoom(session: RoomSession): RoomController {
   // Latest participantId -> name map, readable from realtime callbacks.
   const namesRef = useRef<Record<string, string>>({})
   const rt = useRef<Realtime | null>(null)
-  const sinceRef = useRef(0)
   const lastTypingSent = useRef(0)
   const uploadControllers = useRef(new Map<string, AbortController>())
   const cancelUpload = useCallback((id: string) => uploadControllers.current.get(id)?.abort(), [])
@@ -195,7 +209,7 @@ export function useRoom(session: RoomSession): RoomController {
   const [readByMessage, setReadByMessage] = useState<Record<string, string[]>>({})
 
   const recompute = useCallback(async () => {
-    const all = Array.from(storedById.current.values()).sort((a, b) => a.createdAt - b.createdAt)
+    const all = Array.from(store.current.values()).sort((a, b) => a.createdAt - b.createdAt)
     const liveIds = new Set<string>()
     const decoded = await Promise.all(
       all.map(async (m) => {
@@ -212,10 +226,10 @@ export function useRoom(session: RoomSession): RoomController {
       if (!liveIds.has(key)) decodeCache.current.delete(key)
     }
     for (const id of Array.from(pendingById.current.keys())) {
-      if (storedById.current.has(id)) pendingById.current.delete(id)
+      if (store.current.has(id)) pendingById.current.delete(id)
     }
     for (const id of Array.from(pendingMediaById.current.keys())) {
-      if (storedById.current.has(id)) pendingMediaById.current.delete(id)
+      if (store.current.has(id)) pendingMediaById.current.delete(id)
     }
     const pending = Array.from(pendingById.current.values())
     const merged = [...decoded, ...pending, ...noticesRef.current].sort(
@@ -264,12 +278,6 @@ export function useRoom(session: RoomSession): RoomController {
     for (const [pid, nm] of nameOverrides.current) nameMap[pid] = nm
     namesRef.current = nameMap
     setNames(nameMap)
-    // Newest server time seen, counting changes, so a poll returns each
-    // update once instead of re-sending it until a newer message arrives.
-    sinceRef.current = all.reduce(
-      (mx, m) => Math.max(mx, m.createdAt, m.updatedAt ?? 0),
-      sinceRef.current,
-    )
   }, [session])
 
   const pushNotice = useCallback(
@@ -337,22 +345,25 @@ export function useRoom(session: RoomSession): RoomController {
     [pushNotice, session.participantId],
   )
 
+  // The server's reply to one of our own writes. It never moves the sync
+  // cursor (that lives in Realtime): a message someone else sent just before
+  // ours must still be fetched by the next sync.
   const ingest = useCallback(
-    (stored: StoredMessage, recomputeNow = true) => {
-      storedById.current.set(stored.id, stored)
-      if (recomputeNow) void recompute()
+    (stored: StoredMessage) => {
+      store.current.accept(stored)
+      // Drop the optimistic copy even if the store ignored the reply (the
+      // message may already be gone, e.g. opened once or pruned).
+      pendingById.current.delete(stored.id)
+      void recompute()
     },
     [recompute],
   )
 
   // In-place envelope swap, reaction change or tombstone from a peer (or our
-  // own echo). Update the stored record, drop its decode cache, and recompute
-  // without notifying or reordering.
+  // own echo). Recompute without notifying or reordering.
   const applyUpdate = useCallback(
     (m: StoredMessage) => {
-      storedById.current.set(m.id, m)
-      decodeCache.current.delete(m.id)
-      void recompute()
+      if (store.current.accept(m)) void recompute()
     },
     [recompute],
   )
@@ -363,10 +374,10 @@ export function useRoom(session: RoomSession): RoomController {
     (ids: string[]) => {
       let changed = false
       for (const id of ids) {
-        const stored = storedById.current.get(id)
+        const stored = store.current.get(id)
         if (!stored || stored.expiresAt === null) continue
         const next = { ...stored, expiresAt: null }
-        storedById.current.set(id, next)
+        store.current.patch(next)
         const cached = decodeCache.current.get(id)
         if (cached && cached.src === stored) {
           decodeCache.current.set(id, { src: next, out: { ...cached.out, expiresAt: null } })
@@ -435,76 +446,59 @@ export function useRoom(session: RoomSession): RoomController {
         announcing = false
       }
     }
-    async function boot() {
-      try {
-        await api.session({
-          roomId: session.invite.roomId,
-          accessProof: session.keys.accessProof,
-          ...participantAuth(session),
-        })
-        if (cancelled) return
-        void announceJoin()
-        const res = await api.listMessages({
-          roomId: session.invite.roomId,
-          accessProof: session.keys.accessProof,
-          ...participantAuth(session),
-        })
-        if (cancelled) return
-        for (const m of res.messages) storedById.current.set(m.id, m)
-        applyRoomState(res.room)
-        applyPresence(res.room.participantCount)
-        await recompute()
-      } catch (e) {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : "Failed to load room")
-      }
-    }
-    void boot()
-
-    // Arm a gesture-backed permission prompt so message notifications can be
-    // enabled (browsers only prompt from a user gesture). No-op once decided.
-    ensureNotificationPrompt()
-
-    // If notifications are already enabled on this device, (re)register a Web
-    // Push subscription so messages can wake the app even when it's fully closed.
-    if (notificationsEnabled()) void subscribePush(session)
-
     const realtime = new Realtime(session, {
       onMessage: (m) => {
-        // Polling returns messages that changed since the last poll as well as
-        // new ones. One we already hold is an update (edit, reaction, delete,
-        // kept): apply it like an edit frame, without notifying again.
-        if (storedById.current.has(m.id)) {
-          applyUpdate(m)
-          return
-        }
-        maybeNotify(m)
-        ingest(m)
+        const result = store.current.accept(m)
+        if (!result) return
+        if (result === "added") maybeNotify(m)
+        void recompute()
       },
       onEdit: (m) => applyUpdate(m),
       onPrune: (ids, all) => {
-        if (all) storedById.current.clear()
-        else for (const id of ids) storedById.current.delete(id)
+        if (all) store.current.removeAll()
+        // Remember each id, held or not, so an older sync can't bring it back.
+        for (const id of ids) store.current.remove(id)
         void recompute()
       },
-      onSnapshot: (ids) => {
-        const current = new Set(ids)
-        let changed = false
-        for (const id of storedById.current.keys()) {
-          if (!current.has(id)) {
-            storedById.current.delete(id)
-            changed = true
-          }
+      onSync: ({ messages, currentMessageIds, serverTime }) => {
+        const firstLoad = !loadedRef.current
+        let changed = firstLoad
+        for (const m of messages) {
+          const result = store.current.accept(m)
+          if (!result) continue
+          changed = true
+          // No alerts for the history that loads when the room opens.
+          if (result === "added" && !firstLoad) maybeNotify(m)
+        }
+        let missingFrom: number | null = null
+        if (currentMessageIds) {
+          const reconciled = store.current.reconcile(currentMessageIds, serverTime)
+          if (reconciled.removedIds.length) changed = true
+          missingFrom = reconciled.missingFrom
+        }
+        if (firstLoad) {
+          loadedRef.current = true
+          const bootError = bootErrorRef.current
+          setError((e) => (e === LOAD_ERROR || (e !== null && e === bootError) ? null : e))
         }
         if (changed) void recompute()
+        return missingFrom
+      },
+      onSyncError: (e) => {
+        if (isBannedError(e)) {
+          setBannedSelf(true)
+          rt.current?.stop()
+        } else if (!loadedRef.current) {
+          setError(LOAD_ERROR)
+        }
       },
       onReact: (f) => {
-        const stored = storedById.current.get(f.messageId)
+        const stored = store.current.get(f.messageId)
         if (!stored) return
         const reactions = { ...(stored.reactions || {}) }
         if (f.envelope === null) delete reactions[f.reactionId]
         else reactions[f.reactionId] = { participantId: f.participantId, envelope: f.envelope }
-        storedById.current.set(f.messageId, { ...stored, reactions })
-
+        store.current.patch({ ...stored, reactions })
         void recompute()
       },
       onPresence: (count, left) => applyPresence(count, left),
@@ -554,7 +548,7 @@ export function useRoom(session: RoomSession): RoomController {
         setReadByMessage((prev) => {
           const next = { ...prev }
           for (const id of messageIds) {
-            if (storedById.current.has(id))
+            if (store.current.has(id))
               next[id] = [...new Set([...(prev[id] ?? []), participantId])]
           }
           return next
@@ -568,16 +562,69 @@ export function useRoom(session: RoomSession): RoomController {
           setBannedSelf(true)
           rt.current?.stop()
         } else {
+          const name = nameOverrides.current.get(participantId) || namesRef.current[participantId]
           nameOverrides.current.delete(participantId)
-          pushNotice("A participant was removed by the room owner")
+          pushNotice(
+            name
+              ? `${name} was removed by the room owner`
+              : "A participant was removed by the room owner",
+          )
         }
       },
       onRoomDeleted: () => setDeleted(true),
       onState: setConnState,
-      getSince: () => sinceRef.current,
     })
     rt.current = realtime
-    realtime.start()
+
+    // Register this device in the room first: the socket and the list both
+    // check the participant proof, so a first visit would otherwise be refused.
+    async function boot() {
+      try {
+        await api.session({
+          roomId: session.invite.roomId,
+          accessProof: session.keys.accessProof,
+          ...participantAuth(session),
+        })
+        if (cancelled) return
+        void announceJoin()
+      } catch (e) {
+        if (cancelled) return
+        if (isBannedError(e)) {
+          setBannedSelf(true)
+          return
+        }
+        // Start anyway: polling and the heartbeat recover once the network does.
+        const message = e instanceof ApiError ? e.message : "Failed to load room"
+        bootErrorRef.current = message
+        setError(message)
+      }
+      realtime.start()
+    }
+    void boot()
+
+    // Arm a gesture-backed permission prompt so message notifications can be
+    // enabled (browsers only prompt from a user gesture). No-op once decided.
+    ensureNotificationPrompt()
+
+    // If notifications are already enabled on this device, (re)register a Web
+    // Push subscription so messages can wake the app even when it's fully closed.
+    if (notificationsEnabled()) void subscribePush(session)
+
+    // Coming back to the tab or the network: catch up on anything missed, and
+    // replace a socket that may have died while the app was in the background.
+    let hiddenAt: number | null = null
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now()
+        return
+      }
+      const away = hiddenAt === null ? 0 : Date.now() - hiddenAt
+      hiddenAt = null
+      if (away >= RESUME_SYNC_MS) realtime.resume(away)
+    }
+    const onOnline = () => realtime.resume(RESUME_RECONNECT_MS)
+    document.addEventListener("visibilitychange", onVisibility)
+    window.addEventListener("online", onOnline)
 
     // Keep our presence fresh so the participant count (and join/leave notices)
     // stay accurate even when we are on the polling fallback. The server only
@@ -601,6 +648,8 @@ export function useRoom(session: RoomSession): RoomController {
       cancelled = true
       clearInterval(heartbeat)
       clearInterval(typingGc)
+      document.removeEventListener("visibilitychange", onVisibility)
+      window.removeEventListener("online", onOnline)
       realtime.stop()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -886,22 +935,23 @@ export function useRoom(session: RoomSession): RoomController {
   // text into a fresh envelope, optimistically swaps it locally, then asks the
   // server to relay the edit to everyone. Preserves any reply reference.
   const editMessage = useCallback(
-    async (id: string, newText: string) => {
+    async (id: string, newText: string): Promise<boolean> => {
       const trimmed = newText.trim()
-      if (!trimmed) return
-      const stored = storedById.current.get(id)
-      if (!stored || stored.participantId !== session.participantId) return
-      if (stored.kind !== "text" && stored.kind !== "media") return
+      if (!trimmed) return false
+      const stored = store.current.get(id)
+      if (!stored || stored.participantId !== session.participantId) return false
+      if (stored.kind !== "text" && stored.kind !== "media") return false
       const cached = decodeCache.current.get(id)?.out
       const replyTo = cached?.replyTo
+      let optimistic: StoredMessage | null = null
       try {
         const editedAt = Date.now()
         const envelope =
           stored.kind === "media"
             ? await encodeMedia(session, id, trimmed, cached?.items ?? [], replyTo)
             : await encodeText(session, id, trimmed, replyTo)
-        storedById.current.set(id, { ...stored, envelope, editedAt })
-        decodeCache.current.delete(id)
+        optimistic = { ...stored, envelope, editedAt }
+        store.current.patch(optimistic)
         void recompute()
         const res = await api.editMessage({
           roomId: session.invite.roomId,
@@ -913,8 +963,15 @@ export function useRoom(session: RoomSession): RoomController {
           kind: stored.kind,
         })
         ingest(res.message)
+        return true
       } catch (e) {
+        // Show the text everyone else still sees, not an edit that never landed.
+        if (optimistic && store.current.get(id) === optimistic) {
+          store.current.restore(stored)
+          void recompute()
+        }
         setError(e instanceof ApiError ? e.message : "Failed to edit message")
+        return false
       }
     },
     [session, ingest, recompute],
@@ -924,15 +981,15 @@ export function useRoom(session: RoomSession): RoomController {
   // message is just dropped locally; an acked one becomes a tombstone both
   // locally and on the server (which also frees any backing media bytes).
   const deleteMessage = useCallback(
-    async (id: string) => {
-      if (pendingById.current.has(id) && !storedById.current.has(id)) {
+    async (id: string): Promise<boolean> => {
+      if (pendingById.current.has(id) && !store.current.has(id)) {
         pendingById.current.delete(id)
         pendingMediaById.current.delete(id)
         void recompute()
-        return
+        return true
       }
-      const stored = storedById.current.get(id)
-      if (!stored || stored.participantId !== session.participantId) return
+      const stored = store.current.get(id)
+      if (!stored || stored.participantId !== session.participantId) return false
       const tomb: StoredMessage = {
         ...stored,
         envelope: "",
@@ -940,8 +997,7 @@ export function useRoom(session: RoomSession): RoomController {
         reactions: undefined,
         deletedAt: Date.now(),
       }
-      storedById.current.set(id, tomb)
-      decodeCache.current.delete(id)
+      store.current.patch(tomb)
       void recompute()
       try {
         const res = await api.deleteOwnMessage({
@@ -952,8 +1008,15 @@ export function useRoom(session: RoomSession): RoomController {
           participantId: session.participantId,
         })
         ingest(res.message)
+        return true
       } catch (e) {
+        // Still there for everyone else, so bring it back here too.
+        if (store.current.get(id) === tomb) {
+          store.current.restore(stored)
+          void recompute()
+        }
         setError(e instanceof ApiError ? e.message : "Failed to delete message")
+        return false
       }
     },
     [session, ingest, recompute],
@@ -987,9 +1050,8 @@ export function useRoom(session: RoomSession): RoomController {
 
   const toggleReaction = useCallback(
     async (messageId: string, emoji: string) => {
-      const stored = storedById.current.get(messageId)
       const rid = await makeReactionId(session, emoji)
-      const already = stored?.reactions?.[rid]
+      const already = store.current.get(messageId)?.reactions?.[rid]
       try {
         const envelope = already ? null : await encodeReaction(session, emoji)
         await api.react({
@@ -1001,11 +1063,13 @@ export function useRoom(session: RoomSession): RoomController {
           participantId: session.participantId,
           envelope,
         })
-        if (stored) {
+        // Re-read: an edit or another reaction may have landed meanwhile.
+        const stored = store.current.get(messageId)
+        if (stored && !stored.deletedAt) {
           const reactions = { ...(stored.reactions || {}) }
           if (envelope === null) delete reactions[rid]
           else reactions[rid] = { participantId: session.participantId, envelope }
-          storedById.current.set(messageId, { ...stored, reactions })
+          store.current.patch({ ...stored, reactions })
           void recompute()
         }
       } catch (e) {
@@ -1025,7 +1089,7 @@ export function useRoom(session: RoomSession): RoomController {
           ...participantAuth(session),
           messageIds: ids,
         })
-        for (const id of res.removedIds) storedById.current.delete(id)
+        for (const id of res.removedIds) store.current.remove(id)
         void recompute()
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to prune")
@@ -1034,10 +1098,10 @@ export function useRoom(session: RoomSession): RoomController {
     [session, recompute],
   )
 
-  const pruneAll = useCallback(async () => {
+  const pruneAll = useCallback(async (): Promise<boolean> => {
     if (!session.ownerSecret) {
       setError("Only the room owner can clear the whole room")
-      return
+      return false
     }
     try {
       const res = await api.prune({
@@ -1046,15 +1110,17 @@ export function useRoom(session: RoomSession): RoomController {
         ownerProof: session.ownerSecret,
         all: true,
       })
-      for (const id of res.removedIds) storedById.current.delete(id)
+      for (const id of res.removedIds) store.current.remove(id)
       void recompute()
+      return true
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Failed to prune")
+      setError(e instanceof ApiError ? e.message : "Failed to clear the chat")
+      return false
     }
   }, [session, recompute])
 
   const wipeLocal = useCallback(() => {
-    storedById.current.clear()
+    store.current.clear()
     pendingById.current.clear()
     pendingMediaById.current.clear()
     decodeCache.current.clear()
@@ -1082,8 +1148,8 @@ export function useRoom(session: RoomSession): RoomController {
   // never leaves the device unencrypted; the server stores only the opaque
   // envelope and rebroadcasts the new room state to everyone.
   const updateTopic = useCallback(
-    async (newTopic: string) => {
-      if (!session.ownerSecret) return
+    async (newTopic: string): Promise<boolean> => {
+      if (!session.ownerSecret) return false
       try {
         const trimmed = newTopic.trim().slice(0, 200)
         const topicEnvelope = trimmed ? await encodeTopic(session, trimmed) : null
@@ -1094,8 +1160,10 @@ export function useRoom(session: RoomSession): RoomController {
           topicEnvelope,
         })
         applyRoomState(res.room)
+        return true
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to update topic")
+        return false
       }
     },
     [session, applyRoomState],
@@ -1137,8 +1205,8 @@ export function useRoom(session: RoomSession): RoomController {
   )
 
   const setTimerLocked = useCallback(
-    async (locked: boolean) => {
-      if (!session.ownerSecret) return
+    async (locked: boolean): Promise<boolean> => {
+      if (!session.ownerSecret) return false
       try {
         const res = await api.updateInvite({
           roomId: session.invite.roomId,
@@ -1147,8 +1215,10 @@ export function useRoom(session: RoomSession): RoomController {
           lockTimer: locked,
         })
         applyRoomState(res.room)
+        return true
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to update the timer setting")
+        return false
       }
     },
     [session, applyRoomState],
@@ -1157,8 +1227,8 @@ export function useRoom(session: RoomSession): RoomController {
   // Owner-only: the pin (message id + short preview) is encrypted here; the
   // server stores the opaque envelope and rebroadcasts the room state.
   const setPinned = useCallback(
-    async (msg: DecryptedMessage | null) => {
-      if (!session.ownerSecret) return
+    async (msg: DecryptedMessage | null): Promise<boolean> => {
+      if (!session.ownerSecret) return false
       try {
         const preview =
           msg?.text && !msg.text.startsWith("\u26a0")
@@ -1176,8 +1246,10 @@ export function useRoom(session: RoomSession): RoomController {
           pinEnvelope,
         })
         applyRoomState(res.room)
+        return true
       } catch (e) {
         setError(e instanceof ApiError ? e.message : "Failed to update the pinned message")
+        return false
       }
     },
     [session, applyRoomState],
@@ -1198,7 +1270,7 @@ export function useRoom(session: RoomSession): RoomController {
         })
         if (res.room) applyRoomState(res.room)
         if (res.removedIds && res.removedIds.length > 0) {
-          for (const rid of res.removedIds) storedById.current.delete(rid)
+          for (const rid of res.removedIds) store.current.remove(rid)
           void recompute()
         }
       } catch (e) {
