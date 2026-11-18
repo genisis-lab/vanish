@@ -942,6 +942,8 @@ export function useRoom(session: RoomSession): RoomController {
       if (!stored || stored.participantId !== session.participantId) return false
       if (stored.kind !== "text" && stored.kind !== "media") return false
       const cached = decodeCache.current.get(id)?.out
+      // A caption edit re-sends the attachment list; without it, the edit would drop them.
+      if (stored.kind === "media" && !cached?.items?.length) return false
       const replyTo = cached?.replyTo
       let optimistic: StoredMessage | null = null
       try {

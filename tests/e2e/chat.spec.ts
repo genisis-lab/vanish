@@ -196,6 +196,28 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await alice.getByRole("button", { name: "Cancel" }).click()
   expect(ctx.pages()).toHaveLength(2)
 
+  // Ember edits that message in the composer (Up arrow), and Ash sees the edit.
+  await bob.getByRole("textbox", { name: "Encrypted message" }).click()
+  await bob.keyboard.press("ArrowUp")
+  await expect(bob.locator(".edit-bar")).toBeVisible()
+  await bob.keyboard.type(" please")
+  await bob.keyboard.press("Enter")
+  await expect(mention).toContainText("please", { timeout: 10_000 })
+  await expect(mention.locator(".edited-tag")).toBeVisible()
+
+  // Ember deletes a message after confirming in a sheet; Ash sees it go.
+  await bob.getByRole("textbox", { name: "Encrypted message" }).fill("sent by mistake")
+  await bob.keyboard.press("Enter")
+  await expect(alice.getByText("sent by mistake")).toBeVisible()
+  const mistake = bob.locator(".msg.mine", { hasText: "sent by mistake" })
+  await mistake.hover()
+  await mistake.getByRole("button", { name: "Delete message" }).click()
+  await bob
+    .getByRole("dialog", { name: "Delete this message?" })
+    .getByRole("button", { name: "Delete for everyone" })
+    .click()
+  await expect(alice.getByText("sent by mistake")).toHaveCount(0, { timeout: 10_000 })
+
   // Ash (the owner) pins Ember's message; Ember sees the pinned banner.
   await mention.hover()
   await mention.getByRole("button", { name: "Pin message" }).click()
@@ -207,9 +229,10 @@ test("two anonymous users chat, share media, prune, and delete", async ({ browse
   await alice.keyboard.press("Escape")
   await expect(bobTimer).toBeDisabled({ timeout: 10_000 })
 
-  // Prune all visible messages from Ash's side.
+  // Ash clears every message, after confirming.
   await alice.getByRole("button", { name: "Room actions" }).click()
-  await alice.getByRole("button", { name: /clear all visible/i }).click()
+  await alice.getByRole("button", { name: /clear all messages/i }).click()
+  await alice.getByRole("button", { name: "Clear for everyone" }).click()
   await expect(alice.getByText(PRIVATE_VALUES.message)).toHaveCount(0)
   await expect(bob.getByText(PRIVATE_VALUES.message)).toHaveCount(0, { timeout: 10_000 })
 

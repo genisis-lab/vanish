@@ -12,6 +12,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  Flag,
   Flame,
   Ghost,
   Maximize2,
@@ -42,25 +43,26 @@ import {
 } from "lucide-react"
 import type { RoomSession } from "../lib/session"
 import type { Prefs } from "../lib/usePrefs"
-import { useRoom } from "../lib/useRoom"
+import { useRoom, type SendOpts } from "../lib/useRoom"
 import type { DecryptedMessage, ReplyRef } from "../lib/messages"
 import type { AbuseReportCategory } from "@shared/types"
 import type { MediaManifestItem } from "../lib/media"
 import { revokeAllObjectUrls } from "../lib/media"
-import { formatCountdown } from "../lib/format"
+import { dayKey, formatDay } from "../lib/format"
+import { useCountdown } from "../lib/useCountdown"
 import { formatTtlShort, isNeverExpireTtl, MAX_MESSAGES_PER_ROOM } from "@shared/constants"
 import { vault } from "../lib/vault"
 import { enableNotifications, notificationsEnabled, setNotificationsEnabled } from "../lib/notify"
 import { subscribePush, unsubscribePush } from "../lib/push"
-import { IconButton, Sheet, useToast } from "./ui"
-import { MessageItem } from "./MessageItem"
+import { ConfirmSheet, IconButton, PromptSheet, Sheet, useToast } from "./ui"
+import { canEditMessage, copyableText, MessageItem } from "./MessageItem"
 import { Composer } from "./Composer"
 import { InvitePanel } from "./InvitePanel"
 import { SafetyPanel } from "./SafetyPanel"
 import { SecurityTransparency } from "./SecurityTransparency"
 import { ReadOnceViewer } from "./ReadOnceViewer"
 import { MediaViewer } from "./MediaViewer"
-import { mentionNames, mentionsName } from "../lib/richText"
+import { mentionNames, mentionsName, plainText } from "../lib/richText"
 
 type AlertMode = "all" | "mentions" | "none"
 const ALERT_LABEL: Record<AlertMode, string> = {
@@ -71,6 +73,30 @@ const ALERT_LABEL: Record<AlertMode, string> = {
 
 type Panel =
   "settings" | "invite" | "invite-qr" | "safety" | "security" | "actions" | "members" | null
+
+// Questions asked in a sheet before acting, in place of window.confirm/prompt.
+type Dialog =
+  | { kind: "delete"; msg: DecryptedMessage }
+  | { kind: "report"; msg: DecryptedMessage }
+  | { kind: "ban"; pid: string; name: string }
+  | { kind: "clear-all" }
+  | { kind: "nickname" }
+  | { kind: "topic" }
+  | null
+
+const REPORT_REASONS: [AbuseReportCategory, string][] = [
+  ["spam", "Spam"],
+  ["harassment", "Harassment"],
+  ["threat", "Threat or violence"],
+  ["other", "Something else"],
+]
+
+/** A one-line preview of a message, without formatting markers. */
+function previewOf(m: DecryptedMessage, max = 90): string {
+  const text = copyableText(m)
+  if (text) return plainText(text).replace(/\s+/g, " ").trim().slice(0, max)
+  return m.items && m.items.length > 0 ? "\u{1F4CE} Attachment" : "Message"
+}
 
 export function ChatRoom({
   session,
@@ -84,6 +110,9 @@ export function ChatRoom({
   const toast = useToast()
   const room = useRoom(session)
   const [panel, setPanel] = useState<Panel>(null)
+  const [dialog, setDialog] = useState<Dialog>(null)
+  // My message being edited in the composer.
+  const [editing, setEditing] = useState<DecryptedMessage | null>(null)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [readOnce, setReadOnce] = useState<DecryptedMessage | null>(null)
@@ -116,7 +145,14 @@ export function ChatRoom({
   const topic = room.topic
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Latest messages for callbacks that must keep a stable identity (so the
+  // memoized message list doesn't re-render on every update).
+  const messagesRef = useRef(room.messages)
+  messagesRef.current = room.messages
   const nearBottom = useRef(true)
+  // Set briefly when I send, so the list scrolls to my message even if I had
+  // scrolled up.
+  const scrollToMineUntil = useRef(0)
   const lastCount = useRef(0)
   const unreadLen = useRef(0)
 
@@ -225,6 +261,11 @@ export function ChatRoom({
     () => mentionNames([...Object.values(room.names), session.username]),
     [room.names, session.username],
   )
+  // Names offered while typing "@": everyone but me.
+  const mentionSuggestions = useMemo(
+    () => mentionList.filter((name) => name.toLowerCase() !== session.username.toLowerCase()),
+    [mentionList, session.username],
+  )
 
   useEffect(() => {
     document.title = unread > 0 ? `(${unread}) Vanish` : "Vanish"
@@ -250,18 +291,28 @@ export function ChatRoom({
     if (room.error) toast(room.error)
   }, [room.error, toast])
 
+  // The two-step room delete starts over each time the actions sheet opens.
+  useEffect(() => {
+    if (panel !== "actions") setConfirmDelete(false)
+  }, [panel])
+
   useEffect(() => {
     if (room.deleted) {
       toast("This room was deleted")
     }
   }, [room.deleted, toast])
 
-  // Auto-scroll only when the user is near the bottom; otherwise surface a pill.
+  // Auto-scroll only when the user is near the bottom, or just sent a message;
+  // otherwise surface a pill.
   useEffect(() => {
     const grew = room.messages.length > lastCount.current
     lastCount.current = room.messages.length
     if (!grew) return
-    if (nearBottom.current) {
+    if (nearBottom.current || Date.now() < scrollToMineUntil.current) {
+      scrollToMineUntil.current = 0
+      nearBottom.current = true
+      setShowJump(false)
+      setNewWhileUp(0)
       requestAnimationFrame(() =>
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }),
       )
@@ -391,9 +442,24 @@ export function ChatRoom({
     )
   }
 
+  const sendText = useCallback(
+    (text: string, opts?: SendOpts) => {
+      scrollToMineUntil.current = Date.now() + 2_000
+      void room.sendText(text, opts)
+    },
+    [room.sendText],
+  )
+  const sendMedia = useCallback(
+    (files: File[], caption: string, opts?: SendOpts) => {
+      scrollToMineUntil.current = Date.now() + 2_000
+      void room.sendMedia(files, caption, opts)
+    },
+    [room.sendMedia],
+  )
+
   const pinMessage = useCallback(
     (m: DecryptedMessage) => {
-      void room.setPinned(m).then(() => toast("Message pinned for everyone"))
+      void room.setPinned(m).then((ok) => ok && toast("Message pinned for everyone"))
     },
     [room.setPinned, toast],
   )
@@ -416,7 +482,7 @@ export function ChatRoom({
 
   const toggleSelect = useCallback(
     (id: string) => {
-      const msg = room.messages.find((m) => m.id === id)
+      const msg = messagesRef.current.find((m) => m.id === id)
       if (msg && !msg.mine) {
         toast("You can prune only your own messages")
         return
@@ -428,7 +494,7 @@ export function ChatRoom({
         return next
       })
     },
-    [room.messages, toast],
+    [toast],
   )
 
   function cancelSelect() {
@@ -437,55 +503,71 @@ export function ChatRoom({
   }
 
   const startReply = useCallback((m: DecryptedMessage) => {
-    const preview =
-      m.text && !m.text.startsWith("⚠")
-        ? m.text.slice(0, 90)
-        : m.items && m.items.length > 0
-          ? "📎 Attachment"
-          : "Message"
-    setReplyTo({ id: m.id, username: m.username, preview })
+    setEditing(null)
+    setReplyTo({ id: m.id, username: m.username, preview: previewOf(m) })
   }, [])
 
-  const editMessage = useCallback(
-    (m: DecryptedMessage) => {
-      const next = window.prompt("Edit your message:", m.text ?? "")
-      if (next === null) return
-      const trimmed = next.trim()
-      if (trimmed && trimmed !== m.text) {
-        void room.editMessage(m.id, trimmed)
-        toast("Message edited")
+  // Editing happens in the composer: it shows the message's text, and sending
+  // saves the edit. Escape or the X cancels.
+  const editMessage = useCallback((m: DecryptedMessage) => {
+    setReplyTo(null)
+    setEditing(m)
+  }, [])
+
+  // Up arrow in an empty composer edits my latest message that can be edited.
+  const editLast = useCallback(() => {
+    const msgs = messagesRef.current
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (canEditMessage(msgs[i])) {
+        editMessage(msgs[i])
+        return true
+      }
+    }
+    return false
+  }, [editMessage])
+
+  function saveEdit(text: string) {
+    const target = editing
+    setEditing(null)
+    if (target && text !== target.text) void room.editMessage(target.id, text)
+  }
+
+  // Stop editing if the message is deleted or expires meanwhile.
+  useEffect(() => {
+    if (!editing) return
+    const current = room.messages.find((m) => m.id === editing.id)
+    if (!current || !canEditMessage(current)) setEditing(null)
+  }, [room.messages, editing])
+
+  const copyMessage = useCallback(
+    async (m: DecryptedMessage) => {
+      const text = copyableText(m)
+      if (!text) return
+      try {
+        await navigator.clipboard.writeText(text)
+        toast("Copied")
+      } catch {
+        toast("Couldn\u2019t copy the text")
       }
     },
-    [room.editMessage, toast],
+    [toast],
   )
 
-  const deleteMessage = useCallback(
-    (m: DecryptedMessage) => {
-      if (window.confirm("Delete this message for everyone in the room?")) {
-        void room.deleteMessage(m.id)
-      }
-    },
-    [room.deleteMessage],
-  )
-  const reportMessage = useCallback(
-    (m: DecryptedMessage) => {
-      const raw = window.prompt(
-        "Report category: spam, harassment, threat, or other. Vanish sends metadata only—not the encrypted message.",
-        "spam",
-      )
-      if (raw === null) return
-      const category = raw.trim().toLowerCase() as AbuseReportCategory
-      if (!["spam", "harassment", "threat", "other"].includes(category)) {
-        toast("Choose spam, harassment, threat, or other")
-        return
-      }
-      void room
-        .reportMessage(m.id, category)
-        .then(() => toast("Report queued without sharing message contents"))
-        .catch(() => toast("Could not submit report"))
-    },
-    [room.reportMessage, toast],
-  )
+  const deleteMessage = useCallback((m: DecryptedMessage) => {
+    setDialog({ kind: "delete", msg: m })
+  }, [])
+
+  const reportMessage = useCallback((m: DecryptedMessage) => {
+    setDialog({ kind: "report", msg: m })
+  }, [])
+
+  function submitReport(m: DecryptedMessage, category: AbuseReportCategory) {
+    setDialog(null)
+    void room
+      .reportMessage(m.id, category)
+      .then(() => toast("Report sent. The message itself wasn\u2019t shared."))
+      .catch(() => toast("Couldn\u2019t send the report. Try again later."))
+  }
 
   function saveRoom() {
     if (vault.isLocked()) {
@@ -533,14 +615,14 @@ export function ChatRoom({
   }
 
   function editTopic() {
-    const next = window.prompt(
-      "Set an encrypted room topic (everyone with the invite key can read it):",
-      topic,
-    )
-    if (next === null) return
-    void room.setTopic(next.trim())
     setPanel(null)
-    toast(next.trim() ? "Topic updated" : "Topic cleared")
+    setDialog({ kind: "topic" })
+  }
+
+  function saveTopic(next: string) {
+    setDialog(null)
+    if (next === topic) return
+    void room.setTopic(next).then((ok) => ok && toast(next ? "Topic updated" : "Topic cleared"))
   }
 
   function exportTranscript() {
@@ -592,12 +674,32 @@ export function ChatRoom({
   }
 
   function changeNickname() {
-    const name = window.prompt("Choose a new display name for this room:", session.username)
-    if (name && name.trim()) {
-      room.rename(name.trim())
-      setPanel(null)
-      toast("Nickname updated")
-    }
+    setPanel(null)
+    setDialog({ kind: "nickname" })
+  }
+
+  function saveNickname(name: string) {
+    setDialog(null)
+    if (name === session.username) return
+    room.rename(name)
+    toast("Nickname updated")
+  }
+
+  function clearAll() {
+    setDialog(null)
+    void room.pruneAll().then((ok) => ok && toast("Cleared all messages"))
+  }
+
+  // Ban from the member list, after a confirm sheet that returns to the list.
+  function askBan(pid: string, name: string) {
+    setPanel(null)
+    setDialog({ kind: "ban", pid, name })
+  }
+
+  function closeBanDialog(ban: boolean) {
+    if (ban && dialog?.kind === "ban") void room.banMember(dialog.pid)
+    setDialog(null)
+    setPanel("members")
   }
 
   // Messages still counting down that "Never" could keep (read-once messages
@@ -781,7 +883,7 @@ export function ChatRoom({
               icon={<PinOff size={15} />}
               label="Unpin message"
               onClick={() => {
-                void room.setPinned(null).then(() => toast("Message unpinned"))
+                void room.setPinned(null).then((ok) => ok && toast("Message unpinned"))
               }}
             />
           )}
@@ -878,8 +980,13 @@ export function ChatRoom({
           )}
           {room.messages.map((m, i) => {
             const prev = room.messages[i - 1]
+            // Times show only the hour, so mark where each day starts.
+            const newDay = !prev || dayKey(prev.createdAt) !== dayKey(m.createdAt)
             const showWho =
-              !prev || prev.participantId !== m.participantId || prev.kind === "system"
+              newDay ||
+              !prev ||
+              prev.participantId !== m.participantId ||
+              prev.kind === "system"
             const seen = (room.readByMessage[m.id]?.length ?? 0) > 0
             const seenByNames =
               m.id === lastMineId
@@ -889,6 +996,11 @@ export function ChatRoom({
                 : undefined
             return (
               <Fragment key={m.id}>
+                {newDay && (
+                  <div className="day-divider" role="separator">
+                    <span>{formatDay(m.createdAt)}</span>
+                  </div>
+                )}
                 {m.id === dividerId && (
                   <div className="new-divider" role="separator" aria-label="New messages">
                     <span>New messages</span>
@@ -907,6 +1019,7 @@ export function ChatRoom({
                   onToggleSelect={toggleSelect}
                   onReact={room.toggleReaction}
                   onReply={startReply}
+                  onCopy={copyMessage}
                   onEdit={editMessage}
                   onDelete={deleteMessage}
                   onReport={reportMessage}
@@ -969,9 +1082,14 @@ export function ChatRoom({
         roomId={session.invite.roomId}
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
-        onSend={room.sendText}
-        onSendMedia={room.sendMedia}
+        onSend={sendText}
+        onSendMedia={sendMedia}
         onTyping={room.notifyTyping}
+        editing={editing ? { id: editing.id, text: editing.text ?? "" } : null}
+        onSaveEdit={saveEdit}
+        onCancelEdit={() => setEditing(null)}
+        onEditLast={editLast}
+        mentionNames={mentionSuggestions}
       />
 
       {readOnce && (
@@ -1015,7 +1133,7 @@ export function ChatRoom({
                   {isOwner && p.pid !== session.participantId && (
                     <button
                       className={`btn ${p.banned ? "" : "btn-danger"}`}
-                      onClick={() => (p.banned ? room.unbanMember(p.pid) : room.banMember(p.pid))}
+                      onClick={() => (p.banned ? room.unbanMember(p.pid) : askBan(p.pid, p.name))}
                     >
                       {p.banned ? (
                         "Unban"
@@ -1127,12 +1245,14 @@ export function ChatRoom({
                   const next = !room.room?.timerLocked
                   void room
                     .setTimerLocked(next)
-                    .then(() =>
-                      toast(
-                        next
-                          ? "Only you can change the disappearing timer now"
-                          : "Anyone in the room can change the timer again",
-                      ),
+                    .then(
+                      (ok) =>
+                        ok &&
+                        toast(
+                          next
+                            ? "Only you can change the disappearing timer now"
+                            : "Anyone in the room can change the timer again",
+                        ),
                     )
                 }}
               >
@@ -1156,12 +1276,11 @@ export function ChatRoom({
               <button
                 className="btn btn-block"
                 onClick={() => {
-                  void room.pruneAll()
                   setPanel(null)
-                  toast("Cleared all messages")
+                  setDialog({ kind: "clear-all" })
                 }}
               >
-                <Trash2 size={16} /> Clear all visible messages
+                <Trash2 size={16} /> Clear all messages
               </button>
             )}
             <button className="btn btn-danger btn-block" onClick={panic}>
@@ -1189,6 +1308,106 @@ export function ChatRoom({
             )}
           </div>
         </Sheet>
+      )}
+
+      {dialog?.kind === "delete" && (
+        <ConfirmSheet
+          title="Delete this message?"
+          icon={<Trash2 size={18} />}
+          confirmLabel="Delete for everyone"
+          danger
+          onConfirm={() => {
+            setDialog(null)
+            void room.deleteMessage(dialog.msg.id)
+          }}
+          onClose={() => setDialog(null)}
+        >
+          <p className="confirm-quote">{previewOf(dialog.msg, 140)}</p>
+          <p className="hint">
+            It will be removed for everyone in the room, and they’ll see that a message was
+            deleted.
+          </p>
+        </ConfirmSheet>
+      )}
+      {dialog?.kind === "report" && (
+        <Sheet title="Report this message" icon={<Flag size={18} />} onClose={() => setDialog(null)}>
+          <div className="stack">
+            <p className="confirm-quote">{previewOf(dialog.msg, 140)}</p>
+            <p className="hint">
+              Choose a reason. The report includes only the reason and anonymous ids. The message
+              itself stays encrypted and isn’t shared.
+            </p>
+            {REPORT_REASONS.map(([category, label]) => (
+              <button
+                key={category}
+                type="button"
+                className="btn btn-block"
+                onClick={() => submitReport(dialog.msg, category)}
+              >
+                {label}
+              </button>
+            ))}
+            <button type="button" className="btn btn-ghost btn-block" onClick={() => setDialog(null)}>
+              Cancel
+            </button>
+          </div>
+        </Sheet>
+      )}
+      {dialog?.kind === "clear-all" && (
+        <ConfirmSheet
+          title="Clear all messages?"
+          icon={<Trash2 size={18} />}
+          confirmLabel="Clear for everyone"
+          danger
+          onConfirm={clearAll}
+          onClose={() => setDialog(null)}
+        >
+          <p className="hint">
+            Every message in this chat, including attachments, is removed for everyone. The room
+            itself stays open. This can’t be undone.
+          </p>
+        </ConfirmSheet>
+      )}
+      {dialog?.kind === "ban" && (
+        <ConfirmSheet
+          title={`Ban ${dialog.name}?`}
+          icon={<Ban size={18} />}
+          confirmLabel="Ban from this room"
+          danger
+          onConfirm={() => closeBanDialog(true)}
+          onClose={() => closeBanDialog(false)}
+        >
+          <p className="hint">
+            They’re removed from the room right away. You can unban them later from the member
+            list.
+          </p>
+        </ConfirmSheet>
+      )}
+      {dialog?.kind === "nickname" && (
+        <PromptSheet
+          title="Change your nickname"
+          icon={<Pencil size={18} />}
+          label="Display name"
+          hint="This changes your name in this room only."
+          initialValue={session.username}
+          maxLength={32}
+          onSubmit={saveNickname}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "topic" && (
+        <PromptSheet
+          title="Room topic"
+          icon={<Tag size={18} />}
+          label="Topic"
+          hint="Encrypted like messages, so everyone with the invite can read it. Leave it empty to remove the topic."
+          initialValue={topic}
+          maxLength={200}
+          allowEmpty
+          confirmLabel="Save topic"
+          onSubmit={saveTopic}
+          onClose={() => setDialog(null)}
+        />
       )}
 
       {linkToOpen && (
@@ -1264,14 +1483,7 @@ function ChatTimerChip({ ttlMs }: { ttlMs: number }) {
 }
 
 function RoomTimer({ destroyAt }: { destroyAt: number | null }) {
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    if (!destroyAt) return
-    const t = setInterval(() => setTick((n) => (n + 1) % 3600), 1000)
-    return () => clearInterval(t)
-  }, [destroyAt])
-  if (!destroyAt) return null
-  const left = formatCountdown(destroyAt)
+  const left = useCountdown(destroyAt)
   if (!left) return null
   return (
     <span className="room-timer" title="This room self-destructs automatically">
