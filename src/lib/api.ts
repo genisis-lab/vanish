@@ -40,6 +40,13 @@ export class ApiError extends Error {
   }
 }
 
+/** What a request fails with once the room owner has removed this device. */
+export const BANNED_MESSAGE = "The room owner removed you from this room."
+
+export function isBannedError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403 && error.message === BANNED_MESSAGE
+}
+
 // Turn raw HTTP failures into something a human wants to read. The server's
 // own message wins when it sent one; these are sensible fallbacks per status.
 export function friendlyError(status: number, message: string): string {
@@ -49,8 +56,14 @@ export function friendlyError(status: number, message: string): string {
     case 413:
       return "That file is too large to send."
     case 410:
+      // An expired invite still lets members read, but not send or join.
+      if (message === "expired") return "This invite has expired, so new messages can\u2019t be sent here."
       return "This room no longer exists."
     case 403:
+      // Keep the reasons a person can act on; anything else is a bad key.
+      if (message === "banned") return BANNED_MESSAGE
+      if (message === "not owner") return "Only the room owner can do that."
+      if (message.startsWith("Only the room owner")) return message
       return "Access denied \u2014 the invite key may be wrong."
     case 0:
       return "Network error \u2014 check your connection and try again."
