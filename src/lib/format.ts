@@ -2,6 +2,34 @@ export function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
+/** Full local date and time, for a message time's tooltip. */
+export function formatDateTime(ts: number): string {
+  return new Date(ts).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+}
+
+/** The local calendar day of a timestamp, for grouping messages by date. */
+export function dayKey(ts: number): string {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+/** "Today", "Yesterday", or a short date such as "Mon, Nov 16" (with the year if it differs). */
+export function formatDay(ts: number, now = Date.now()): string {
+  const key = dayKey(ts)
+  if (key === dayKey(now)) return "Today"
+  const yesterday = new Date(now)
+  yesterday.setDate(yesterday.getDate() - 1)
+  if (key === dayKey(yesterday.getTime())) return "Yesterday"
+  const d = new Date(ts)
+  const sameYear = d.getFullYear() === new Date(now).getFullYear()
+  return d.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  })
+}
+
 export function formatRelative(ts: number, now = Date.now()): string {
   const diff = Math.max(0, now - ts)
   const m = Math.floor(diff / 60000)
