@@ -1,475 +1,223 @@
-# Vanish — Encrypted Anonymous Chat
+<div align="center">
 
-> Anonymous chat that disappears on your schedule.
+<img src="public/icon.svg" width="72" height="72" alt="Vanish logo">
 
-Vanish is a Cloudflare-native, end-to-end encrypted, anonymous group chat. There are no
-accounts, emails, phone numbers, or profiles. You pick a display name, create a room, and
-share a secret invite link. Everything — message text, usernames, captions, filenames, and
-media — is encrypted in your browser **before** it ever reaches the network. The server only
-ever sees opaque ciphertext plus the minimum operational metadata required to route and expire
-it.
+# Vanish
 
----
+**Anonymous group chat that disappears on your schedule.**
 
-## Room setup and read-once behavior
+End-to-end encrypted in your browser. No accounts, no phone numbers, no profiles. Just a link.
 
-- Choose **Quick conversation** (five-minute messages, one-hour room, 24-hour invite),
-  **24-hour room** (24-hour messages, room, and invite), or customize each timer.
-  A destroyed room always ends invite access, even when the invite has time remaining.
-- The composer's timer is shared by the whole chat. Any member can change it; everyone's
-  timer updates live and an encrypted system line ("Sam set messages to disappear after 1h")
-  appears in the conversation. It applies to messages sent after the change.
-- **Read once** messages stay covered until a recipient chooses **Open once**. Small media
-  is downloaded and decrypted before the consumption acknowledgment deletes the message and
-  attachments for everyone. Large attachments must finish saving first. The loaded viewer
-  remains available until closed, backgrounded, its original timer expires, or one minute
-  passes. Unopened read-once messages also expire on their selected message timer.
-- Read receipts name the specific messages visible in the focused conversation. Fetching
-  history, background polling, and viewing a settings dialog do not mark messages read.
-- Voice recordings open a local playback preview. Choose **Send voice note** or **Discard**;
-  stopping a recording never sends it automatically.
-- Invite panels offer the native share sheet where supported, with copy-link and QR fallbacks.
-  Appearance, text size, compact mode, privacy blur, and notification controls are available
-  from **Room actions → Appearance & notifications** on desktop and mobile.
-- Uploads can be cancelled during encryption or transfer, including multipart uploads.
-  Network requests time out with an actionable error instead of waiting indefinitely.
-- Remembered rooms are stored locally. Without a device passphrase, their keys are **not
-  encrypted at rest**; the creation form states this beside the remember option. Device lock
-  enables passphrase protection. Recipients can still copy, screenshot, or save content, and
-  Cloudflare can process network metadata.
+[**Try it live**](https://chat.builtwai.com) · [Run it on your computer](#run-it-on-your-computer) · [Put it online](#put-it-online) · [How it works](docs/HOW-IT-WORKS.md)
 
-### Deploying this update
+[![CI](https://github.com/genisis-lab/vanish/actions/workflows/ci.yml/badge.svg)](https://github.com/genisis-lab/vanish/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-orange.svg)](LICENSE)
 
-Deploy the companion Worker **before** Pages; the client now calls authenticated
-`POST /api/messages/read` and `POST /api/messages/consume` endpoints. Existing clients may
-continue listing messages, but only updated clients use explicit read-once consumption.
-Old persisted read-once messages receive a maximum lifetime from the room's default timer
-when their Durable Object is loaded again. This does not scan dormant rooms globally.
+<img src="docs/images/hero.png" alt="A Vanish chat room called Saturday hike, open on a laptop in light mode and on a phone in dark mode" width="860">
 
-For local full-stack testing, give both Wrangler processes the same absolute `--persist-to`
-directory. The Playwright configuration does this automatically so upload and deletion checks
-operate on the same local R2 bucket.
+</div>
 
-## Features
+## What is Vanish?
 
-- **Anonymous, instant rooms** — no account, email, or phone. Pick a display name, create a
-  room, and share the secret invite link or QR code.
-- **End-to-end encryption** — message text, usernames, captions, filenames, and media are
-  encrypted in your browser before they touch the network (AES-GCM-256, keys derived with
-  HKDF-SHA-256).
-- **Epoch key separation** — message keys rotate hourly and are independently derived
-  from the room secret, so each time window uses an independent key. New (v2) and older (v1)
-  envelopes are both decodable, so history never breaks across the upgrade.
-- **Per-sender signatures** — every message is signed with an ephemeral Ed25519 key, with
-  trust-on-first-use pinning, so holding the room key alone can't forge messages as another
-  member.
-- **Encrypted media & voice notes** — share images, video, and recorded voice notes; bytes,
-  filenames, and captions are encrypted client-side and stored as opaque R2 blobs.
-  Files up to 2 GiB are encrypted and uploaded in fixed 16 MiB multipart chunks, keeping
-  browser and Worker memory bounded. Drag-and-drop, clipboard paste, and an in-composer
-  microphone recorder are supported.
-- **Bounded media storage** — uploads require a participant-bound, one-use reservation and each
-  room has a 5 GiB encrypted-media quota; unattached reservations are swept automatically.
-- **Replies, threading & reactions** — quote any message, follow reply chains, and react with
-  emoji; replies and reactions are encrypted too.
-- **Edit & delete your own messages** — revise or retract anything you sent; edits and
-  tombstones propagate in realtime and are enforced server-side by per-sender proof.
-- **Read receipts & presence** — per-person “seen” markers, live typing indicators, and
-  participant counts over WebSockets, with an automatic polling fallback.
-- **Room owner controls** — the room creator holds a device-only owner secret (the server keeps
-  only its hash) that gates moderation: set an **encrypted room topic/name**, view the
-  **member list**, **ban/unban** participants, **pin a message** for everyone, **lock the
-  disappearing timer** so only the owner can change it, clear the room, or destroy it entirely.
-- **Decoy messages (traffic masking)** — an optional mode that sends harmless fake messages in
-  the background, byte-for-byte indistinguishable from real ones (same envelope + size padding)
-  and silently dropped by recipients, so an outside observer can't tell when you're actually
-  talking.
-- **Multi-device sync** — move a room to another device with a short-lived transfer code
-  (shown as a QR or copyable string) that carries the room key, your participant identity,
-  signing key, and — if you're the owner — owner rights. Nothing transits the server.
-- **Message formatting** — **bold**, *italics*, `code`, and **@mentions** (highlighted for the
-  person mentioned). Links are clickable but never fetched or previewed by Vanish; opening one
-  asks first, shows the full address, and strips the referrer.
-- **Catch-up tools** — a "New messages" divider marks where you left off, and a jump-to-latest
-  button appears when you scroll up. Leave notices name who left when the server can tell.
-- **Disappearing messages** — a chat-wide timer any member can change (or "Never" to keep
-  messages until you delete them), optional burn-after-read, and an optional whole-room self-destruct.
-- **Per-room alerts** — all messages, only @mentions, or muted, per device. (Background Web
-  Push stays content-free, so it can't tell mentions apart.)
-- **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
-  minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
-  notifications stay silent and the in-app UI handles activity (see below).
-- **Installable everywhere** — runs as an offline-capable PWA with browser install prompts,
-  mobile Home Screen guidance, refresh-on-new-build, and a native iOS/Android shell via Capacitor (see
-  `docs/NATIVE.md`).
-- **Privacy guards** — a privacy blur veils the conversation when you switch away, plus a
-  one-tap “panic” wipe-and-leave.
-- **Stays on your device** — optionally remember a room in an encrypted local vault to rejoin
-  after a refresh, change your nickname mid-room, and export a local transcript.
+Vanish is a private group chat you can start in seconds. Pick a display name, create a room,
+and share the invite link. Everything you send (messages, names, photos, voice notes, file
+names) is encrypted in your browser **before** it leaves your device, so the server only ever
+stores scrambled data it has no key for.
 
-### Notifications across rooms
+- **Nothing to sign up for.** No email, phone number, or password. Close the tab and you leave
+  no account behind.
+- **Messages delete themselves.** Pick how long messages last (from 30 seconds to 7 days, or
+  never), send "read once" messages that vanish after they're opened, or set the whole room
+  to self-destruct.
+- **The link is the key.** The room's secret lives only in the invite link and on your
+  devices. If every copy is lost, nobody (including the server) can recover the room.
+- **Works everywhere.** Any modern browser on desktop or phone. Install it like an app, with
+  optional notifications.
 
-Notifications are designed to avoid duplicate alerts while you are actively using Vanish:
+## Using Vanish
 
-- If any Vanish window is **visible in the foreground** — whether you're in the active room,
-  another room, the home screen, or the vault lock screen — system push notifications stay
-  silent. The running app handles messages with the live UI, unread counts, sounds, and jump
-  pills.
-- If Vanish is **hidden, minimized, backgrounded, or fully closed**, a message in any room
-  you've joined can raise a background push notification.
-- Push payloads are **content-free** (`{ "t": "msg", "room": <id> }`). The server can't read
-  your messages, so the notification is a generic “new encrypted message” ping that opens the
-  app to decrypt locally.
-- Toggle notifications per session with the bell icon. Turning them off unsubscribes this
-  browser, and the server prunes dead subscriptions automatically. Background push requires
-  VAPID keys to be configured at deploy time (see Deployment); without them, in-app and
-  on-screen notifications still work.
+| 1. Create a room | 2. Share the invite | 3. Friends join |
+| :---: | :---: | :---: |
+| <img src="docs/images/step-create.png" alt="The create room form with a display name field and room presets" width="260"> | <img src="docs/images/step-invite.png" alt="The invite dialog showing the invite link with copy and QR code buttons" width="260"> | <img src="docs/images/step-join.png" alt="The join screen on a phone saying the invite is valid" width="260"> |
+| Choose a name and how long things should last. **Quick conversation** and **24-hour room** are one-tap presets. | Send the link (or show the QR code) over a channel you trust. Anyone with it can read the room. | They open the link, pick a name, and they're in. No app or account needed. |
 
----
+A few things worth knowing once you're in:
 
-## How the encryption works
+- **The timer is shared.** Anyone in the chat can change how long new messages last, and
+  everyone sees a note when it changes. Room owners can lock it.
+- **Read once** (next to the timer) sends a message that stays covered until someone opens
+  it, then disappears for everyone.
+- **Formatting works:** `**bold**`, `*italics*`, `` `code` ``, and `@name` to mention someone.
+  Links are clickable but never fetched or previewed by Vanish.
+- **Check who you're talking to** with the shield button, which shows the room's safety
+  number. See [Staying safe and verifying people](docs/SAFETY-AND-IDENTITY.md).
+- **Owners** (whoever created the room) can set a topic, pin a message for everyone, ban
+  people, lock the timer, and delete the room.
 
-- The invite key is `anonchat:v1:<roomId>.<secret>`, where `roomId` is 16 random bytes and
-  `secret` is 32 random bytes (both base64url). The **secret never leaves the browser** and is
-  never sent to the server.
-- On join, the browser uses **HKDF-SHA-256** to derive several independent keys from the
-  secret:
-  - `msgKey` — AES-GCM-256 for legacy (v1) message envelopes (text, usernames, reactions)
-  - `mediaKey` — AES-GCM-256 for media bytes, filenames, captions, and manifests
-  - `channelKey` — for realtime channel framing
-  - `accessProof` / `accessProofHash` — a proof the server can verify to gate access **without**
-    being able to derive the secret or decrypt anything
-  - `safetyNumber` — a human-verifiable fingerprint of the room key
-- **Epoch key separation.** Text and media payloads are sealed with a
-  per-**epoch** key derived from the room secret via HKDF (`…:msg:epoch:<n>`), where the epoch
-  advances every hour. Each window therefore uses an independent AES-GCM key, so compromising
-  one epoch's derived key does not expose other windows. Epoch envelopes use the v2 layout
-  `[version=2][epoch(4, big-endian)][iv(12)][ciphertext]`; decryption reads the epoch from the
-  envelope and re-derives that window's key. Older `[version=1][iv(12)][ciphertext]` envelopes
-  remain fully decodable, so stored history is unaffected by the upgrade.
-- Every envelope is AES-GCM with a purpose-bound AAD (`<roomId>:msg`, `:media`, `:react`,
-  `:channel`). Derived keys are non-extractable `CryptoKey`s.
-- Each device also generates an ephemeral **Ed25519 signing keypair** when it joins. This key
-  is deliberately **not** derived from the room secret — deriving it from shared material would
-  let any member forge another member's signature. The device signs every message, and the
-  signature plus its public key travel **inside** the encrypted envelope. Recipients verify the
-  signature, so merely holding the shared room key is **not** enough to forge a message
-  attributed to another sender. The UI flags any message whose signature fails to verify or
-  whose sender's signing key changes mid-session (trust-on-first-use pinning). If a browser
-  lacks WebCrypto Ed25519, the app gracefully falls back to sending unsigned messages.
-- **Owner credential.** The room creator gets a random 256-bit owner secret stored only on
-  their device; the server registers only its SHA-256. Owner-gated actions (set topic, ban,
-  unban, clear, destroy) present the secret as proof-of-possession, which the server checks by
-  hash comparison — so merely being in the room does not grant moderation powers.
-- **Decoy messages.** Cover messages are encrypted with the same v2 epoch envelope and size
-  padding as real messages and flagged only *inside* the ciphertext, so they are
-  indistinguishable on the wire and are dropped by recipients after decryption.
-- **Multi-device transfer.** A transfer code bundles the invite key, participant id, signing
-  keypair, and (for owners) the owner secret, then encrypts it under a 128-bit pairing secret
-  (PBKDF2-SHA-256 → AES-GCM, layout `[salt(16)][iv(12)][ciphertext]`). It is exchanged
-  device-to-device by QR or copy/paste and never touches the server.
-- Plaintext is padded to coarse size buckets before encryption (messages to 256-byte buckets,
-  media to power-of-four byte buckets) so ciphertext length leaks far less about content.
-- The server stores only: room id, an access-verifier hash, an optional owner-secret hash, an
-  optional encrypted room-topic envelope, the banned-participant list, invite expiry,
-  created/deleted timestamps, encrypted message envelopes, encrypted media object paths +
-  sizes, and per-message expiry. **It has no key material and cannot decrypt anything.**
-  Cloudflare may still process transport metadata such as IP addresses, timestamps, room IDs,
-  and object sizes.
+## Run it on your computer
 
----
+You can run the whole thing locally (web app, API, encrypted storage) with one command. No
+Cloudflare account needed.
 
-## Architecture
+### What you need
 
-| Layer | Tech |
+- **Node.js 22 or newer.** Check with `node -v`. Get it from [nodejs.org](https://nodejs.org).
+- **Git**, to download the code.
+
+### Start it
+
+```bash
+git clone https://github.com/genisis-lab/vanish.git
+cd vanish
+npm start
+```
+
+The first run installs dependencies, so give it a minute. When it's ready you'll see:
+
+```
+✓ Vanish is running
+
+    Open      http://localhost:8788
+    Try it    Create a room, then open the invite link in a private window
+              to chat with yourself.
+    Stop      Press Ctrl+C
+```
+
+Open **http://localhost:8788** and you'll see the home page:
+
+<img src="docs/images/home.png" alt="The Vanish home page with the create room form and a short privacy explainer" width="720">
+
+Create a room, then paste the invite link into a private (or incognito) window. Each window
+acts like a separate person, so you can chat with yourself and see both sides.
+
+### What `npm start` does
+
+1. Checks your Node.js version and runs `npm install` if dependencies are missing.
+2. Creates a random local upload secret in `.dev.vars` (git ignores this file).
+3. Builds the web app into `dist/`.
+4. Starts the room server and the web app together, sharing local storage in
+   `.wrangler/state`.
+5. Turns off the per-address rate limits, so you can create as many test rooms as you like.
+
+Press **Ctrl+C** to stop both servers. Your local rooms are kept for next time.
+
+| Option | What it does |
 | --- | --- |
-| UI | React + Vite, deployed to **Cloudflare Pages** |
-| API | **Pages Functions** under `functions/api/*` |
-| Coordination + realtime | **Durable Object** (`RoomDurableObject`) in the companion `room-worker/` |
-| Encrypted media | **R2** bucket `vanish-media` (encrypted blobs only) |
-| Background push | **Web Push** (VAPID) fanned out from the Durable Object |
-| Native shell | **Capacitor** (iOS / Android) wrapping the deployed web app |
+| `npm start -- --port 3000` | Use a different port for the web app (default 8788, or the next free one) |
+| `npm start -- --skip-build` | Reuse the last build for a faster restart |
+| `npm start -- --verbose` | Show the full server logs, including every request |
+| `npm start -- --help` | List the options |
 
-The Durable Object owns each room's state, fans out realtime WebSocket frames (messages, edits,
-prunes, reactions, presence, read receipts, room-updated, banned, room-deleted), sends
-background Web Push pings to closed/asleep devices, and runs `alarm()`-driven sweeps to delete
-expired messages and orphaned media. Pages Functions are thin auth/validation handlers that
-forward to the DO via a service binding.
+### If something goes wrong
 
-```
-browser ──(ciphertext)──▶ Pages Functions ──(service binding)──▶ Room Durable Object
-   │                                                                   │
-   └── decrypt locally ◀── encrypted blobs ◀──────── R2 (vanish-media) ┘
-```
+- **"Vanish needs Node.js 22 or newer"**: install the current LTS from
+  [nodejs.org](https://nodejs.org), open a new terminal, and run `npm start` again.
+- **"Port … is already in use"**: you asked for a specific port that's taken. Pick another
+  with `--port`, or leave it out and Vanish finds a free one.
+- **Messages take about a second to show up**: that's expected locally. The local Cloudflare
+  emulator can't hand live connections from the web app to the room server, so the app falls
+  back to checking for new messages every second. The deployed version updates instantly.
+- **A page hangs while loading**: reload it. The local emulator sometimes stalls a new page
+  load for a few seconds, usually right after another chat window was closed. This is a
+  local-only quirk.
+- **Start over with empty rooms**: stop Vanish and delete the `.wrangler/state` folder.
+- **Anything else**: run `npm start -- --verbose` to see what the servers are saying.
 
----
+## Put it online
 
-## Project layout
-
-```
-shared/        Crypto, invite, room-core logic shared by client + server (framework-free)
-functions/     Cloudflare Pages Functions (the HTTP API + WebSocket entry)
-room-worker/   Companion Worker hosting the Room Durable Object + R2 binding
-src/           React + Vite front-end (lib/ logic, components/ UI, styles/)
-public/        PWA manifest, service worker, icons, _headers (CSP), _routes.json
-docs/          Additional docs, incl. NATIVE.md (Capacitor iOS/Android build)
-capacitor.config.ts   Native shell configuration
-tests/         unit (vitest) · manual (tsx verify) · e2e (playwright)
-```
-
----
-
-## Local development
+Vanish runs on Cloudflare (Pages, Workers, Durable Objects, R2, and Queues). With a
+Cloudflare account, the one-time setup is:
 
 ```bash
-npm install
-
-# Front-end only (Vite dev server)
-npm run dev
-
-# Full stack locally (Pages + Functions + DO + R2 emulation)
-npm run worker:dev      # terminal 1 — runs the room-worker Durable Object
-npm run pages:dev       # terminal 2 — runs Pages + Functions, bound to the worker
+npx wrangler login
+npx wrangler r2 bucket create vanish-media
+npx wrangler queues create vanish-moderation-reports
+npx wrangler queues create vanish-moderation-reports-dlq
+npm run worker:deploy
+npx wrangler pages project create vanish --production-branch main
+npx wrangler pages secret put UPLOAD_SECRET --project-name vanish   # paste a random value, e.g. from: openssl rand -base64 32
+npm run build && npm run pages:deploy
 ```
 
-Copy `.env.example` to `.env` and adjust as needed. All build-time front-end vars are optional.
+After that, `npm run deploy` ships updates in the right order. The
+[deployment guide](docs/DEPLOY.md) explains each step and covers push notifications,
+custom domains, automatic deploys from GitHub, and every environment variable.
 
-### Native apps (Capacitor)
+## For developers
 
-The iOS/Android apps are a thin shell that loads the deployed web app. After `npm run build`:
+### Checks
 
 ```bash
-npm install @capacitor/core @capacitor/cli @capacitor/ios @capacitor/android
-npx cap add ios       # and/or: npx cap add android
-npx cap sync
-npx cap open ios      # opens Xcode (or: npx cap open android)
+npm test            # unit tests (vitest)
+npm run typecheck   # TypeScript across the web app, functions, and worker
+npm run build       # production build with Subresource Integrity hashes
+npm run test:e2e    # browser tests (Playwright) against the full local stack
 ```
 
-See `docs/NATIVE.md` for signing, the `server.url` override for a custom domain, and store
-notes.
+CI runs all four on every pull request. What the suites cover:
 
----
-
-## Testing
-
-```bash
-npm test            # unit tests (crypto, invite, room-core) via vitest
-npm run test:e2e    # end-to-end browser tests via Playwright
-npm run typecheck   # tsc across shared / functions / worker / front-end
-```
-
-What the suites cover:
-
-- **Crypto** — the same key round-trips; a wrong key fails to decrypt; a tampered ciphertext
+- **Crypto**: the same key round-trips; a wrong key fails to decrypt; a tampered ciphertext
   fails the GCM auth tag; message / media / proof keys are independent; epoch (v2) envelopes
   round-trip and v1 envelopes still decode.
-- **API** — invalid invites are denied; expired invites are blocked from joining (but existing
+- **API**: invalid invites are denied; expired invites are blocked from joining (but existing
   data is preserved); rejoin works; multiple participants can join; prune, delete, edit, and
   owner actions require a valid proof.
-- **E2E** — two browser contexts create + join a room, exchange live text, upload an
+- **E2E**: two browser contexts create and join a room, exchange live text, upload an
   image/video, decrypt and download it, prune messages, and delete the room.
-- **Privacy** — assertions that no plaintext message text, usernames, filenames, or media bytes
+- **Privacy**: assertions that no plaintext message text, usernames, filenames, or media bytes
   are ever present in server-bound payloads.
 
-> Note: a sandbox without a package registry cannot install dev dependencies; in that
-> environment the crypto/room core was verified directly with `tsx tests/manual/verify.ts`.
-> On any normal machine, `npm install` then the commands above run the full suites.
+### Running the pieces yourself
 
----
+`npm start` is a wrapper around these commands. Run them directly if you want to work on one
+part at a time:
 
-## Deployment (Cloudflare)
+```bash
+npm run dev                                            # web app only (Vite, http://localhost:5173), no API
+npm run build                                          # needed before pages:dev, which serves dist/
+npm run worker:dev -- --persist-to .wrangler/state     # terminal 1: room Worker (Durable Objects, R2, queue)
+npm run pages:dev -- --persist-to .wrangler/state      # terminal 2: web app + /api functions on :8788
+```
 
-> Deploy the Durable Object Worker **first** — Pages binds to it by script name.
+Give both Wrangler processes the same `--persist-to` folder so they share one local R2
+bucket. `pages:dev` reads `UPLOAD_SECRET` from `.dev.vars` (`npm start` creates it, or add
+`UPLOAD_SECRET=anything-random` yourself). Build-time options live in `.env`; copy
+`.env.example` to start.
 
-1. **Install the CLI and log in**
-   ```bash
-   npm install
-   npx wrangler login
-   ```
-2. **Create the R2 bucket** (shared by Pages + worker)
-   ```bash
-   npx wrangler r2 bucket create vanish-media
-   ```
-   > **Optional safety net:** the Durable Object already deletes media on prune,
-   > burn-after-read, per-message expiry, and room destruction. As belt-and-braces against any
-   > object the DO ever misses (e.g. an upload whose message post failed), add an R2 lifecycle
-   > rule that auto-expires objects under the `rooms/` prefix. List current rules with
-   > `npx wrangler r2 bucket lifecycle list vanish-media`, and add one with
-   > `npx wrangler r2 bucket lifecycle add vanish-media` (interactive) or via the R2 dashboard
-   > (Bucket ▸ Settings ▸ Object lifecycle rules). Use an expiry comfortably longer than your
-   > longest message TTL (e.g. 7 days). Note that rooms or messages set to **Never** auto-delete
-   > keep their media indefinitely, so a lifecycle rule will remove attachments from those
-   > messages once it fires; skip the rule (or make it much longer) if you rely on "Never".
-3. **Deploy the Room Durable Object worker**
-   ```bash
-   npm run worker:deploy   # publishes the "vanish-room" worker that exports RoomDurableObject
-   ```
-4. **Set the Pages upload secret** (used to sign R2 upload/download capabilities). This is a
-   value you generate yourself (e.g. `openssl rand -base64 32`) — it is not issued by
-   Cloudflare:
-   ```bash
-   npx wrangler pages secret put UPLOAD_SECRET --project-name vanish
-   ```
-   To confirm it is already set (names only, never values):
-   ```bash
-   npx wrangler pages secret list --project-name vanish
-   ```
-   > Upload endpoints fail closed with `503` when `UPLOAD_SECRET` is not set. There is no
-   > hard-coded fallback, so configuring the same high-entropy secret for Pages is required.
-5. **Enable background notifications** (optional, recommended) — generate a VAPID key pair for
-   Web Push:
-   ```bash
-   npx web-push generate-vapid-keys
-   ```
-   Put the keys on the **worker** (it signs and sends the pushes) and the **public key** on
-   **Pages** (the client subscribes with it). Use the **same** public key in both places; the
-   private key must **never** be placed on Pages.
-   ```bash
-   # Worker (Durable Object) — sends notifications
-   npx wrangler secret put VAPID_PUBLIC_KEY
-   npx wrangler secret put VAPID_PRIVATE_KEY
-   npx wrangler secret put VAPID_SUBJECT      # a contact URI: mailto:you@example.com or https://…
+### Project layout
 
-   # Pages — the client reads the public key to subscribe
-   npx wrangler pages secret put VAPID_PUBLIC_KEY --project-name vanish
-   ```
-   > If VAPID is unset, Vanish still works — background push fan-out is simply disabled, and
-   > in-app plus on-screen notifications continue to function.
-6. **Build and deploy Pages**
-   ```bash
-   npm run build
-   npm run pages:deploy    # deploys dist to the vanish Pages project
-   ```
-   The Pages project binds the `ROOM` Durable Object namespace to the `vanish-room` worker and
-   binds the `MEDIA` R2 bucket (see `wrangler.toml`). Confirm both bindings in the dashboard if
-   you created the project through the UI.
-7. **Smoke test** the live deploy: open the site, create a room, open the invite link in a
-   second browser/profile, send a message, upload an image, record a voice note, set a room
-   topic, edit and delete a message, ban/unban the second participant, prune, and delete. To
-   check push, enable notifications, then confirm messages stay silent while Vanish is visibly
-   open and raise a generic push only after the app is hidden or closed.
+```
+src/           React + Vite web app (lib/ logic, components/ UI, styles/)
+functions/     Cloudflare Pages Functions: the HTTP API and WebSocket entry
+room-worker/   Companion Worker hosting the room and rate-limit Durable Objects
+shared/        Crypto, invite, and room logic shared by client and server
+public/        PWA manifest, service worker, icons, _headers (CSP), _routes.json
+scripts/       start.mjs, the one-command local runner behind npm start
+docs/          Deployment, how it works, safety guide, native apps, README images
+tests/         unit (vitest) · e2e (playwright) · manual (tsx verify)
+```
 
-### Environment variables
+### Native apps
 
-| Variable | Where | Purpose |
-| --- | --- | --- |
-| `UPLOAD_SECRET` | Pages (secret) | Signs short-lived, object-scoped R2 upload capabilities |
-| `VAPID_PUBLIC_KEY` | Worker + Pages (secret) | Web Push public key; the client subscribes with it (same value in both places) |
-| `VAPID_PRIVATE_KEY` | Worker (secret) | Web Push private key that signs push messages — never place it on Pages |
-| `VAPID_SUBJECT` | Worker (secret) | VAPID contact URI (`mailto:…` or `https://…`) |
-| `VITE_APP_NAME` | Build-time (optional) | Override the app name |
-| `VITE_IPA_DOWNLOAD_URL` | Build-time (optional) | If set, shows the “Install the app” prompt and a Download IPA button |
+The iOS and Android apps are a thin [Capacitor](https://capacitorjs.com) shell around the
+deployed web app. See [docs/NATIVE.md](docs/NATIVE.md) for setup, signing, and store notes.
 
-Cloudflare Web Analytics is enabled at the Pages/zone level. The production CSP allows only
-Cloudflare's documented beacon script and reporting endpoint; no build-time analytics token is
-required.
+## Privacy and security at a glance
 
----
+- Messages, usernames, captions, filenames, and media are encrypted in your browser
+  (AES-GCM-256) before upload. The server stores only ciphertext and cannot read it.
+- Message keys rotate every hour, and every message is signed by the sender's device, so
+  holding the room key alone doesn't let someone pose as another member.
+- Background notifications carry no message content, only "something new in this room".
+- Anyone with the invite link can join and read the room. Share it only with people you trust.
+- Vanish can't stop people in the room from copying or screenshotting what they see, and
+  Cloudflare still sees network metadata such as IP addresses and timing.
+- It uses strong, modern cryptography, but it has not been independently audited and is not
+  meant for legal, military, or classified use.
 
-## Security & privacy summary
-
-- Messages, usernames, captions, filenames, and media are encrypted in your browser before
-  upload. The server cannot read them.
-- Message keys rotate on an hourly **epoch ratchet**, so each time window uses an independent
-  key and compromising one window's derived key does not expose the others.
-- Each message is **signed with a per-sender Ed25519 key**, so other participants are warned if
-  a message can't be verified or a sender's signing key changes — holding the room key alone
-  does not let someone forge messages as another participant.
-- **Owner moderation** (encrypted topic, member list, ban/unban, clear, destroy) is gated by a
-  device-only owner secret; the server stores only its hash.
-- **Decoy messages** can be enabled to mask when you are actually talking; decoys are
-  indistinguishable from real messages on the wire.
-- **Multi-device transfer** moves a room between your own devices inside a ten-minute code
-  protected by a 128-bit pairing secret; it never touches the server.
-- Plaintext is size-padded before encryption, so ciphertext and stored object sizes reveal
-  little about message or file length.
-- Background push notifications are **content-free** — they carry only a room id, never message
-  text — and the device decrypts locally after you open the app.
-- Static front-end assets are protected with **Subresource Integrity** (SHA-384 hashes injected
-  at build time), so your browser refuses to run any script or stylesheet whose bytes have been
-  altered in transit or at the edge.
-- Vanish is **anonymous**: no account, email, phone, or profile is ever collected.
-- Keys live only in the invite link and your browser. **If you lose the link, the room is
-  unrecoverable** — there is no reset, by design.
-- When device lock is enabled, invite keys, participant proofs, owner credentials, and Ed25519
-  signing identities are encrypted together in the local vault; legacy plaintext credentials
-  are migrated on first use.
-- Anyone holding the invite key can join and decrypt, so share it only with people you trust.
-- Messages auto-delete on a per-room schedule (default 24 hours, or "Never" to keep them until
-  deleted), with optional burn-after-read; the whole room can also be set to self-destruct,
-  and you can manually prune or delete the entire room at any time.
-- Cloudflare may process transport metadata (IP addresses, timestamps, room IDs, object sizes)
-  to operate the service.
-- Vanish uses strong, modern, secure-by-default cryptography, but it is **not** intended for
-  legal, military, or classified use.
-
----
-
-## Threat model
-
-Vanish is built for **anonymous, ephemeral, end-to-end-encrypted conversations among people who
-share an invite link out-of-band**. Being explicit about what that does and does not cover:
-
-### What Vanish protects against
-
-- **The server / host reading content.** Pages Functions, the Durable Object, and R2 only ever
-  store ciphertext and operational metadata. They hold no key material and cannot decrypt
-  messages, usernames, captions, filenames, or media — even if fully compromised.
-- **Network eavesdroppers.** All content is AES-GCM-256 encrypted in the browser before it
-  touches the network, underneath TLS.
-- **Tampering with stored or in-transit ciphertext.** AES-GCM authentication tags make any
-  modified envelope fail decryption rather than yield altered plaintext.
-- **Impersonation by another room member.** Per-sender Ed25519 signatures plus trust-on-first-
-  use pinning mean a participant (or anyone who merely holds the invite key) cannot forge a
-  message attributed to a different sender without the UI flagging it.
-- **Unmoderated membership.** A room owner can ban participants and destroy the room; bans are
-  enforced server-side against the access proof.
-- **Tampered front-end delivery.** Subresource Integrity (SHA-384) makes the browser refuse any
-  script or stylesheet whose bytes were altered at the edge or in transit.
-- **Indefinite retention.** Messages auto-expire on a per-room schedule, support
-  burn-after-read, and the whole room can self-destruct; deletion removes envelopes and the
-  associated R2 objects.
-- **Content-length leakage.** Plaintext is padded to coarse size buckets before encryption.
-- **Per-window key compromise.** The hourly epoch ratchet gives each time window an independent
-  message key, limiting the blast radius of any single derived key.
-
-### What Vanish does NOT protect against
-
-- **A malicious or careless participant.** Anyone you give the invite key to can read
-  everything, screenshot it, copy it, or re-share the key. Signing proves *who said what among
-  current members* — it does not stop an authorized member from leaking.
-- **A compromised device or browser.** Keys live in your browser; malware, a hostile extension,
-  or someone with your unlocked device can read plaintext. Vanish is only as trustworthy as the
-  endpoints.
-- **Metadata.** Cloudflare necessarily processes transport metadata — IP addresses, timestamps,
-  room IDs, request sizes, and object sizes. Vanish does not use Tor-style mix routing; it is
-  not designed to hide *that* you are talking or *with whom* at the network level. Decoy
-  messages help obscure *timing*, but are not a substitute for a mix network.
-- **Full forward secrecy against root-secret compromise.** The epoch ratchet rotates message
-  keys per time window and bounds per-window exposure, but every epoch key is still derivable
-  from the static invite secret. Anyone who later obtains the invite secret can re-derive past
-  epoch keys and decrypt previously captured ciphertext. True forward secrecy would require
-  interactive key agreement between members and irreversibly discarding past keys (which would
-  also make reloading history impossible) — out of scope for a shared-secret room.
-- **Lost keys.** The secret lives only in the invite link and your browser. Lose the link and
-  the room is unrecoverable by design — there is no reset or recovery.
-- **Traffic analysis.** Presence counts and message timing are observable to the server
-  (mitigated, not eliminated, by optional decoy messages).
-- **Legal, military, or classified use.** Vanish uses strong, modern, secure-by-default
-  cryptography, but it has not been independently audited and is not intended for high-stakes
-  adversarial use.
-
-### Trust assumptions
-
-- You trust the people you share the invite key with.
-- You trust the device and browser you run Vanish in.
-- You trust that the code served to your browser is authentic. Subresource Integrity and a
-  strict CSP help, but you are ultimately trusting the deployment and Cloudflare's edge.
-- When it matters, you compare the **safety number** out-of-band and heed the per-sender
-  key-change warnings.
-
----
+The full details, including the encryption design, architecture, and threat model, are in
+[How Vanish works](docs/HOW-IT-WORKS.md).
 
 ## License
 
-Vanish is released under the [MIT License](./LICENSE).
+Vanish is released under the [MIT License](LICENSE).
