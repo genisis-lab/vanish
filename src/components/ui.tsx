@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useRef,
   useState,
   type ReactNode,
@@ -157,5 +158,118 @@ export function Sheet({
       </div>
     </div>,
     hostRef.current,
+  )
+}
+
+/* ---------- Confirm and prompt sheets ---------- */
+// In-app replacements for window.confirm and window.prompt, which look like
+// browser warnings, can't be styled, and are blocked in some installed apps.
+
+export function ConfirmSheet({
+  title,
+  icon,
+  children,
+  confirmLabel,
+  danger = false,
+  onConfirm,
+  onClose,
+}: {
+  title: string
+  icon?: ReactNode
+  children?: ReactNode
+  confirmLabel: string
+  danger?: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <Sheet title={title} icon={icon} onClose={onClose}>
+      <div className="stack">
+        {children}
+        <button
+          type="button"
+          className={`btn btn-block ${danger ? "btn-danger" : "btn-primary"}`}
+          onClick={onConfirm}
+        >
+          {confirmLabel}
+        </button>
+        <button type="button" className="btn btn-ghost btn-block" onClick={onClose}>
+          Cancel
+        </button>
+      </div>
+    </Sheet>
+  )
+}
+
+export function PromptSheet({
+  title,
+  icon,
+  label,
+  hint,
+  initialValue = "",
+  placeholder,
+  maxLength,
+  allowEmpty = false,
+  confirmLabel = "Save",
+  onSubmit,
+  onClose,
+}: {
+  title: string
+  icon?: ReactNode
+  label: string
+  hint?: ReactNode
+  initialValue?: string
+  placeholder?: string
+  maxLength?: number
+  /** Saving an empty value is allowed (for example, to clear a topic). */
+  allowEmpty?: boolean
+  confirmLabel?: string
+  /** Called with the trimmed value. */
+  onSubmit: (value: string) => void
+  onClose: () => void
+}) {
+  const [value, setValue] = useState(initialValue)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const id = useId()
+  // Runs after the Sheet has mounted and moved focus to its first button.
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [])
+  const trimmed = value.trim()
+  const canSave = allowEmpty || trimmed.length > 0
+  return (
+    <Sheet title={title} icon={icon} onClose={onClose}>
+      <form
+        className="stack"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (canSave) onSubmit(trimmed)
+        }}
+      >
+        <div>
+          <label className="label" htmlFor={id}>
+            {label}
+          </label>
+          <input
+            ref={inputRef}
+            id={id}
+            className="input"
+            value={value}
+            placeholder={placeholder}
+            maxLength={maxLength}
+            autoComplete="off"
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </div>
+        {hint && <p className="hint">{hint}</p>}
+        <button type="submit" className="btn btn-primary btn-block" disabled={!canSave}>
+          {confirmLabel}
+        </button>
+        <button type="button" className="btn btn-ghost btn-block" onClick={onClose}>
+          Cancel
+        </button>
+      </form>
+    </Sheet>
   )
 }

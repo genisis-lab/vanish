@@ -222,3 +222,107 @@ describe("keeping older messages once the timer is already Never", () => {
     expect(p.onChangeTimer).toHaveBeenCalledWith(0, { keepExisting: true })
   })
 })
+
+describe("editing, shortcuts and mentions", () => {
+  const editor = () => host.querySelector<HTMLDivElement>('[role="textbox"]')!
+  const button = (label: string) =>
+    [...host.querySelectorAll("button")].find((el) => el.getAttribute("aria-label") === label)
+  const options = () =>
+    [...host.querySelectorAll('[role="option"]')].map((el) => el.textContent)
+  // Put text in the box with the caret at its end, as typing would.
+  async function type(text: string) {
+    await act(async () => {
+      const el = editor()
+      el.textContent = text
+      const node = el.firstChild ?? el
+      const range = document.createRange()
+      range.setStart(node, text.length)
+      range.collapse(true)
+      const sel = window.getSelection()!
+      sel.removeAllRanges()
+      sel.addRange(range)
+      el.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+  }
+  async function key(name: string) {
+    await act(async () => {
+      editor().dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true }))
+    })
+  }
+
+  it("saves an edit instead of sending, then puts the draft back", async () => {
+    const p = { ...props(), onSaveEdit: vi.fn(), onCancelEdit: vi.fn() }
+    await act(async () => root.render(createElement(Composer, p)))
+    await type("half-typed draft")
+    const editing = { id: "m1", text: "old **text**" }
+    await act(async () => root.render(createElement(Composer, { ...p, editing })))
+    expect(editor().textContent).toBe("old **text**")
+    expect(host.querySelector(".edit-bar")?.textContent).toContain("Editing message")
+    expect(host.querySelector(".edit-bar")?.textContent).toContain("old text")
+    expect(button("Save edit")).toBeTruthy()
+    expect(button("Attach encrypted photo or video")).toBeUndefined()
+    await type("new text")
+    await key("Enter")
+    expect(p.onSaveEdit).toHaveBeenCalledWith("new text")
+    expect(p.onSend).not.toHaveBeenCalled()
+    await act(async () => root.render(createElement(Composer, { ...p, editing: null })))
+    expect(editor().textContent).toBe("half-typed draft")
+  })
+
+  it("Escape cancels an edit, or else a reply", async () => {
+    const p = { ...props(), onCancelEdit: vi.fn() }
+    await act(async () =>
+      root.render(createElement(Composer, { ...p, editing: { id: "m1", text: "hi" } })),
+    )
+    await key("Escape")
+    expect(p.onCancelEdit).toHaveBeenCalledOnce()
+    const replyTo = { id: "m2", username: "Ash", preview: "hello" }
+    await act(async () => root.render(createElement(Composer, { ...p, editing: null, replyTo })))
+    await key("Escape")
+    expect(p.onCancelReply).toHaveBeenCalledOnce()
+  })
+
+  it("Up arrow in an empty box edits my latest message", async () => {
+    const p = { ...props(), onEditLast: vi.fn(() => true) }
+    await act(async () => root.render(createElement(Composer, p)))
+    await key("ArrowUp")
+    expect(p.onEditLast).toHaveBeenCalledOnce()
+    await type("not empty")
+    await key("ArrowUp")
+    expect(p.onEditLast).toHaveBeenCalledOnce()
+  })
+
+  it("suggests names after @ and inserts the chosen one", async () => {
+    const p = { ...props(), mentionNames: ["Ben", "Ash K", "Bea"] }
+    await act(async () => root.render(createElement(Composer, p)))
+    await type("Hi @b")
+    expect(options()).toEqual(["@Bea", "@Ben"])
+    await key("ArrowDown")
+    expect(host.querySelector('[aria-selected="true"]')?.textContent).toBe("@Ben")
+    await key("Enter")
+    expect(editor().textContent).toBe("Hi @Ben ")
+    expect(options()).toEqual([])
+    expect(p.onSend).not.toHaveBeenCalled()
+    // Names with spaces match as they are typed; Escape closes the list.
+    await type("ok @ash ")
+    expect(options()).toEqual(["@Ash K"])
+    await key("Escape")
+    expect(options()).toEqual([])
+    // No suggestions inside a word, such as an email address.
+    await type("mail me at bea@b")
+    expect(options()).toEqual([])
+  })
+
+  it("keeps the box editable while an attachment uploads, but waits to send", async () => {
+    const uploads = [
+      { id: "u1", messageId: "m1", filename: "a.png", status: "uploading" as const, progress: 0.5 },
+    ]
+    const p = { ...props(), uploads }
+    await act(async () => root.render(createElement(Composer, p)))
+    expect(editor().getAttribute("contenteditable")).toBe("true")
+    await type("next message")
+    expect(button("Send message")?.hasAttribute("disabled")).toBe(true)
+    await key("Enter")
+    expect(p.onSend).not.toHaveBeenCalled()
+  })
+})

@@ -4,6 +4,7 @@ import {
   Check,
   CheckCheck,
   Clock,
+  Copy,
   CornerDownRight,
   Flame,
   Pencil,
@@ -18,7 +19,8 @@ import {
 import type { RoomSession } from "../lib/session"
 import type { DecryptedMessage } from "../lib/messages"
 import type { MediaManifestItem } from "../lib/media"
-import { formatCountdown, formatTime, hueFromString } from "../lib/format"
+import { formatDateTime, formatTime, hueFromString } from "../lib/format"
+import { useCountdown } from "../lib/useCountdown"
 import { MediaTile } from "./MediaTile"
 import { RichText } from "./RichText"
 import { mentionsName } from "../lib/richText"
@@ -48,6 +50,8 @@ interface Props {
   onToggleSelect: (id: string) => void
   onReact: (id: string, emoji: string) => void
   onReply: (msg: DecryptedMessage) => void
+  /** Copy the message's text to the clipboard. */
+  onCopy?: (msg: DecryptedMessage) => void
   onEdit?: (msg: DecryptedMessage) => void
   onDelete?: (msg: DecryptedMessage) => void
   onReport?: (msg: DecryptedMessage) => void
@@ -62,16 +66,17 @@ interface Props {
   onPin?: (msg: DecryptedMessage) => void
 }
 
-// Re-render once per second while a message carries a live disappearing-timer,
-// so the countdown in the footer ticks down visibly instead of only updating
-// when the surrounding list happens to re-render.
-function useSecondTick(active: boolean) {
-  const [, setTick] = useState(0)
-  useEffect(() => {
-    if (!active) return
-    const t = setInterval(() => setTick((n) => (n + 1) % 3600), 1000)
-    return () => clearInterval(t)
-  }, [active])
+/** Whether this device can edit a message: its own sent text, or a caption on its own media. */
+export function canEditMessage(msg: DecryptedMessage): boolean {
+  if (!msg.mine || msg.deleted || msg.pending || msg.failed) return false
+  if (msg.kind === "text") return true
+  return msg.kind === "media" && !msg.burn && (msg.items?.length ?? 0) > 0
+}
+
+/** Text worth copying: not empty, and not a placeholder for a message that failed to decrypt. */
+export function copyableText(msg: DecryptedMessage): string | null {
+  if (msg.deleted || !msg.text || msg.text.startsWith("\u26a0")) return null
+  return msg.text
 }
 
 function MessageItemInner({
@@ -87,6 +92,7 @@ function MessageItemInner({
   onToggleSelect,
   onReact,
   onReply,
+  onCopy,
   onEdit,
   onDelete,
   onReport,
@@ -103,7 +109,9 @@ function MessageItemInner({
   const [dragX, setDragX] = useState(0)
   const dragStartX = useRef<number | null>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
-  useSecondTick(msg.kind !== "system" && msg.expiresAt != null)
+  // Re-renders when the countdown label changes, so the footer ticks down
+  // without the whole list re-rendering.
+  const ttl = useCountdown(msg.kind === "system" ? null : msg.expiresAt)
 
   // Close the reaction picker when tapping/clicking anywhere outside it (but
   // not on the toggle button, which manages its own open/close).
@@ -152,7 +160,7 @@ function MessageItemInner({
           <Flame size={18} /> Open once{msg.kind === "media" ? " · attachment" : " · message"}
         </button>
         <span className="hint">
-          Expires in {formatCountdown(msg.expiresAt)}. Opening removes it for everyone.
+          Expires in {ttl}. Opening removes it for everyone.
         </span>
       </div>
     )
@@ -161,7 +169,6 @@ function MessageItemInner({
   const mentionsMe = !msg.mine && !msg.deleted && mentionsName(msg.text, session.username)
   const hue = hueFromString(msg.username)
   const whoStyle = { color: `hsl(${hue} 55% 60%)` }
-  const ttl = formatCountdown(msg.expiresAt)
 
   function click() {
     if (selecting) {
@@ -199,10 +206,11 @@ function MessageItemInner({
     setDragX(0)
   }
 
-  // Edit is offered for my own plain-text messages; delete for any of my own
-  // messages. Both require the message to be acked (not pending/failed) and not
-  // already deleted.
+  // Edit is offered for my own text messages and media captions; delete for
+  // any of my own messages. Both require the message to be acked (not
+  // pending/failed) and not already deleted.
   const canModify = msg.mine && !msg.deleted && !msg.pending && !msg.failed
+  const copyText = copyableText(msg)
 
   const tools = !selecting && !msg.deleted && (
     <div className={`msg-tools ${actions ? "open" : ""}`} data-msg-actions>
@@ -216,7 +224,19 @@ function MessageItemInner({
       >
         <Reply size={15} />
       </button>
-      {canModify && msg.kind === "text" && onEdit && (
+      {copyText !== null && onCopy && (
+        <button
+          className="icon-btn mini"
+          aria-label="Copy text"
+          onClick={() => {
+            onCopy(msg)
+            setActions(false)
+          }}
+        >
+          <Copy size={15} />
+        </button>
+      )}
+      {canEditMessage(msg) && onEdit && (
         <button
           className="icon-btn mini"
           aria-label="Edit message"
@@ -393,7 +413,9 @@ function MessageItemInner({
       )}
 
       <div className="foot">
-        <span>{formatTime(msg.createdAt)}</span>
+        <time dateTime={new Date(msg.createdAt).toISOString()} title={formatDateTime(msg.createdAt)}>
+          {formatTime(msg.createdAt)}
+        </time>
         {!msg.deleted && msg.editedAt && (
           <span className="edited-tag" style={EDITED}>
             edited
