@@ -1,0 +1,309 @@
+# How Vanish works
+
+This page is the detailed companion to the [README](../README.md): every feature, how the
+encryption is put together, how the pieces run on Cloudflare, and what Vanish does and does
+not protect you from. If you just want to try Vanish, start with the README instead.
+
+For everyday safety advice (verifying people, safety numbers, what to do if a link leaks),
+see [Staying safe and verifying who you're talking to](SAFETY-AND-IDENTITY.md).
+
+## Contents
+
+- [Rooms, timers and read-once messages](#rooms-timers-and-read-once-messages)
+- [Full feature list](#full-feature-list)
+- [Notifications across rooms](#notifications-across-rooms)
+- [How the encryption works](#how-the-encryption-works)
+- [Architecture](#architecture)
+- [Security and privacy summary](#security-and-privacy-summary)
+- [Threat model](#threat-model)
+
+---
+
+## Rooms, timers and read-once messages
+
+- Choose **Quick conversation** (five-minute messages, one-hour room, 24-hour invite),
+  **24-hour room** (24-hour messages, room, and invite), or customize each timer.
+  A destroyed room always ends invite access, even when the invite has time remaining.
+- The composer's timer is shared by the whole chat. Any member can change it; everyone's
+  timer updates live and an encrypted system line ("Sam set messages to disappear after 1h")
+  appears in the conversation. It applies to messages sent after the change.
+- **Read once** messages stay covered until a recipient chooses **Open once**. Small media
+  is downloaded and decrypted before the consumption acknowledgment deletes the message and
+  attachments for everyone. Large attachments must finish saving first. The loaded viewer
+  remains available until closed, backgrounded, its original timer expires, or one minute
+  passes. Unopened read-once messages also expire on their selected message timer.
+- Read receipts name the specific messages visible in the focused conversation. Fetching
+  history, background polling, and viewing a settings dialog do not mark messages read.
+- Voice recordings open a local playback preview. Choose **Send voice note** or **Discard**;
+  stopping a recording never sends it automatically.
+- Invite panels offer the native share sheet where supported, with copy-link and QR fallbacks.
+  Appearance, text size, compact mode, privacy blur, and notification controls are available
+  from **Room actions → Appearance & notifications** on desktop and mobile.
+- Uploads can be cancelled during encryption or transfer, including multipart uploads.
+  Network requests time out with an actionable error instead of waiting indefinitely.
+- Remembered rooms are stored locally. Without a device passphrase, their keys are **not
+  encrypted at rest**; the creation form states this beside the remember option. Device lock
+  enables passphrase protection. Recipients can still copy, screenshot, or save content, and
+  Cloudflare can process network metadata.
+
+---
+
+## Full feature list
+
+- **Anonymous, instant rooms** — no account, email, or phone. Pick a display name, create a
+  room, and share the secret invite link or QR code.
+- **End-to-end encryption** — message text, usernames, captions, filenames, and media are
+  encrypted in your browser before they touch the network (AES-GCM-256, keys derived with
+  HKDF-SHA-256).
+- **Epoch key separation** — message keys rotate hourly and are independently derived
+  from the room secret, so each time window uses an independent key. New (v2) and older (v1)
+  envelopes are both decodable, so history never breaks across the upgrade.
+- **Per-sender signatures** — every message is signed with an ephemeral Ed25519 key, with
+  trust-on-first-use pinning, so holding the room key alone can't forge messages as another
+  member.
+- **Encrypted media & voice notes** — share images, video, and recorded voice notes; bytes,
+  filenames, and captions are encrypted client-side and stored as opaque R2 blobs.
+  Files up to 2 GiB are encrypted and uploaded in fixed 16 MiB multipart chunks, keeping
+  browser and Worker memory bounded. Drag-and-drop, clipboard paste, and an in-composer
+  microphone recorder are supported.
+- **Bounded media storage** — uploads require a participant-bound, one-use reservation and each
+  room has a 5 GiB encrypted-media quota; unattached reservations are swept automatically.
+- **Replies, threading & reactions** — quote any message, follow reply chains, and react with
+  emoji; replies and reactions are encrypted too.
+- **Edit & delete your own messages** — revise or retract anything you sent; edits and
+  tombstones propagate in realtime and are enforced server-side by per-sender proof.
+- **Read receipts & presence** — per-person “seen” markers, live typing indicators, and
+  participant counts over WebSockets, with an automatic polling fallback.
+- **Room owner controls** — the room creator holds a device-only owner secret (the server keeps
+  only its hash) that gates moderation: set an **encrypted room topic/name**, view the
+  **member list**, **ban/unban** participants, **pin a message** for everyone, **lock the
+  disappearing timer** so only the owner can change it, clear the room, or destroy it entirely.
+- **Decoy messages (traffic masking)** — an optional mode that sends harmless fake messages in
+  the background, byte-for-byte indistinguishable from real ones (same envelope + size padding)
+  and silently dropped by recipients, so an outside observer can't tell when you're actually
+  talking.
+- **Multi-device sync** — move a room to another device with a short-lived transfer code
+  (shown as a QR or copyable string) that carries the room key, your participant identity,
+  signing key, and — if you're the owner — owner rights. Nothing transits the server.
+- **Message formatting** — **bold**, *italics*, `code`, and **@mentions** (highlighted for the
+  person mentioned). Links are clickable but never fetched or previewed by Vanish; opening one
+  asks first, shows the full address, and strips the referrer.
+- **Catch-up tools** — a "New messages" divider marks where you left off, and a jump-to-latest
+  button appears when you scroll up. Leave notices name who left when the server can tell.
+- **Disappearing messages** — a chat-wide timer any member can change (or "Never" to keep
+  messages until you delete them), optional burn-after-read, and an optional whole-room self-destruct.
+- **Per-room alerts** — all messages, only @mentions, or muted, per device. (Background Web
+  Push stays content-free, so it can't tell mentions apart.)
+- **Background notifications** — Web Push wakes you for new messages when Vanish is hidden,
+  minimized, backgrounded, or fully closed; while any Vanish window is visibly open,
+  notifications stay silent and the in-app UI handles activity (see below).
+- **Installable everywhere** — runs as an offline-capable PWA with browser install prompts,
+  mobile Home Screen guidance, refresh-on-new-build, and a native iOS/Android shell via Capacitor (see
+  [NATIVE.md](NATIVE.md)).
+- **Privacy guards** — a privacy blur veils the conversation when you switch away, plus a
+  one-tap “panic” wipe-and-leave.
+- **Stays on your device** — optionally remember a room in an encrypted local vault to rejoin
+  after a refresh, change your nickname mid-room, and export a local transcript.
+
+---
+
+## Notifications across rooms
+
+Notifications are designed to avoid duplicate alerts while you are actively using Vanish:
+
+- If any Vanish window is **visible in the foreground** — whether you're in the active room,
+  another room, the home screen, or the vault lock screen — system push notifications stay
+  silent. The running app handles messages with the live UI, unread counts, sounds, and jump
+  pills.
+- If Vanish is **hidden, minimized, backgrounded, or fully closed**, a message in any room
+  you've joined can raise a background push notification.
+- Push payloads are **content-free** (`{ "t": "msg", "room": <id> }`). The server can't read
+  your messages, so the notification is a generic “new encrypted message” ping that opens the
+  app to decrypt locally.
+- Toggle notifications per session with the bell icon. Turning them off unsubscribes this
+  browser, and the server prunes dead subscriptions automatically. Background push requires
+  VAPID keys to be configured at deploy time (see [DEPLOY.md](DEPLOY.md#5-optional-turn-on-background-notifications)); without them, in-app and
+  on-screen notifications still work.
+
+---
+
+## How the encryption works
+
+- The invite key is `anonchat:v1:<roomId>.<secret>`, where `roomId` is 16 random bytes and
+  `secret` is 32 random bytes (both base64url). The **secret never leaves the browser** and is
+  never sent to the server.
+- On join, the browser uses **HKDF-SHA-256** to derive several independent keys from the
+  secret:
+  - `msgKey` — AES-GCM-256 for legacy (v1) message envelopes (text, usernames, reactions)
+  - `mediaKey` — AES-GCM-256 for media bytes, filenames, captions, and manifests
+  - `channelKey` — for realtime channel framing
+  - `accessProof` / `accessProofHash` — a proof the server can verify to gate access **without**
+    being able to derive the secret or decrypt anything
+  - `safetyNumber` — a human-verifiable fingerprint of the room key
+- **Epoch key separation.** Text and media payloads are sealed with a
+  per-**epoch** key derived from the room secret via HKDF (`…:msg:epoch:<n>`), where the epoch
+  advances every hour. Each window therefore uses an independent AES-GCM key, so compromising
+  one epoch's derived key does not expose other windows. Epoch envelopes use the v2 layout
+  `[version=2][epoch(4, big-endian)][iv(12)][ciphertext]`; decryption reads the epoch from the
+  envelope and re-derives that window's key. Older `[version=1][iv(12)][ciphertext]` envelopes
+  remain fully decodable, so stored history is unaffected by the upgrade.
+- Every envelope is AES-GCM with a purpose-bound AAD (`<roomId>:msg`, `:media`, `:react`,
+  `:channel`). Derived keys are non-extractable `CryptoKey`s.
+- Each device also generates an ephemeral **Ed25519 signing keypair** when it joins. This key
+  is deliberately **not** derived from the room secret — deriving it from shared material would
+  let any member forge another member's signature. The device signs every message, and the
+  signature plus its public key travel **inside** the encrypted envelope. Recipients verify the
+  signature, so merely holding the shared room key is **not** enough to forge a message
+  attributed to another sender. The UI flags any message whose signature fails to verify or
+  whose sender's signing key changes mid-session (trust-on-first-use pinning). If a browser
+  lacks WebCrypto Ed25519, the app gracefully falls back to sending unsigned messages.
+- **Owner credential.** The room creator gets a random 256-bit owner secret stored only on
+  their device; the server registers only its SHA-256. Owner-gated actions (set topic, ban,
+  unban, clear, destroy) present the secret as proof-of-possession, which the server checks by
+  hash comparison — so merely being in the room does not grant moderation powers.
+- **Decoy messages.** Cover messages are encrypted with the same v2 epoch envelope and size
+  padding as real messages and flagged only *inside* the ciphertext, so they are
+  indistinguishable on the wire and are dropped by recipients after decryption.
+- **Multi-device transfer.** A transfer code bundles the invite key, participant id, signing
+  keypair, and (for owners) the owner secret, then encrypts it under a 128-bit pairing secret
+  (PBKDF2-SHA-256 → AES-GCM, layout `[salt(16)][iv(12)][ciphertext]`). It is exchanged
+  device-to-device by QR or copy/paste and never touches the server.
+- Plaintext is padded to coarse size buckets before encryption (messages to 256-byte buckets,
+  media to power-of-four byte buckets) so ciphertext length leaks far less about content.
+- The server stores only: room id, an access-verifier hash, an optional owner-secret hash, an
+  optional encrypted room-topic envelope, the banned-participant list, invite expiry,
+  created/deleted timestamps, encrypted message envelopes, encrypted media object paths +
+  sizes, and per-message expiry. **It has no key material and cannot decrypt anything.**
+  Cloudflare may still process transport metadata such as IP addresses, timestamps, room IDs,
+  and object sizes.
+
+---
+
+## Architecture
+
+| Layer | Tech |
+| --- | --- |
+| UI | React + Vite, deployed to **Cloudflare Pages** |
+| API | **Pages Functions** under `functions/api/*` |
+| Coordination + realtime | **Durable Object** (`RoomDurableObject`) in the companion `room-worker/` |
+| Encrypted media | **R2** bucket `vanish-media` (encrypted blobs only) |
+| Background push | **Web Push** (VAPID) fanned out from the Durable Object |
+| Rate limits | **Durable Object** (`AbuseDurableObject`) counting room creation, sessions and uploads per client |
+| Message reports | **Queue** `vanish-moderation-reports` (hashed ids only), consumed by `room-worker/` |
+| Native shell | **Capacitor** (iOS / Android) wrapping the deployed web app |
+
+The Durable Object owns each room's state, fans out realtime WebSocket frames (messages, edits,
+prunes, reactions, presence, read receipts, room-updated, banned, room-deleted), sends
+background Web Push pings to closed/asleep devices, and runs `alarm()`-driven sweeps to delete
+expired messages and orphaned media. Pages Functions are thin auth/validation handlers that
+forward to the DO via a service binding.
+
+```
+browser ──(ciphertext)──▶ Pages Functions ──(service binding)──▶ Room Durable Object
+   │                                                                   │
+   └── decrypt locally ◀── encrypted blobs ◀──────── R2 (vanish-media) ┘
+```
+
+---
+
+## Security and privacy summary
+
+- Messages, usernames, captions, filenames, and media are encrypted in your browser before
+  upload. The server cannot read them.
+- Message keys rotate on an hourly **epoch ratchet**, so each time window uses an independent
+  key and compromising one window's derived key does not expose the others.
+- Each message is **signed with a per-sender Ed25519 key**, so other participants are warned if
+  a message can't be verified or a sender's signing key changes — holding the room key alone
+  does not let someone forge messages as another participant.
+- **Owner moderation** (encrypted topic, member list, ban/unban, clear, destroy) is gated by a
+  device-only owner secret; the server stores only its hash.
+- **Decoy messages** can be enabled to mask when you are actually talking; decoys are
+  indistinguishable from real messages on the wire.
+- **Multi-device transfer** moves a room between your own devices inside a ten-minute code
+  protected by a 128-bit pairing secret; it never touches the server.
+- Plaintext is size-padded before encryption, so ciphertext and stored object sizes reveal
+  little about message or file length.
+- Background push notifications are **content-free** — they carry only a room id, never message
+  text — and the device decrypts locally after you open the app.
+- Static front-end assets are protected with **Subresource Integrity** (SHA-384 hashes injected
+  at build time), so your browser refuses to run any script or stylesheet whose bytes have been
+  altered in transit or at the edge.
+- Vanish is **anonymous**: no account, email, phone, or profile is ever collected.
+- Keys live only in the invite link and your browser. **If you lose the link, the room is
+  unrecoverable** — there is no reset, by design.
+- When device lock is enabled, invite keys, participant proofs, owner credentials, and Ed25519
+  signing identities are encrypted together in the local vault; legacy plaintext credentials
+  are migrated on first use.
+- Anyone holding the invite key can join and decrypt, so share it only with people you trust.
+- Messages auto-delete on a per-room schedule (default 24 hours, or "Never" to keep them until
+  deleted), with optional burn-after-read; the whole room can also be set to self-destruct,
+  and you can manually prune or delete the entire room at any time.
+- Cloudflare may process transport metadata (IP addresses, timestamps, room IDs, object sizes)
+  to operate the service.
+- Vanish uses strong, modern, secure-by-default cryptography, but it is **not** intended for
+  legal, military, or classified use.
+
+---
+
+## Threat model
+
+Vanish is built for **anonymous, ephemeral, end-to-end-encrypted conversations among people who
+share an invite link out-of-band**. Being explicit about what that does and does not cover:
+
+### What Vanish protects against
+
+- **The server / host reading content.** Pages Functions, the Durable Object, and R2 only ever
+  store ciphertext and operational metadata. They hold no key material and cannot decrypt
+  messages, usernames, captions, filenames, or media — even if fully compromised.
+- **Network eavesdroppers.** All content is AES-GCM-256 encrypted in the browser before it
+  touches the network, underneath TLS.
+- **Tampering with stored or in-transit ciphertext.** AES-GCM authentication tags make any
+  modified envelope fail decryption rather than yield altered plaintext.
+- **Impersonation by another room member.** Per-sender Ed25519 signatures plus trust-on-first-
+  use pinning mean a participant (or anyone who merely holds the invite key) cannot forge a
+  message attributed to a different sender without the UI flagging it.
+- **Unmoderated membership.** A room owner can ban participants and destroy the room; bans are
+  enforced server-side against the access proof.
+- **Tampered front-end delivery.** Subresource Integrity (SHA-384) makes the browser refuse any
+  script or stylesheet whose bytes were altered at the edge or in transit.
+- **Indefinite retention.** Messages auto-expire on a per-room schedule, support
+  burn-after-read, and the whole room can self-destruct; deletion removes envelopes and the
+  associated R2 objects.
+- **Content-length leakage.** Plaintext is padded to coarse size buckets before encryption.
+- **Per-window key compromise.** The hourly epoch ratchet gives each time window an independent
+  message key, limiting the blast radius of any single derived key.
+
+### What Vanish does NOT protect against
+
+- **A malicious or careless participant.** Anyone you give the invite key to can read
+  everything, screenshot it, copy it, or re-share the key. Signing proves *who said what among
+  current members* — it does not stop an authorized member from leaking.
+- **A compromised device or browser.** Keys live in your browser; malware, a hostile extension,
+  or someone with your unlocked device can read plaintext. Vanish is only as trustworthy as the
+  endpoints.
+- **Metadata.** Cloudflare necessarily processes transport metadata — IP addresses, timestamps,
+  room IDs, request sizes, and object sizes. Vanish does not use Tor-style mix routing; it is
+  not designed to hide *that* you are talking or *with whom* at the network level. Decoy
+  messages help obscure *timing*, but are not a substitute for a mix network.
+- **Full forward secrecy against root-secret compromise.** The epoch ratchet rotates message
+  keys per time window and bounds per-window exposure, but every epoch key is still derivable
+  from the static invite secret. Anyone who later obtains the invite secret can re-derive past
+  epoch keys and decrypt previously captured ciphertext. True forward secrecy would require
+  interactive key agreement between members and irreversibly discarding past keys (which would
+  also make reloading history impossible) — out of scope for a shared-secret room.
+- **Lost keys.** The secret lives only in the invite link and your browser. Lose the link and
+  the room is unrecoverable by design — there is no reset or recovery.
+- **Traffic analysis.** Presence counts and message timing are observable to the server
+  (mitigated, not eliminated, by optional decoy messages).
+- **Legal, military, or classified use.** Vanish uses strong, modern, secure-by-default
+  cryptography, but it has not been independently audited and is not intended for high-stakes
+  adversarial use.
+
+### Trust assumptions
+
+- You trust the people you share the invite key with.
+- You trust the device and browser you run Vanish in.
+- You trust that the code served to your browser is authentic. Subresource Integrity and a
+  strict CSP help, but you are ultimately trusting the deployment and Cloudflare's edge.
+- When it matters, you compare the **safety number** out-of-band and heed the per-sender
+  key-change warnings.
