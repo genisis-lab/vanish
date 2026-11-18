@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   AlertCircle,
   Check,
@@ -7,6 +7,7 @@ import {
   Loader2,
   Lock,
   Mic,
+  Pencil,
   Reply,
   SendHorizonal,
   Square,
@@ -17,6 +18,7 @@ import {
 import type { SendOpts, UploadState } from "../lib/useRoom"
 import type { ReplyRef } from "../lib/messages"
 import { formatBytes } from "../lib/format"
+import { plainText } from "../lib/richText"
 import {
   CHAT_TIMER_OPTIONS_MS,
   formatTtlShort,
@@ -46,6 +48,61 @@ interface ComposerProps {
   onSend: (text: string, opts?: SendOpts) => void
   onSendMedia: (files: File[], caption: string, opts?: SendOpts) => void
   onTyping: () => void
+  /** A message of mine being edited here. While set, sending saves the edit. */
+  editing?: EditTarget | null
+  onSaveEdit?: (text: string) => void
+  onCancelEdit?: () => void
+  /** Up arrow in an empty box edits my latest message. Returns false if there is none. */
+  onEditLast?: () => boolean
+  /** Names that can be @mentioned, offered as suggestions while typing. */
+  mentionNames?: string[]
+}
+
+export interface EditTarget {
+  id: string
+  text: string
+}
+
+const MAX_SUGGESTIONS = 6
+// "@" at the start or after a non-word character, then up to 32 characters of
+// a name (names can have spaces), ending at the caret.
+const MENTION_QUERY = /(^|[^\p{L}\p{N}_])@([^@\n]{0,32})$/u
+const WORD_CHAR = /[\p{L}\p{N}_]/u
+
+interface MentionSpot {
+  node: Text
+  start: number
+  end: number
+  query: string
+}
+
+/** The "@name" being typed just before the caret in the editor, if any. */
+function mentionAtCaret(editor: HTMLElement): MentionSpot | null {
+  const sel = window.getSelection()
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null
+  const node = sel.focusNode
+  if (!node || node.nodeType !== Node.TEXT_NODE || !editor.contains(node)) return null
+  const text = node as Text
+  const before = text.data.slice(0, sel.focusOffset)
+  const m = MENTION_QUERY.exec(before)
+  if (!m) return null
+  const start = m.index + m[1].length
+  // An "@" at the start of this text node may still follow a word in the one before.
+  if (start === 0) {
+    const prev = text.previousSibling?.textContent ?? ""
+    if (WORD_CHAR.test(prev.slice(-1))) return null
+  }
+  return { node: text, start, end: sel.focusOffset, query: m[2] }
+}
+
+function placeCaretAtEnd(el: HTMLElement) {
+  const sel = window.getSelection()
+  if (!sel) return
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  range.collapse(false)
+  sel.removeAllRanges()
+  sel.addRange(range)
 }
 
 // The timer is chat-wide: picking one changes it for everyone and posts a
@@ -110,6 +167,11 @@ export function Composer({
   onSend,
   onSendMedia,
   onTyping,
+  editing = null,
+  onSaveEdit,
+  onCancelEdit,
+  onEditLast,
+  mentionNames,
 }: ComposerProps) {
   const draftKey = `vanish.draft.${roomId}`
   const [text, setText] = useState("")
@@ -136,6 +198,11 @@ export function Composer({
   const recTimer = useRef<number | null>(null)
   const recSecsRef = useRef(0)
   const discardRef = useRef(false)
+  // What was in the box before an edit started, put back when the edit ends.
+  const draftBeforeEdit = useRef<string | null>(null)
+  const [mention, setMention] = useState<{ query: string; index: number } | null>(null)
+  const mentionSpot = useRef<MentionSpot | null>(null)
+  const mentionListId = useId()
   const busy = uploads.some((u) => u.status === "encrypting" || u.status === "uploading")
   const effectiveTtl = pendingTtl ?? defaultTtlMs
   const alreadyNever = isNeverExpireTtl(defaultTtlMs)
@@ -184,6 +251,40 @@ export function Composer({
   useEffect(() => {
     if (replyTo) editorRef.current?.focus()
   }, [replyTo])
+
+  // Editing puts the message's text in the box; finishing or cancelling puts
+  // back whatever was being typed before.
+  const editingId = editing?.id ?? null
+  useEffect(() => {
+    const el = editorRef.current
+    if (!el) return
+    if (editing) {
+      if (draftBeforeEdit.current === null) draftBeforeEdit.current = readEditorText()
+      el.textContent = editing.text
+      setText(editing.text)
+      syncEditorEmpty()
+      el.focus()
+      placeCaretAtEnd(el)
+    } else if (draftBeforeEdit.current !== null) {
+      const draft = draftBeforeEdit.current
+      draftBeforeEdit.current = null
+      el.textContent = draft
+      setText(draft)
+      syncEditorEmpty()
+    }
+    closeMentions()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId])
+
+  const suggestions = useMemo(() => {
+    if (!mention || !mentionNames?.length) return []
+    const q = mention.query.toLowerCase()
+    return mentionNames
+      .filter((name) => name.toLowerCase().startsWith(q))
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, MAX_SUGGESTIONS)
+  }, [mention?.query, mentionNames])
+  const activeSuggestion = mention && suggestions.length > 0 ? mention.index % suggestions.length : -1
 
   // Tear down any in-flight recording (and release the mic) on unmount.
   useEffect(() => {
@@ -342,7 +443,47 @@ export function Composer({
     setPendingTtl(null)
   }
 
+  function closeMentions() {
+    mentionSpot.current = null
+    setMention(null)
+  }
+
+  // Look for an "@name" being typed at the caret and offer matching names.
+  function updateMentions() {
+    const el = editorRef.current
+    const spot = el && mentionNames?.length ? mentionAtCaret(el) : null
+    mentionSpot.current = spot
+    setMention((prev) =>
+      spot ? { query: spot.query, index: prev?.query === spot.query ? prev.index : 0 } : null,
+    )
+  }
+
+  function insertMention(name: string) {
+    const el = editorRef.current
+    const spot = mentionSpot.current
+    if (!el || !spot || !spot.node.isConnected || !el.contains(spot.node)) return closeMentions()
+    if (spot.node.data.slice(spot.start, spot.end) !== `@${spot.query}`) return closeMentions()
+    const addSpace = !/^\s/.test(spot.node.data.slice(spot.end))
+    spot.node.replaceData(spot.start, spot.end - spot.start, `@${name}${addSpace ? " " : ""}`)
+    el.focus()
+    const range = document.createRange()
+    range.setStart(spot.node, Math.min(spot.start + name.length + 2, spot.node.length))
+    range.collapse(true)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+    closeMentions()
+    setText(readEditorText())
+    syncEditorEmpty()
+    if (!editing) onTyping()
+  }
+
   function submit() {
+    if (editing) {
+      const t = readEditorText().trim()
+      if (t) onSaveEdit?.(t)
+      return
+    }
     if (busy || recording || startingRecording) return
     const t = readEditorText().trim()
     const opts: SendOpts = {
@@ -377,14 +518,73 @@ export function Composer({
     const next = readEditorText()
     setText(next)
     syncEditorEmpty()
-    onTyping()
+    updateMentions()
+    if (!editing) onTyping()
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing) return
+    if (activeSuggestion >= 0 && mention) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault()
+        const step = e.key === "ArrowDown" ? 1 : suggestions.length - 1
+        setMention({ ...mention, index: (activeSuggestion + step) % suggestions.length })
+        return
+      }
+      if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+        e.preventDefault()
+        insertMention(suggestions[activeSuggestion])
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        closeMentions()
+        return
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       submit()
+      return
     }
+    if (e.key === "Escape") {
+      if (editing) {
+        e.preventDefault()
+        onCancelEdit?.()
+      } else if (replyTo) {
+        e.preventDefault()
+        onCancelReply()
+      }
+      return
+    }
+    // Up arrow in an empty box edits my latest message, as in most chat apps.
+    if (
+      e.key === "ArrowUp" &&
+      !editing &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      readEditorText().trim() === "" &&
+      files.length === 0 &&
+      !voice &&
+      onEditLast?.()
+    ) {
+      e.preventDefault()
+    }
+  }
+
+  // Close suggestions when the box loses focus, a moment later so a tap on a
+  // suggestion still lands on browsers that move focus before the click.
+  function onEditorBlur() {
+    window.setTimeout(() => {
+      if (document.activeElement !== editorRef.current) closeMentions()
+    }, 150)
+  }
+
+  function onKeyUp(e: React.KeyboardEvent<HTMLDivElement>) {
+    // Moving the caret can step into or out of an "@name".
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) updateMentions()
   }
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
@@ -441,11 +641,12 @@ export function Composer({
     }
   }
 
-  const canSend =
-    (text.trim().length > 0 || files.length > 0 || !!voice) &&
-    !busy &&
-    !recording &&
-    !startingRecording
+  const canSend = editing
+    ? text.trim().length > 0
+    : (text.trim().length > 0 || files.length > 0 || !!voice) &&
+      !busy &&
+      !recording &&
+      !startingRecording
 
   return (
     <div
@@ -486,7 +687,20 @@ export function Composer({
         </div>
       )}
 
-      {replyTo && (
+      {editing && (
+        <div className="reply-bar edit-bar">
+          <Pencil size={14} />
+          <div className="reply-bar-body">
+            <b>Editing message</b>
+            <span>{plainText(editing.text)}</span>
+          </div>
+          <button className="icon-btn mini" aria-label="Cancel editing" onClick={onCancelEdit}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {replyTo && !editing && (
         <div className="reply-bar">
           <Reply size={14} />
           <div className="reply-bar-body">
@@ -499,7 +713,7 @@ export function Composer({
         </div>
       )}
 
-      {files.length > 0 && (
+      {files.length > 0 && !editing && (
         <div className="attach-preview">
           {files.map((f, i) => (
             <span className="pill" key={f.name + i}>
@@ -551,7 +765,7 @@ export function Composer({
           </div>
         </div>
       )}
-      {voice && voiceUrl && (
+      {voice && voiceUrl && !editing && (
         <div className="voice-preview">
           <span>Preview voice note</span>
           <audio controls src={voiceUrl} aria-label="Voice note preview" />
@@ -581,19 +795,41 @@ export function Composer({
         </div>
       )}
 
+      {activeSuggestion >= 0 && (
+        <div className="mention-pop" id={mentionListId} role="listbox" aria-label="Mention someone">
+          {suggestions.map((name, i) => (
+            <button
+              key={name}
+              id={`${mentionListId}-${i}`}
+              type="button"
+              role="option"
+              aria-selected={i === activeSuggestion}
+              className={i === activeSuggestion ? "active" : undefined}
+              // Keep focus (and the caret) in the message box.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => insertMention(name)}
+            >
+              @{name}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="composer-row">
-        <button
-          type="button"
-          className="upload-btn"
-          onClick={() => fileRef.current?.click()}
-          title="Attach encrypted photo or video"
-          aria-label="Attach encrypted photo or video"
-          disabled={recording}
-        >
-          {busy && <span className="ring" />}
-          <Upload size={20} />
-        </button>
-        {supportsRecording && (
+        {!editing && (
+          <button
+            type="button"
+            className="upload-btn"
+            onClick={() => fileRef.current?.click()}
+            title="Attach encrypted photo or video"
+            aria-label="Attach encrypted photo or video"
+            disabled={recording}
+          >
+            {busy && <span className="ring" />}
+            <Upload size={20} />
+          </button>
+        )}
+        {supportsRecording && !editing && (
           <button
             type="button"
             className={`upload-btn ${recording ? "recording" : ""}`}
@@ -621,13 +857,21 @@ export function Composer({
           role="textbox"
           aria-label="Encrypted message"
           aria-multiline="true"
-          contentEditable={!busy && !recording}
+          // Typing stays possible while an attachment uploads; sending waits for it.
+          contentEditable={!!editing || !recording}
           data-placeholder="Write an encrypted message…"
           data-empty={text.trim().length === 0 ? "true" : "false"}
+          aria-autocomplete="list"
+          aria-controls={activeSuggestion >= 0 ? mentionListId : undefined}
+          aria-activedescendant={
+            activeSuggestion >= 0 ? `${mentionListId}-${activeSuggestion}` : undefined
+          }
           suppressContentEditableWarning
           onFocus={scrollChatToLatest}
+          onBlur={onEditorBlur}
           onInput={onEditorInput}
           onKeyDown={onKeyDown}
+          onKeyUp={onKeyUp}
           onPaste={onPaste}
         />
         <button
@@ -635,10 +879,10 @@ export function Composer({
           className={`send-btn ${justSent ? "sent" : ""}`}
           onClick={submit}
           disabled={!canSend}
-          title="Send"
-          aria-label="Send message"
+          title={editing ? "Save edit" : "Send"}
+          aria-label={editing ? "Save edit" : "Send message"}
         >
-          {justSent ? <Check size={19} /> : <SendHorizonal size={19} />}
+          {justSent || editing ? <Check size={19} /> : <SendHorizonal size={19} />}
         </button>
       </div>
 
@@ -684,16 +928,18 @@ export function Composer({
             Keep {keepableCount} older
           </button>
         )}
-        <button
-          type="button"
-          className={`chip-toggle ${burn ? "on danger" : ""}`}
-          onClick={() => setBurn((v) => !v)}
-          title={`Read once — expires after ${burnLabel} if unopened`}
-          aria-label="Read once"
-          aria-pressed={burn}
-        >
-          <Flame size={13} /> Read once
-        </button>
+        {!editing && (
+          <button
+            type="button"
+            className={`chip-toggle ${burn ? "on danger" : ""}`}
+            onClick={() => setBurn((v) => !v)}
+            title={`Read once — expires after ${burnLabel} if unopened`}
+            aria-label="Read once"
+            aria-pressed={burn}
+          >
+            <Flame size={13} /> Read once
+          </button>
+        )}
         <span className="composer-hint">
           <Lock size={11} /> Encrypted in your browser
         </span>
